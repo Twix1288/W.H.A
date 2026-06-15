@@ -7,46 +7,46 @@
 export type EventVersion = 1;
 
 export interface BaseEvent {
-    v: EventVersion;
-    ts: number;         // Unix timestamp
-    type: string;       // Event type discriminator
+	v: EventVersion;
+	ts: number; // Unix timestamp
+	type: string; // Event type discriminator
 }
 
 export interface NetworkBlockEvent extends BaseEvent {
-    type: "network_block";
-    dst_ip: string;
-    dst_port: number;
-    process: string;
-    pid: number;
+	type: "network_block";
+	dst_ip: string;
+	dst_port: number;
+	process: string;
+	pid: number;
 }
 
 export interface SyscallViolationEvent extends BaseEvent {
-    type: "syscall_violation";
-    syscall: string;
-    pid: number;
-    process: string;
+	type: "syscall_violation";
+	syscall: string;
+	pid: number;
+	process: string;
 }
 
 export interface PromptInjectionEvent extends BaseEvent {
-    type: "prompt_injection";
-    turn: number;
-    confidence: number;
+	type: "prompt_injection";
+	turn: number;
+	confidence: number;
 }
 
 export interface StatusRequestEvent extends BaseEvent {
-    type: "status_request";
-    // Internal control message for querying probe counts
+	type: "status_request";
+	// Internal control message for querying probe counts
 }
 
 export interface StatusResponseEvent extends BaseEvent {
-    type: "status_response";
-    probes_attached: number;
-    health: "healthy" | "degraded";
+	type: "status_response";
+	probes_attached: number;
+	health: "healthy" | "degraded";
 }
 
-export type ShieldEvent = 
-    | NetworkBlockEvent 
-    | SyscallViolationEvent 
-    | PromptInjectionEvent 
-    | StatusRequestEvent 
-    | StatusResponseEvent;
+export type ShieldEvent =
+	| NetworkBlockEvent
+	| SyscallViolationEvent
+	| PromptInjectionEvent
+	| StatusRequestEvent
+	| StatusResponseEvent;

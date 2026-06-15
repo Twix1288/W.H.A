@@ -1,10 +1,10 @@
 import type {
-  Finding,
-  SecurityReport,
-  Severity,
-  Grade,
-  RuntimeConfidence,
-  SkillHealth,
+	Finding,
+	Grade,
+	RuntimeConfidence,
+	SecurityReport,
+	Severity,
+	SkillHealth,
 } from "../types.js";
 
 /**
@@ -13,11 +13,11 @@ import type {
  * Dark theme inspired by GitHub dark mode.
  */
 export function renderHtmlReport(report: SecurityReport): string {
-  const gradeMeta = gradeMetadata(report.score.grade);
-  const findings = [...report.findings];
-  const s = report.summary;
+	const gradeMeta = gradeMetadata(report.score.grade);
+	const findings = [...report.findings];
+	const s = report.summary;
 
-  return `<!DOCTYPE html>
+	return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -72,20 +72,27 @@ export function renderHtmlReport(report: SecurityReport): string {
       </div>
     </section>
 
-    ${report.harnessAdapters
-      ? `<section class="section">
+    ${
+			report.harnessAdapters
+				? `<section class="section">
       <h2 class="section-title">Harness Adapters</h2>
       <p class="executive-copy">Matched ${report.harnessAdapters.totalMatched}/${report.harnessAdapters.totalRegistered} registered adapters.</p>
       <div>
-        ${report.harnessAdapters.matched.length === 0
-          ? '<p class="executive-copy muted">No harness-specific markers were detected.</p>'
-          : report.harnessAdapters.matched.map((adapter) => renderHarnessAdapterCard(adapter)).join("")}
+        ${
+					report.harnessAdapters.matched.length === 0
+						? '<p class="executive-copy muted">No harness-specific markers were detected.</p>'
+						: report.harnessAdapters.matched
+								.map((adapter) => renderHarnessAdapterCard(adapter))
+								.join("")
+				}
       </div>
     </section>`
-      : ""}
+				: ""
+		}
 
-    ${report.skillHealth && report.skillHealth.totalSkills > 0
-      ? `<section class="section">
+    ${
+			report.skillHealth && report.skillHealth.totalSkills > 0
+				? `<section class="section">
       <h2 class="section-title">Skill Health</h2>
       <div class="stats-grid">
         ${renderStatCard("Skills", String(report.skillHealth.totalSkills), "files")}
@@ -93,15 +100,22 @@ export function renderHtmlReport(report: SecurityReport): string {
         ${renderStatCard("Versioned", String(report.skillHealth.versionedSkills), "medium")}
         ${renderStatCard("Rollback-ready", String(report.skillHealth.rollbackReadySkills), "high")}
         ${renderStatCard("With history", String(report.skillHealth.observedSkills), "info")}
-        ${typeof report.skillHealth.averageScore === "number"
-          ? renderStatCard("Avg health", `${report.skillHealth.averageScore}/100`, "findings")
-          : ""}
+        ${
+					typeof report.skillHealth.averageScore === "number"
+						? renderStatCard(
+								"Avg health",
+								`${report.skillHealth.averageScore}/100`,
+								"findings",
+							)
+						: ""
+				}
       </div>
       <div>
         ${report.skillHealth.skills.map((skill) => renderSkillHealthCard(skill)).join("")}
       </div>
     </section>`
-      : ""}
+				: ""
+		}
 
     <!-- Severity Distribution -->
     <section class="section">
@@ -114,9 +128,11 @@ export function renderHtmlReport(report: SecurityReport): string {
     <!-- Findings -->
     <section class="section">
       <h2 class="section-title">Findings</h2>
-      ${findings.length === 0
-        ? '<div class="no-findings"><p>No security issues found. Your configuration looks good!</p></div>'
-        : renderFindingsGrouped(findings)}
+      ${
+				findings.length === 0
+					? '<div class="no-findings"><p>No security issues found. Your configuration looks good!</p></div>'
+					: renderFindingsGrouped(findings)
+			}
     </section>
 
     <!-- Footer -->
@@ -133,31 +149,33 @@ export function renderHtmlReport(report: SecurityReport): string {
 // ─── Executive Summary ───────────────────────────────────────
 
 interface ExecutivePosture {
-  readonly label: string;
-  readonly detail: string;
-  readonly color: string;
+	readonly label: string;
+	readonly detail: string;
+	readonly color: string;
 }
 
 function renderExecutiveSummary(report: SecurityReport): string {
-  const posture = executivePosture(report);
-  const priorities = executivePriorityFindings(report.findings);
-  const priorityItems =
-    priorities.length === 0
-      ? '<li class="priority-item muted">No executive action items.</li>'
-      : priorities
-        .map((finding) => {
-          const location = finding.line ? `${finding.file}:${finding.line}` : finding.file;
-          return `<li class="priority-item">
+	const posture = executivePosture(report);
+	const priorities = executivePriorityFindings(report.findings);
+	const priorityItems =
+		priorities.length === 0
+			? '<li class="priority-item muted">No executive action items.</li>'
+			: priorities
+					.map((finding) => {
+						const location = finding.line
+							? `${finding.file}:${finding.line}`
+							: finding.file;
+						return `<li class="priority-item">
             <span class="priority-severity" style="background-color: ${severityColor(finding.severity)};">${finding.severity.toUpperCase()}</span>
             <span>
               <strong>${escapeHtml(finding.title)}</strong>
               <span class="priority-meta">${escapeHtml(location)} - ${escapeHtml(finding.category)}</span>
             </span>
           </li>`;
-        })
-        .join("");
+					})
+					.join("");
 
-  return `
+	return `
     <!-- Executive Summary -->
     <section class="section executive-summary">
       <h2 class="section-title">Executive Summary</h2>
@@ -180,138 +198,146 @@ function renderExecutiveSummary(report: SecurityReport): string {
 }
 
 function executivePosture(report: SecurityReport): ExecutivePosture {
-  const { summary } = report;
+	const { summary } = report;
 
-  if (summary.critical > 0) {
-    return {
-      label: "Immediate remediation required",
-      detail: formatOwnerReviewDetail(summary.critical, summary.high),
-      color: "#f85149",
-    };
-  }
+	if (summary.critical > 0) {
+		return {
+			label: "Immediate remediation required",
+			detail: formatOwnerReviewDetail(summary.critical, summary.high),
+			color: "#f85149",
+		};
+	}
 
-  if (summary.high > 0) {
-    return {
-      label: "High-risk changes need review",
-      detail: `${summary.high} high-severity findings require owner review before rollout.`,
-      color: "#d29922",
-    };
-  }
+	if (summary.high > 0) {
+		return {
+			label: "High-risk changes need review",
+			detail: `${summary.high} high-severity findings require owner review before rollout.`,
+			color: "#d29922",
+		};
+	}
 
-  if (summary.medium > 0) {
-    return {
-      label: "Monitor before broad rollout",
-      detail: `${summary.medium} medium-severity findings should be reviewed before broad rollout.`,
-      color: "#388bfd",
-    };
-  }
+	if (summary.medium > 0) {
+		return {
+			label: "Monitor before broad rollout",
+			detail: `${summary.medium} medium-severity findings should be reviewed before broad rollout.`,
+			color: "#388bfd",
+		};
+	}
 
-  return {
-    label: "Ready for standard rollout",
-    detail: "No critical or high-severity findings were detected.",
-    color: "#2ea043",
-  };
+	return {
+		label: "Ready for standard rollout",
+		detail: "No critical or high-severity findings were detected.",
+		color: "#2ea043",
+	};
 }
 
 function formatOwnerReviewDetail(critical: number, high: number): string {
-  if (critical > 0 && high > 0) {
-    return `${critical} critical and ${high} high-severity findings require owner review.`;
-  }
+	if (critical > 0 && high > 0) {
+		return `${critical} critical and ${high} high-severity findings require owner review.`;
+	}
 
-  if (critical > 0) {
-    return `${critical} critical findings require owner review.`;
-  }
+	if (critical > 0) {
+		return `${critical} critical findings require owner review.`;
+	}
 
-  return `${high} high-severity findings require owner review before rollout.`;
+	return `${high} high-severity findings require owner review before rollout.`;
 }
 
-function executivePriorityFindings(findings: ReadonlyArray<Finding>): ReadonlyArray<Finding> {
-  const severityRank: Record<Severity, number> = {
-    critical: 0,
-    high: 1,
-    medium: 2,
-    low: 3,
-    info: 4,
-  };
+function executivePriorityFindings(
+	findings: ReadonlyArray<Finding>,
+): ReadonlyArray<Finding> {
+	const severityRank: Record<Severity, number> = {
+		critical: 0,
+		high: 1,
+		medium: 2,
+		low: 3,
+		info: 4,
+	};
 
-  return findings
-    .filter((finding) => finding.severity === "critical" || finding.severity === "high")
-    .slice()
-    .sort((a, b) => severityRank[a.severity] - severityRank[b.severity])
-    .slice(0, 5);
+	return findings
+		.filter(
+			(finding) =>
+				finding.severity === "critical" || finding.severity === "high",
+		)
+		.slice()
+		.sort((a, b) => severityRank[a.severity] - severityRank[b.severity])
+		.slice(0, 5);
 }
 
 function renderCategoryExposure(findings: ReadonlyArray<Finding>): string {
-  if (findings.length === 0) {
-    return '<p class="executive-copy muted">No category exposure to display.</p>';
-  }
+	if (findings.length === 0) {
+		return '<p class="executive-copy muted">No category exposure to display.</p>';
+	}
 
-  const categoryCounts = new Map<string, number>();
-  for (const finding of findings) {
-    categoryCounts.set(finding.category, (categoryCounts.get(finding.category) ?? 0) + 1);
-  }
+	const categoryCounts = new Map<string, number>();
+	for (const finding of findings) {
+		categoryCounts.set(
+			finding.category,
+			(categoryCounts.get(finding.category) ?? 0) + 1,
+		);
+	}
 
-  const rows = [...categoryCounts.entries()]
-    .sort(([leftCategory, leftCount], [rightCategory, rightCount]) => {
-      if (rightCount !== leftCount) return rightCount - leftCount;
-      return leftCategory.localeCompare(rightCategory);
-    })
-    .map(([category, count]) => {
-      const noun = count === 1 ? "finding" : "findings";
-      return `<div class="exposure-row">
+	const rows = [...categoryCounts.entries()]
+		.sort(([leftCategory, leftCount], [rightCategory, rightCount]) => {
+			if (rightCount !== leftCount) return rightCount - leftCount;
+			return leftCategory.localeCompare(rightCategory);
+		})
+		.map(([category, count]) => {
+			const noun = count === 1 ? "finding" : "findings";
+			return `<div class="exposure-row">
         <span class="exposure-category">${escapeHtml(category)}</span>
         <span class="exposure-count">${count} ${noun}</span>
       </div>`;
-    })
-    .join("");
+		})
+		.join("");
 
-  return `<div class="exposure-grid">${rows}</div>`;
+	return `<div class="exposure-grid">${rows}</div>`;
 }
 
 // ─── Grade Metadata ──────────────────────────────────────────
 
 interface GradeMeta {
-  readonly color: string;
-  readonly label: string;
+	readonly color: string;
+	readonly label: string;
 }
 
 function gradeMetadata(grade: Grade): GradeMeta {
-  const map: Record<Grade, GradeMeta> = {
-    A: { color: "#2ea043", label: "Excellent" },
-    B: { color: "#388bfd", label: "Good" },
-    C: { color: "#d29922", label: "Fair" },
-    D: { color: "#db6d28", label: "Poor" },
-    F: { color: "#f85149", label: "Critical" },
-  };
-  return map[grade];
+	const map: Record<Grade, GradeMeta> = {
+		A: { color: "#2ea043", label: "Excellent" },
+		B: { color: "#388bfd", label: "Good" },
+		C: { color: "#d29922", label: "Fair" },
+		D: { color: "#db6d28", label: "Poor" },
+		F: { color: "#f85149", label: "Critical" },
+	};
+	return map[grade];
 }
 
 // ─── Severity Colors ─────────────────────────────────────────
 
 function severityColor(severity: Severity): string {
-  const colors: Record<Severity, string> = {
-    critical: "#f85149",
-    high: "#d29922",
-    medium: "#388bfd",
-    low: "#8b949e",
-    info: "#6e7681",
-  };
-  return colors[severity];
+	const colors: Record<Severity, string> = {
+		critical: "#f85149",
+		high: "#d29922",
+		medium: "#388bfd",
+		low: "#8b949e",
+		info: "#6e7681",
+	};
+	return colors[severity];
 }
 
 // ─── Score Bar ───────────────────────────────────────────────
 
 function scoreBarColor(score: number): string {
-  if (score >= 80) return "#2ea043";
-  if (score >= 60) return "#d29922";
-  return "#f85149";
+	if (score >= 80) return "#2ea043";
+	if (score >= 60) return "#d29922";
+	return "#f85149";
 }
 
 function renderScoreBar(label: string, score: number): string {
-  const color = scoreBarColor(score);
-  const pct = Math.max(0, Math.min(100, score));
+	const color = scoreBarColor(score);
+	const pct = Math.max(0, Math.min(100, score));
 
-  return `
+	return `
     <div class="bar-row">
       <span class="bar-label">${escapeHtml(label)}</span>
       <div class="bar-track">
@@ -324,19 +350,19 @@ function renderScoreBar(label: string, score: number): string {
 // ─── Stat Card ───────────────────────────────────────────────
 
 function renderStatCard(label: string, value: string, kind: string): string {
-  const kindColorMap: Record<string, string> = {
-    files: "#8b949e",
-    findings: "#e6edf3",
-    fixable: "#2ea043",
-    critical: "#f85149",
-    high: "#d29922",
-    medium: "#388bfd",
-    low: "#8b949e",
-    info: "#6e7681",
-  };
-  const color = kindColorMap[kind] ?? "#e6edf3";
+	const kindColorMap: Record<string, string> = {
+		files: "#8b949e",
+		findings: "#e6edf3",
+		fixable: "#2ea043",
+		critical: "#f85149",
+		high: "#d29922",
+		medium: "#388bfd",
+		low: "#8b949e",
+		info: "#6e7681",
+	};
+	const color = kindColorMap[kind] ?? "#e6edf3";
 
-  return `
+	return `
     <div class="stat-card">
       <div class="stat-value" style="color: ${color};">${escapeHtml(value)}</div>
       <div class="stat-label">${escapeHtml(label)}</div>
@@ -346,53 +372,53 @@ function renderStatCard(label: string, value: string, kind: string): string {
 // ─── Distribution Chart (SVG) ────────────────────────────────
 
 function renderDistributionChart(summary: {
-  readonly critical: number;
-  readonly high: number;
-  readonly medium: number;
-  readonly low: number;
-  readonly info: number;
+	readonly critical: number;
+	readonly high: number;
+	readonly medium: number;
+	readonly low: number;
+	readonly info: number;
 }): string {
-  const segments: ReadonlyArray<{
-    readonly label: string;
-    readonly count: number;
-    readonly color: string;
-  }> = [
-    { label: "Critical", count: summary.critical, color: "#f85149" },
-    { label: "High", count: summary.high, color: "#d29922" },
-    { label: "Medium", count: summary.medium, color: "#388bfd" },
-    { label: "Low", count: summary.low, color: "#8b949e" },
-    { label: "Info", count: summary.info, color: "#6e7681" },
-  ];
+	const segments: ReadonlyArray<{
+		readonly label: string;
+		readonly count: number;
+		readonly color: string;
+	}> = [
+		{ label: "Critical", count: summary.critical, color: "#f85149" },
+		{ label: "High", count: summary.high, color: "#d29922" },
+		{ label: "Medium", count: summary.medium, color: "#388bfd" },
+		{ label: "Low", count: summary.low, color: "#8b949e" },
+		{ label: "Info", count: summary.info, color: "#6e7681" },
+	];
 
-  const total = segments.reduce((acc, seg) => acc + seg.count, 0);
+	const total = segments.reduce((acc, seg) => acc + seg.count, 0);
 
-  if (total === 0) {
-    return '<p class="no-findings-text">No findings to display.</p>';
-  }
+	if (total === 0) {
+		return '<p class="no-findings-text">No findings to display.</p>';
+	}
 
-  const barWidth = 600;
-  const barHeight = 32;
-  let xOffset = 0;
+	const barWidth = 600;
+	const barHeight = 32;
+	let xOffset = 0;
 
-  const rects = segments.map((seg) => {
-    const width = total > 0 ? (seg.count / total) * barWidth : 0;
-    const rect =
-      width > 0
-        ? `<rect x="${xOffset}" y="0" width="${width}" height="${barHeight}" fill="${seg.color}" rx="0" />`
-        : "";
-    xOffset += width;
-    return rect;
-  });
+	const rects = segments.map((seg) => {
+		const width = total > 0 ? (seg.count / total) * barWidth : 0;
+		const rect =
+			width > 0
+				? `<rect x="${xOffset}" y="0" width="${width}" height="${barHeight}" fill="${seg.color}" rx="0" />`
+				: "";
+		xOffset += width;
+		return rect;
+	});
 
-  const legend = segments
-    .filter((seg) => seg.count > 0)
-    .map(
-      (seg) =>
-        `<span class="legend-item"><span class="legend-dot" style="background-color: ${seg.color};"></span>${escapeHtml(seg.label)}: ${seg.count}</span>`
-    )
-    .join("");
+	const legend = segments
+		.filter((seg) => seg.count > 0)
+		.map(
+			(seg) =>
+				`<span class="legend-item"><span class="legend-dot" style="background-color: ${seg.color};"></span>${escapeHtml(seg.label)}: ${seg.count}</span>`,
+		)
+		.join("");
 
-  return `
+	return `
     <svg class="dist-bar" viewBox="0 0 ${barWidth} ${barHeight}" preserveAspectRatio="none">
       <rect x="0" y="0" width="${barWidth}" height="${barHeight}" fill="#21262d" rx="6" />
       <clipPath id="bar-clip"><rect x="0" y="0" width="${barWidth}" height="${barHeight}" rx="6" /></clipPath>
@@ -404,19 +430,24 @@ function renderDistributionChart(summary: {
 // ─── Findings (grouped by severity) ─────────────────────────
 
 function renderFindingsGrouped(findings: ReadonlyArray<Finding>): string {
-  const severities: ReadonlyArray<Severity> = ["critical", "high", "medium", "low", "info"];
-  const grouped = severities.map(
-    (sev) =>
-      [sev, findings.filter((f) => f.severity === sev)] as const
-  );
+	const severities: ReadonlyArray<Severity> = [
+		"critical",
+		"high",
+		"medium",
+		"low",
+		"info",
+	];
+	const grouped = severities.map(
+		(sev) => [sev, findings.filter((f) => f.severity === sev)] as const,
+	);
 
-  return grouped
-    .filter(([, items]) => items.length > 0)
-    .map(([sev, items]) => {
-      const color = severityColor(sev);
-      const cards = items.map((f) => renderFindingCard(f)).join("");
+	return grouped
+		.filter(([, items]) => items.length > 0)
+		.map(([sev, items]) => {
+			const color = severityColor(sev);
+			const cards = items.map((f) => renderFindingCard(f)).join("");
 
-      return `
+			return `
         <div class="findings-group">
           <h3 class="group-header" style="color: ${color};">
             <span class="severity-dot" style="background-color: ${color};"></span>
@@ -424,32 +455,32 @@ function renderFindingsGrouped(findings: ReadonlyArray<Finding>): string {
           </h3>
           ${cards}
         </div>`;
-    })
-    .join("");
+		})
+		.join("");
 }
 
 function renderFindingCard(finding: Finding): string {
-  const color = severityColor(finding.severity);
-  const location = finding.line
-    ? `${escapeHtml(finding.file)}:${finding.line}`
-    : escapeHtml(finding.file);
-  const runtimeConfidenceBadge = finding.runtimeConfidence
-    ? `<span class="runtime-confidence-badge">${escapeHtml(formatRuntimeConfidence(finding.runtimeConfidence))}</span>`
-    : "";
+	const color = severityColor(finding.severity);
+	const location = finding.line
+		? `${escapeHtml(finding.file)}:${finding.line}`
+		: escapeHtml(finding.file);
+	const runtimeConfidenceBadge = finding.runtimeConfidence
+		? `<span class="runtime-confidence-badge">${escapeHtml(formatRuntimeConfidence(finding.runtimeConfidence))}</span>`
+		: "";
 
-  const evidenceBlock = finding.evidence
-    ? `<div class="finding-evidence"><strong>Evidence:</strong><pre><code>${escapeHtml(finding.evidence)}</code></pre></div>`
-    : "";
+	const evidenceBlock = finding.evidence
+		? `<div class="finding-evidence"><strong>Evidence:</strong><pre><code>${escapeHtml(finding.evidence)}</code></pre></div>`
+		: "";
 
-  const fixBlock = finding.fix
-    ? `<div class="finding-fix">
+	const fixBlock = finding.fix
+		? `<div class="finding-fix">
         <strong>Fix:</strong> ${escapeHtml(finding.fix.description)}
         ${finding.fix.auto ? '<span class="auto-fix-badge">auto-fixable</span>' : ""}
         ${finding.fix.before ? `<div class="fix-diff"><div class="diff-before"><strong>Before:</strong><pre><code>${escapeHtml(finding.fix.before)}</code></pre></div><div class="diff-after"><strong>After:</strong><pre><code>${escapeHtml(finding.fix.after)}</code></pre></div></div>` : ""}
       </div>`
-    : "";
+		: "";
 
-  return `
+	return `
     <div class="finding-card">
       <div class="finding-header">
         <span class="severity-badge" style="background-color: ${color};">${finding.severity.toUpperCase()}</span>
@@ -467,16 +498,18 @@ function renderFindingCard(finding: Finding): string {
 }
 
 function renderSkillHealthCard(skill: SkillHealth): string {
-  const score = typeof skill.score === "number" ? `${skill.score}/100` : "unobserved";
-  const detail = typeof skill.successRate === "number"
-    ? `Runs ${skill.observedRuns} • Success ${Math.round(skill.successRate * 100)}%${
-        typeof skill.averageFeedback === "number"
-          ? ` • Feedback ${skill.averageFeedback.toFixed(1)}/5`
-          : ""
-      }`
-    : "No execution history found";
+	const score =
+		typeof skill.score === "number" ? `${skill.score}/100` : "unobserved";
+	const detail =
+		typeof skill.successRate === "number"
+			? `Runs ${skill.observedRuns} • Success ${Math.round(skill.successRate * 100)}%${
+					typeof skill.averageFeedback === "number"
+						? ` • Feedback ${skill.averageFeedback.toFixed(1)}/5`
+						: ""
+				}`
+			: "No execution history found";
 
-  return `
+	return `
     <div class="finding-card">
       <div class="finding-header">
         <span class="runtime-confidence-badge">${escapeHtml(skill.status)}</span>
@@ -491,13 +524,16 @@ function renderSkillHealthCard(skill: SkillHealth): string {
 }
 
 function renderHarnessAdapterCard(
-  adapter: NonNullable<SecurityReport["harnessAdapters"]>["matched"][number]
+	adapter: NonNullable<SecurityReport["harnessAdapters"]>["matched"][number],
 ): string {
-  const evidence = adapter.evidence.length > 0
-    ? adapter.evidence.map((item) => `<code>${escapeHtml(item)}</code>`).join(", ")
-    : "No markers";
+	const evidence =
+		adapter.evidence.length > 0
+			? adapter.evidence
+					.map((item) => `<code>${escapeHtml(item)}</code>`)
+					.join(", ")
+			: "No markers";
 
-  return `
+	return `
     <div class="finding-card">
       <div class="finding-header">
         <span class="runtime-confidence-badge">${escapeHtml(adapter.confidence)}</span>
@@ -514,59 +550,59 @@ function renderHarnessAdapterCard(
 }
 
 function formatRuntimeConfidence(value: RuntimeConfidence): string {
-  switch (value) {
-    case "active-runtime":
-      return "active runtime";
-    case "project-local-optional":
-      return "project-local optional";
-    case "template-example":
-      return "template/example";
-    case "docs-example":
-      return "docs/example";
-    case "plugin-cache":
-      return "plugin cache";
-    case "plugin-manifest":
-      return "plugin manifest";
-    case "hook-code":
-      return "hook-code implementation";
-  }
+	switch (value) {
+		case "active-runtime":
+			return "active runtime";
+		case "project-local-optional":
+			return "project-local optional";
+		case "template-example":
+			return "template/example";
+		case "docs-example":
+			return "docs/example";
+		case "plugin-cache":
+			return "plugin cache";
+		case "plugin-manifest":
+			return "plugin manifest";
+		case "hook-code":
+			return "hook-code implementation";
+	}
 }
 
 // ─── Timestamp Formatting ────────────────────────────────────
 
 function formatTimestamp(iso: string): string {
-  try {
-    const date = new Date(iso);
-    return date.toLocaleString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZoneName: "short",
-    });
-  } catch {
-    return iso;
-  }
+	try {
+		const date = new Date(iso);
+		return date.toLocaleString("en-US", {
+			weekday: "long",
+			year: "numeric",
+			month: "long",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+			second: "2-digit",
+			timeZoneName: "short",
+		});
+	} catch {
+		return iso;
+	}
 }
 
 // ─── Escape HTML ─────────────────────────────────────────────
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#039;");
 }
 
 // ─── Inline Styles ───────────────────────────────────────────
 
 function inlineStyles(): string {
-  return `
+	return `
     /* Reset & Base */
     *, *::before, *::after {
       box-sizing: border-box;

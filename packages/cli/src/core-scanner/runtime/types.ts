@@ -3,22 +3,28 @@ import { z } from "zod";
 // ─── Runtime Policy Configuration ───────────────────────────
 
 export const RuntimePolicySchema = z.object({
-  version: z.literal(1),
-  deny: z.array(
-    z.object({
-      tool: z.string(),
-      pattern: z.string().optional(),
-      reason: z.string().optional(),
-    })
-  ).default([]),
-  rateLimit: z.object({
-    maxPerMinute: z.number().int().min(1).default(60),
-    tools: z.array(z.string()).default([]),
-  }).optional(),
-  log: z.object({
-    enabled: z.boolean().default(true),
-    path: z.string().default(".wh-agent/runtime.ndjson"),
-  }).optional(),
+	version: z.literal(1),
+	deny: z
+		.array(
+			z.object({
+				tool: z.string(),
+				pattern: z.string().optional(),
+				reason: z.string().optional(),
+			}),
+		)
+		.default([]),
+	rateLimit: z
+		.object({
+			maxPerMinute: z.number().int().min(1).default(60),
+			tools: z.array(z.string()).default([]),
+		})
+		.optional(),
+	log: z
+		.object({
+			enabled: z.boolean().default(true),
+			path: z.string().default(".wh-agent/runtime.ndjson"),
+		})
+		.optional(),
 });
 
 export type RuntimePolicy = z.infer<typeof RuntimePolicySchema>;
@@ -26,9 +32,9 @@ export type RuntimePolicy = z.infer<typeof RuntimePolicySchema>;
 // ─── Tool Call Representation ───────────────────────────────
 
 export interface ToolCall {
-  readonly tool: string;
-  readonly input: string;
-  readonly timestamp: string;
+	readonly tool: string;
+	readonly input: string;
+	readonly timestamp: string;
 }
 
 // ─── Evaluation Result ──────────────────────────────────────
@@ -36,66 +42,66 @@ export interface ToolCall {
 export type EvalDecision = "allow" | "block";
 
 export interface EvalResult {
-  readonly decision: EvalDecision;
-  readonly tool: string;
-  readonly reason?: string;
-  readonly matchedRule?: string;
-  readonly timestamp: string;
+	readonly decision: EvalDecision;
+	readonly tool: string;
+	readonly reason?: string;
+	readonly matchedRule?: string;
+	readonly timestamp: string;
 }
 
 // ─── Log Entry ──────────────────────────────────────────────
 
 export interface RuntimeLogEntry {
-  readonly timestamp: string;
-  readonly tool: string;
-  readonly decision: EvalDecision;
-  readonly reason?: string;
-  readonly durationMs: number;
+	readonly timestamp: string;
+	readonly tool: string;
+	readonly decision: EvalDecision;
+	readonly reason?: string;
+	readonly durationMs: number;
 }
 
 // ─── Install Result ─────────────────────────────────────────
 
 export interface InstallResult {
-  readonly hookInstalled: boolean;
-  readonly policyCreated: boolean;
-  readonly settingsPath: string;
-  readonly policyPath: string;
-  readonly message: string;
+	readonly hookInstalled: boolean;
+	readonly policyCreated: boolean;
+	readonly settingsPath: string;
+	readonly policyPath: string;
+	readonly message: string;
 }
 
 export interface RuntimeRepairResult {
-  readonly repaired: boolean;
-  readonly changed: boolean;
-  readonly hookInstalled: boolean;
-  readonly policyCreated: boolean;
-  readonly settingsPath: string;
-  readonly policyPath: string;
-  readonly settingsBackupPath?: string;
-  readonly policyBackupPath?: string;
-  readonly message: string;
+	readonly repaired: boolean;
+	readonly changed: boolean;
+	readonly hookInstalled: boolean;
+	readonly policyCreated: boolean;
+	readonly settingsPath: string;
+	readonly policyPath: string;
+	readonly settingsBackupPath?: string;
+	readonly policyBackupPath?: string;
+	readonly message: string;
 }
 
 // ─── Runtime Status Result ───────────────────────────────────
 
 export type RuntimeStatusHealth =
-  | "ready"
-  | "not_installed"
-  | "missing_policy"
-  | "invalid_policy"
-  | "invalid_settings";
+	| "ready"
+	| "not_installed"
+	| "missing_policy"
+	| "invalid_policy"
+	| "invalid_settings";
 
 export interface RuntimeStatusResult {
-  readonly settingsPath: string;
-  readonly settingsExists: boolean;
-  readonly settingsValid: boolean;
-  readonly hookInstalled: boolean;
-  readonly hookCount: number;
-  readonly policyPath: string;
-  readonly policyExists: boolean;
-  readonly policyValid: boolean;
-  readonly logPath: string;
-  readonly logExists: boolean;
-  readonly health: RuntimeStatusHealth;
-  readonly checkExitCode: number;
-  readonly message: string;
+	readonly settingsPath: string;
+	readonly settingsExists: boolean;
+	readonly settingsValid: boolean;
+	readonly hookInstalled: boolean;
+	readonly hookCount: number;
+	readonly policyPath: string;
+	readonly policyExists: boolean;
+	readonly policyValid: boolean;
+	readonly logPath: string;
+	readonly logExists: boolean;
+	readonly health: RuntimeStatusHealth;
+	readonly checkExitCode: number;
+	readonly message: string;
 }

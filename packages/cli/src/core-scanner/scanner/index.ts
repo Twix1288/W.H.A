@@ -1,197 +1,209 @@
+import { detectHarnessAdapters } from "../harness-adapters/index.js";
+import { getBuiltinRules } from "../rules/index.js";
+import { analyzeSkillHealth } from "../skills/health.js";
+import { isExampleLikePath, isPluginCachePath } from "../source-context.js";
 import type {
-  ConfigFile,
-  Finding,
-  Rule,
-  RuntimeConfidence,
-  SkillHealthSummary,
-  HarnessAdapterSummary,
-  ScanTarget,
-  Severity,
+	ConfigFile,
+	Finding,
+	HarnessAdapterSummary,
+	Rule,
+	RuntimeConfidence,
+	ScanTarget,
+	Severity,
+	SkillHealthSummary,
 } from "../types.js";
 import { discoverConfigFiles } from "./discovery.js";
-import { getBuiltinRules } from "../rules/index.js";
-import { isExampleLikePath, isPluginCachePath } from "../source-context.js";
-import { analyzeSkillHealth } from "../skills/health.js";
-import { detectHarnessAdapters } from "../harness-adapters/index.js";
 
 export interface ScanResult {
-  readonly target: ScanTarget;
-  readonly findings: ReadonlyArray<Finding>;
-  readonly skillHealth?: SkillHealthSummary;
-  readonly harnessAdapters?: HarnessAdapterSummary;
+	readonly target: ScanTarget;
+	readonly findings: ReadonlyArray<Finding>;
+	readonly skillHealth?: SkillHealthSummary;
+	readonly harnessAdapters?: HarnessAdapterSummary;
 }
 
 /**
  * Main scanner: discovers config files and runs all rules against them.
  */
 export function scan(targetPath: string): ScanResult {
-  const target = discoverConfigFiles(targetPath);
-  const rules = getBuiltinRules();
-  const findings = runRules(target.files, rules, target.path);
-  const skillHealth = analyzeSkillHealth(target.files);
-  const harnessAdapters = detectHarnessAdapters(targetPath);
+	const target = discoverConfigFiles(targetPath);
+	const rules = getBuiltinRules();
+	const findings = runRules(target.files, rules, target.path);
+	const skillHealth = analyzeSkillHealth(target.files);
+	const harnessAdapters = detectHarnessAdapters(targetPath);
 
-  return { target, findings, skillHealth, harnessAdapters };
+	return { target, findings, skillHealth, harnessAdapters };
 }
 
 /**
  * Run all rules against all config files, collecting findings.
  */
 function runRules(
-  files: ReadonlyArray<ConfigFile>,
-  rules: ReadonlyArray<Rule>,
-  scanRoot: string
+	files: ReadonlyArray<ConfigFile>,
+	rules: ReadonlyArray<Rule>,
+	scanRoot: string,
 ): ReadonlyArray<Finding> {
-  const findings: Finding[] = [];
+	const findings: Finding[] = [];
 
-  for (const file of files) {
-    for (const rule of rules) {
-      const ruleFindings = rule.check(file, files);
-      findings.push(...ruleFindings);
-    }
-  }
+	for (const file of files) {
+		for (const rule of rules) {
+			const ruleFindings = rule.check(file, files);
+			findings.push(...ruleFindings);
+		}
+	}
 
-  const filesByPath = new Map(files.map((file) => [file.path, file]));
-  const annotatedFindings = findings.map((finding) => {
-    const annotatedFinding = annotateFindingRuntimeConfidence(finding, filesByPath, scanRoot);
-    return adjustFindingForSourceContext(annotatedFinding);
-  });
+	const filesByPath = new Map(files.map((file) => [file.path, file]));
+	const annotatedFindings = findings.map((finding) => {
+		const annotatedFinding = annotateFindingRuntimeConfidence(
+			finding,
+			filesByPath,
+			scanRoot,
+		);
+		return adjustFindingForSourceContext(annotatedFinding);
+	});
 
-  // Sort by severity (critical first)
-  return [...annotatedFindings].sort((a, b) => {
-    const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-    return order[a.severity] - order[b.severity];
-  });
+	// Sort by severity (critical first)
+	return [...annotatedFindings].sort((a, b) => {
+		const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+		return order[a.severity] - order[b.severity];
+	});
 }
 
-function classifyRuntimeConfidence(file: ConfigFile, scanRoot: string): RuntimeConfidence | undefined {
-  const normalizedPath = file.path.replace(/\\/g, "/").toLowerCase();
-  if (normalizedPath === "settings.local.json" || normalizedPath.endsWith("/settings.local.json")) {
-    return "project-local-optional";
-  }
+function classifyRuntimeConfidence(
+	file: ConfigFile,
+	scanRoot: string,
+): RuntimeConfidence | undefined {
+	const normalizedPath = file.path.replace(/\\/g, "/").toLowerCase();
+	if (
+		normalizedPath === "settings.local.json" ||
+		normalizedPath.endsWith("/settings.local.json")
+	) {
+		return "project-local-optional";
+	}
 
-  if (isPluginCachePath(file.path, scanRoot)) {
-    return "plugin-cache";
-  }
+	if (isPluginCachePath(file.path, scanRoot)) {
+		return "plugin-cache";
+	}
 
-  if (file.type === "hook-code") {
-    return "hook-code";
-  }
+	if (file.type === "hook-code") {
+		return "hook-code";
+	}
 
-  if (
-    file.type === "settings-json" &&
-    /(?:^|\/)(?:\.claude\/)?hooks\/hooks\.json$/i.test(normalizedPath)
-  ) {
-    return "plugin-manifest";
-  }
+	if (
+		file.type === "settings-json" &&
+		/(?:^|\/)(?:\.claude\/)?hooks\/hooks\.json$/i.test(normalizedPath)
+	) {
+		return "plugin-manifest";
+	}
 
-  if (isExampleLikePath(normalizedPath)) {
-    return "docs-example";
-  }
+	if (isExampleLikePath(normalizedPath)) {
+		return "docs-example";
+	}
 
-  return undefined;
+	return undefined;
 }
 
 function annotateFindingRuntimeConfidence(
-  finding: Finding,
-  filesByPath: ReadonlyMap<string, ConfigFile>,
-  scanRoot: string
+	finding: Finding,
+	filesByPath: ReadonlyMap<string, ConfigFile>,
+	scanRoot: string,
 ): Finding {
-  if (finding.runtimeConfidence) {
-    return finding;
-  }
+	if (finding.runtimeConfidence) {
+		return finding;
+	}
 
-  const file = filesByPath.get(finding.file);
-  const runtimeConfidence = file ? classifyRuntimeConfidence(file, scanRoot) : undefined;
-  return runtimeConfidence ? { ...finding, runtimeConfidence } : finding;
+	const file = filesByPath.get(finding.file);
+	const runtimeConfidence = file
+		? classifyRuntimeConfidence(file, scanRoot)
+		: undefined;
+	return runtimeConfidence ? { ...finding, runtimeConfidence } : finding;
 }
 
 function adjustFindingForSourceContext(finding: Finding): Finding {
-  switch (finding.runtimeConfidence) {
-    case "docs-example":
-      return adjustDocsExampleFinding(finding);
-    case "plugin-cache":
-      return adjustPluginCacheFinding(finding);
-    case "plugin-manifest":
-      return adjustPluginManifestFinding(finding);
-    default:
-      return finding;
-  }
+	switch (finding.runtimeConfidence) {
+		case "docs-example":
+			return adjustDocsExampleFinding(finding);
+		case "plugin-cache":
+			return adjustPluginCacheFinding(finding);
+		case "plugin-manifest":
+			return adjustPluginManifestFinding(finding);
+		default:
+			return finding;
+	}
 }
 
 function adjustDocsExampleFinding(finding: Finding): Finding {
-  if (finding.category === "secrets") {
-    return withPrefixedDescription(
-      {
-        ...finding,
-        title: prefixTitle(finding.title, "Example config"),
-      },
-      "This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure."
-    );
-  }
+	if (finding.category === "secrets") {
+		return withPrefixedDescription(
+			{
+				...finding,
+				title: prefixTitle(finding.title, "Example config"),
+			},
+			"This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure.",
+		);
+	}
 
-  return withPrefixedDescription(
-    {
-      ...finding,
-      severity: downgradeStructuralSeverity(finding.severity),
-      title: prefixTitle(finding.title, "Example config"),
-    },
-    "This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure."
-  );
+	return withPrefixedDescription(
+		{
+			...finding,
+			severity: downgradeStructuralSeverity(finding.severity),
+			title: prefixTitle(finding.title, "Example config"),
+		},
+		"This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure.",
+	);
 }
 
 function adjustPluginCacheFinding(finding: Finding): Finding {
-  if (finding.category === "secrets") {
-    return withPrefixedDescription(
-      {
-        ...finding,
-        title: prefixTitle(finding.title, "Plugin cache"),
-      },
-      "This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration."
-    );
-  }
+	if (finding.category === "secrets") {
+		return withPrefixedDescription(
+			{
+				...finding,
+				title: prefixTitle(finding.title, "Plugin cache"),
+			},
+			"This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration.",
+		);
+	}
 
-  return withPrefixedDescription(
-    {
-      ...finding,
-      severity: downgradeStructuralSeverity(finding.severity),
-      title: prefixTitle(finding.title, "Plugin cache"),
-    },
-    "This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration."
-  );
+	return withPrefixedDescription(
+		{
+			...finding,
+			severity: downgradeStructuralSeverity(finding.severity),
+			title: prefixTitle(finding.title, "Plugin cache"),
+		},
+		"This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration.",
+	);
 }
 
 function adjustPluginManifestFinding(finding: Finding): Finding {
-  return withPrefixedDescription(
-    {
-      ...finding,
-      title: prefixTitle(finding.title, "Plugin hook manifest"),
-    },
-    "This finding comes from a declarative hook manifest. Review the referenced hook implementation to confirm the exact runtime behavior."
-  );
+	return withPrefixedDescription(
+		{
+			...finding,
+			title: prefixTitle(finding.title, "Plugin hook manifest"),
+		},
+		"This finding comes from a declarative hook manifest. Review the referenced hook implementation to confirm the exact runtime behavior.",
+	);
 }
 
 function downgradeStructuralSeverity(severity: Severity): Severity {
-  switch (severity) {
-    case "critical":
-      return "high";
-    case "high":
-      return "medium";
-    case "medium":
-      return "low";
-    default:
-      return severity;
-  }
+	switch (severity) {
+		case "critical":
+			return "high";
+		case "high":
+			return "medium";
+		case "medium":
+			return "low";
+		default:
+			return severity;
+	}
 }
 
 function prefixTitle(title: string, prefix: string): string {
-  return title.startsWith(`${prefix}: `) ? title : `${prefix}: ${title}`;
+	return title.startsWith(`${prefix}: `) ? title : `${prefix}: ${title}`;
 }
 
 function withPrefixedDescription(finding: Finding, prefix: string): Finding {
-  return finding.description.startsWith(prefix)
-    ? finding
-    : { ...finding, description: `${prefix} ${finding.description}` };
+	return finding.description.startsWith(prefix)
+		? finding
+		: { ...finding, description: `${prefix} ${finding.description}` };
 }
 
 export { discoverConfigFiles } from "./discovery.js";

@@ -17,70 +17,67 @@
 // ─── Type Re-exports ──────────────────────────────────────
 
 export type {
-  MiniClawSession,
-  PromptRequest,
-  PromptResponse,
-  ToolRiskLevel,
-  AllowedTool,
-  ToolWhitelist,
-  ToolCallRequest,
-  ToolValidationResult,
-  ToolCallRecord,
-  TokenUsage,
-  NetworkPolicy,
-  SandboxConfig,
-  SecurityEvent,
-  SecurityEventType,
-  ServerConfig,
-  MiniClawConfig,
+	AllowedTool,
+	MiniClawConfig,
+	MiniClawSession,
+	NetworkPolicy,
+	PromptRequest,
+	PromptResponse,
+	SandboxConfig,
+	SecurityEvent,
+	SecurityEventType,
+	ServerConfig,
+	TokenUsage,
+	ToolCallRecord,
+	ToolCallRequest,
+	ToolRiskLevel,
+	ToolValidationResult,
+	ToolWhitelist,
 } from "./types.js";
 
 export {
-  DEFAULT_SANDBOX_CONFIG,
-  DEFAULT_SERVER_CONFIG,
+	DEFAULT_SANDBOX_CONFIG,
+	DEFAULT_SERVER_CONFIG,
 } from "./types.js";
 
 // ─── Module Re-exports ────────────────────────────────────
 
 export {
-  createSandbox,
-  destroySandbox,
-  validatePath,
-  validateExtension,
-  checkFileSize,
-  createSecurityEvent,
-} from "./sandbox.js";
-
-export {
-  sanitizePrompt,
-  filterResponse,
-  routePrompt,
+	filterResponse,
+	routePrompt,
+	sanitizePrompt,
 } from "./router.js";
-
 export {
-  TOOL_REGISTRY,
-  createSafeWhitelist,
-  createGuardedWhitelist,
-  createCustomWhitelist,
-  validateToolCall,
-  scopeToolCall,
-  executeToolCall,
-  getToolsByRiskLevel,
-} from "./tools.js";
-
+	checkFileSize,
+	createSandbox,
+	createSecurityEvent,
+	destroySandbox,
+	validateExtension,
+	validatePath,
+} from "./sandbox.js";
 export {
-  createMiniClawServer,
-  startServer,
+	createMiniClawServer,
+	startServer,
 } from "./server.js";
+export {
+	createCustomWhitelist,
+	createGuardedWhitelist,
+	createSafeWhitelist,
+	executeToolCall,
+	getToolsByRiskLevel,
+	scopeToolCall,
+	TOOL_REGISTRY,
+	validateToolCall,
+} from "./tools.js";
 
 // ─── Convenience Functions ────────────────────────────────
 
+import type { createServer } from "node:http";
+import { createSandbox } from "./sandbox.js";
+import { startServer } from "./server.js";
+import { createSafeWhitelist } from "./tools.js";
 import type { MiniClawConfig, MiniClawSession } from "./types.js";
 import { DEFAULT_SANDBOX_CONFIG, DEFAULT_SERVER_CONFIG } from "./types.js";
-import { createSandbox } from "./sandbox.js";
-import { createSafeWhitelist } from "./tools.js";
-import { startServer } from "./server.js";
-import { createServer } from "node:http";
 
 /**
  * Starts a MiniClaw server with the provided (or default) configuration.
@@ -91,16 +88,17 @@ import { createServer } from "node:http";
  * @param config - Optional partial configuration. Unspecified fields use secure defaults.
  * @returns A handle with the server instance and a stop function
  */
-export function startMiniClaw(
-  config?: Partial<MiniClawConfig>
-): { readonly server: ReturnType<typeof createServer>; readonly stop: () => void } {
-  const fullConfig: MiniClawConfig = {
-    sandbox: config?.sandbox ?? DEFAULT_SANDBOX_CONFIG,
-    server: config?.server ?? DEFAULT_SERVER_CONFIG,
-    tools: config?.tools ?? createSafeWhitelist(),
-  };
+export function startMiniClaw(config?: Partial<MiniClawConfig>): {
+	readonly server: ReturnType<typeof createServer>;
+	readonly stop: () => void;
+} {
+	const fullConfig: MiniClawConfig = {
+		sandbox: config?.sandbox ?? DEFAULT_SANDBOX_CONFIG,
+		server: config?.server ?? DEFAULT_SERVER_CONFIG,
+		tools: config?.tools ?? createSafeWhitelist(),
+	};
 
-  return startServer(fullConfig);
+	return startServer(fullConfig);
 }
 
 /**
@@ -114,17 +112,17 @@ export function startMiniClaw(
  * @returns A new MiniClaw session with a sandbox directory
  */
 export async function createMiniClawSession(
-  config?: Partial<{
-    readonly sandbox: Partial<import("./types.js").SandboxConfig>;
-    readonly tools: import("./types.js").ToolWhitelist;
-  }>
+	config?: Partial<{
+		readonly sandbox: Partial<import("./types.js").SandboxConfig>;
+		readonly tools: import("./types.js").ToolWhitelist;
+	}>,
 ): Promise<MiniClawSession> {
-  const sandboxConfig = {
-    ...DEFAULT_SANDBOX_CONFIG,
-    ...config?.sandbox,
-  };
+	const sandboxConfig = {
+		...DEFAULT_SANDBOX_CONFIG,
+		...config?.sandbox,
+	};
 
-  const tools = config?.tools ?? createSafeWhitelist();
+	const tools = config?.tools ?? createSafeWhitelist();
 
-  return createSandbox(sandboxConfig, tools.tools, sandboxConfig.maxDuration);
+	return createSandbox(sandboxConfig, tools.tools, sandboxConfig.maxDuration);
 }

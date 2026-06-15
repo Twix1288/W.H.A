@@ -11,14 +11,14 @@
  * WHAT the agent can be instructed to do.
  */
 
-import type {
-  PromptRequest,
-  PromptResponse,
-  MiniClawSession,
-  SecurityEvent,
-  ToolCallRecord,
-} from "./types.js";
 import { createSecurityEvent } from "./sandbox.js";
+import type {
+	MiniClawSession,
+	PromptRequest,
+	PromptResponse,
+	SecurityEvent,
+	ToolCallRecord,
+} from "./types.js";
 
 // ─── Prompt Injection Patterns ────────────────────────────
 
@@ -36,66 +36,68 @@ import { createSecurityEvent } from "./sandbox.js";
  * Each pattern includes a description for audit logging.
  */
 const INJECTION_PATTERNS: ReadonlyArray<{
-  readonly pattern: RegExp;
-  readonly description: string;
+	readonly pattern: RegExp;
+	readonly description: string;
 }> = [
-  // System prompt override attempts
-  // WHY: The most basic prompt injection — trying to replace the system prompt
-  {
-    pattern: /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|context)/i,
-    description: "System prompt override: 'ignore previous instructions'",
-  },
-  {
-    pattern: /you\s+are\s+now\s+(a|an|the)\s+/i,
-    description: "Identity reassignment: 'you are now a...'",
-  },
-  {
-    pattern: /forget\s+(everything|all|your)\s+(you|instructions|previous)/i,
-    description: "Memory wipe attempt: 'forget everything'",
-  },
-  {
-    pattern: /new\s+instructions?:\s*/i,
-    description: "System prompt injection: 'new instructions:'",
-  },
-  {
-    pattern: /system\s*prompt\s*[:=]/i,
-    description: "Direct system prompt override attempt",
-  },
-  {
-    pattern: /\[system\]|\[INST\]|<\|im_start\|>|<\|system\|>/i,
-    description: "Chat template injection: special tokens",
-  },
+	// System prompt override attempts
+	// WHY: The most basic prompt injection — trying to replace the system prompt
+	{
+		pattern:
+			/ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|context)/i,
+		description: "System prompt override: 'ignore previous instructions'",
+	},
+	{
+		pattern: /you\s+are\s+now\s+(a|an|the)\s+/i,
+		description: "Identity reassignment: 'you are now a...'",
+	},
+	{
+		pattern: /forget\s+(everything|all|your)\s+(you|instructions|previous)/i,
+		description: "Memory wipe attempt: 'forget everything'",
+	},
+	{
+		pattern: /new\s+instructions?:\s*/i,
+		description: "System prompt injection: 'new instructions:'",
+	},
+	{
+		pattern: /system\s*prompt\s*[:=]/i,
+		description: "Direct system prompt override attempt",
+	},
+	{
+		pattern: /\[system\]|\[INST\]|<\|im_start\|>|<\|system\|>/i,
+		description: "Chat template injection: special tokens",
+	},
 
-  // Jailbreak patterns
-  // WHY: These attempt to bypass safety guidelines by framing the request
-  {
-    pattern: /do\s+anything\s+now|DAN\s+mode|jailbreak/i,
-    description: "Jailbreak attempt: DAN/DANO pattern",
-  },
-  {
-    pattern: /pretend\s+(you|that)\s+(are|can|have)\s+no\s+(restrictions|limits|rules)/i,
-    description: "Jailbreak: restriction removal request",
-  },
+	// Jailbreak patterns
+	// WHY: These attempt to bypass safety guidelines by framing the request
+	{
+		pattern: /do\s+anything\s+now|DAN\s+mode|jailbreak/i,
+		description: "Jailbreak attempt: DAN/DANO pattern",
+	},
+	{
+		pattern:
+			/pretend\s+(you|that)\s+(are|can|have)\s+no\s+(restrictions|limits|rules)/i,
+		description: "Jailbreak: restriction removal request",
+	},
 
-  // Direct tool invocation
-  // WHY: The agent's tools should only be invoked through the routing system,
-  // never directly from user input. This prevents bypassing the whitelist.
-  {
-    pattern: /```\s*(bash|shell|sh|cmd|powershell)\b/i,
-    description: "Direct shell invocation via code block",
-  },
-  {
-    pattern: /exec\s*\(|child_process|spawn\s*\(|system\s*\(/i,
-    description: "Process execution attempt in prompt",
-  },
+	// Direct tool invocation
+	// WHY: The agent's tools should only be invoked through the routing system,
+	// never directly from user input. This prevents bypassing the whitelist.
+	{
+		pattern: /```\s*(bash|shell|sh|cmd|powershell)\b/i,
+		description: "Direct shell invocation via code block",
+	},
+	{
+		pattern: /exec\s*\(|child_process|spawn\s*\(|system\s*\(/i,
+		description: "Process execution attempt in prompt",
+	},
 
-  // Data exfiltration attempts
-  // WHY: Even without network access, an attacker might try to encode
-  // sensitive data in the response for manual exfiltration
-  {
-    pattern: /curl\s+|wget\s+|fetch\s*\(|http\.get/i,
-    description: "Network request attempt in prompt",
-  },
+	// Data exfiltration attempts
+	// WHY: Even without network access, an attacker might try to encode
+	// sensitive data in the response for manual exfiltration
+	{
+		pattern: /curl\s+|wget\s+|fetch\s*\(|http\.get/i,
+		description: "Network request attempt in prompt",
+	},
 ];
 
 /**
@@ -108,7 +110,8 @@ const INJECTION_PATTERNS: ReadonlyArray<{
  * Example: "Read the file" + [zero-width chars encoding "delete everything"]
  */
 // eslint-disable-next-line no-misleading-character-class -- intentional security scan for invisible and bidi Unicode controls
-const INVISIBLE_CHAR_PATTERN = /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u2000-\u200A\u202A-\u202E\u2060-\u2064\u2066-\u206F]/gu;
+const INVISIBLE_CHAR_PATTERN =
+	/[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u2000-\u200A\u202A-\u202E\u2060-\u2064\u2066-\u206F]/gu;
 
 /**
  * Base64 encoded instruction patterns.
@@ -116,7 +119,8 @@ const INVISIBLE_CHAR_PATTERN = /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00AD\u034
  * WHY: Attackers encode malicious instructions in base64 to bypass
  * pattern matching on the raw text. The model may decode and follow them.
  */
-const BASE64_INSTRUCTION_PATTERN = /(?:eval|decode|execute|run)\s*\(\s*(?:atob|Buffer\.from|base64)\s*\(/i;
+const BASE64_INSTRUCTION_PATTERN =
+	/(?:eval|decode|execute|run)\s*\(\s*(?:atob|Buffer\.from|base64)\s*\(/i;
 
 // ─── System Prompt Fragments (for output filtering) ───────
 
@@ -128,13 +132,13 @@ const BASE64_INSTRUCTION_PATTERN = /(?:eval|decode|execute|run)\s*\(\s*(?:atob|B
  * of responses as a defense-in-depth measure.
  */
 const SYSTEM_PROMPT_MARKERS: ReadonlyArray<string> = [
-  "you are miniclaw",
-  "your system prompt is",
-  "my instructions are",
-  "i was configured to",
-  "my system prompt",
-  "here are my instructions",
-  "my configuration includes",
+	"you are miniclaw",
+	"your system prompt is",
+	"my instructions are",
+	"i was configured to",
+	"my system prompt",
+	"here are my instructions",
+	"my configuration includes",
 ];
 
 // ─── Input Sanitization ───────────────────────────────────
@@ -150,89 +154,94 @@ const SYSTEM_PROMPT_MARKERS: ReadonlyArray<string> = [
  * for forensics.
  */
 export function sanitizePrompt(
-  raw: string,
-  sessionId: string
+	raw: string,
+	sessionId: string,
 ): {
-  readonly sanitized: string;
-  readonly events: ReadonlyArray<SecurityEvent>;
+	readonly sanitized: string;
+	readonly events: ReadonlyArray<SecurityEvent>;
 } {
-  const events: SecurityEvent[] = [];
-  let sanitized = raw;
+	const events: SecurityEvent[] = [];
+	let sanitized = raw;
 
-  // Step 1: Remove invisible characters
-  // WHY: These MUST be removed first because they can break other pattern matching
-  const invisibleMatches = [...sanitized.matchAll(INVISIBLE_CHAR_PATTERN)];
-  if (invisibleMatches.length > 0) {
-    events.push(
-      createSecurityEvent(
-        "prompt_injection_detected",
-        `Removed ${invisibleMatches.length} invisible/zero-width characters from prompt`,
-        sessionId
-      )
-    );
-    sanitized = sanitized.replace(INVISIBLE_CHAR_PATTERN, "");
-  }
+	// Step 1: Remove invisible characters
+	// WHY: These MUST be removed first because they can break other pattern matching
+	const invisibleMatches = [...sanitized.matchAll(INVISIBLE_CHAR_PATTERN)];
+	if (invisibleMatches.length > 0) {
+		events.push(
+			createSecurityEvent(
+				"prompt_injection_detected",
+				`Removed ${invisibleMatches.length} invisible/zero-width characters from prompt`,
+				sessionId,
+			),
+		);
+		sanitized = sanitized.replace(INVISIBLE_CHAR_PATTERN, "");
+	}
 
-  // Step 2: Check for base64-encoded instructions
-  // WHY: Must happen before injection pattern check because the base64 payload
-  // might decode to something that matches injection patterns
-  const base64Matches = [...sanitized.matchAll(new RegExp(BASE64_INSTRUCTION_PATTERN.source, "gi"))];
-  if (base64Matches.length > 0) {
-    events.push(
-      createSecurityEvent(
-        "prompt_injection_detected",
-        "Detected base64-encoded instruction execution attempt",
-        sessionId
-      )
-    );
-    // Replace the entire base64 execution call with a safe placeholder
-    sanitized = sanitized.replace(BASE64_INSTRUCTION_PATTERN, "[BLOCKED: encoded execution]");
-  }
+	// Step 2: Check for base64-encoded instructions
+	// WHY: Must happen before injection pattern check because the base64 payload
+	// might decode to something that matches injection patterns
+	const base64Matches = [
+		...sanitized.matchAll(new RegExp(BASE64_INSTRUCTION_PATTERN.source, "gi")),
+	];
+	if (base64Matches.length > 0) {
+		events.push(
+			createSecurityEvent(
+				"prompt_injection_detected",
+				"Detected base64-encoded instruction execution attempt",
+				sessionId,
+			),
+		);
+		// Replace the entire base64 execution call with a safe placeholder
+		sanitized = sanitized.replace(
+			BASE64_INSTRUCTION_PATTERN,
+			"[BLOCKED: encoded execution]",
+		);
+	}
 
-  // Step 3: Check for known injection patterns
-  // WHY: Each pattern is checked independently so we can log specific detections
-  // for the audit trail. A single "injection detected" message is not useful for forensics.
-  for (const { pattern, description } of INJECTION_PATTERNS) {
-    const matches = [...sanitized.matchAll(new RegExp(pattern.source, "gi"))];
-    if (matches.length > 0) {
-      events.push(
-        createSecurityEvent(
-          "prompt_injection_detected",
-          description,
-          sessionId
-        )
-      );
-      // Replace matched content with a visible block marker
-      // WHY visible marker: So the model sees "[BLOCKED]" instead of the injection,
-      // making it clear the content was removed rather than silently dropped
-      sanitized = sanitized.replace(
-        new RegExp(pattern.source, "gi"),
-        "[BLOCKED]"
-      );
-    }
-  }
+	// Step 3: Check for known injection patterns
+	// WHY: Each pattern is checked independently so we can log specific detections
+	// for the audit trail. A single "injection detected" message is not useful for forensics.
+	for (const { pattern, description } of INJECTION_PATTERNS) {
+		const matches = [...sanitized.matchAll(new RegExp(pattern.source, "gi"))];
+		if (matches.length > 0) {
+			events.push(
+				createSecurityEvent(
+					"prompt_injection_detected",
+					description,
+					sessionId,
+				),
+			);
+			// Replace matched content with a visible block marker
+			// WHY visible marker: So the model sees "[BLOCKED]" instead of the injection,
+			// making it clear the content was removed rather than silently dropped
+			sanitized = sanitized.replace(
+				new RegExp(pattern.source, "gi"),
+				"[BLOCKED]",
+			);
+		}
+	}
 
-  // Step 4: Trim excessive whitespace
-  // WHY: Large amounts of whitespace can be used to push instructions past
-  // context windows or hide content in scrollback
-  sanitized = sanitized.replace(/\s{10,}/g, " ");
+	// Step 4: Trim excessive whitespace
+	// WHY: Large amounts of whitespace can be used to push instructions past
+	// context windows or hide content in scrollback
+	sanitized = sanitized.replace(/\s{10,}/g, " ");
 
-  // Step 5: Enforce maximum prompt length
-  // WHY: Extremely long prompts can be used for resource exhaustion or to
-  // hide malicious content deep in the text where it's less likely to be caught
-  const MAX_PROMPT_LENGTH = 8192;
-  if (sanitized.length > MAX_PROMPT_LENGTH) {
-    events.push(
-      createSecurityEvent(
-        "prompt_injection_detected",
-        `Prompt truncated from ${sanitized.length} to ${MAX_PROMPT_LENGTH} characters`,
-        sessionId
-      )
-    );
-    sanitized = sanitized.slice(0, MAX_PROMPT_LENGTH);
-  }
+	// Step 5: Enforce maximum prompt length
+	// WHY: Extremely long prompts can be used for resource exhaustion or to
+	// hide malicious content deep in the text where it's less likely to be caught
+	const MAX_PROMPT_LENGTH = 8192;
+	if (sanitized.length > MAX_PROMPT_LENGTH) {
+		events.push(
+			createSecurityEvent(
+				"prompt_injection_detected",
+				`Prompt truncated from ${sanitized.length} to ${MAX_PROMPT_LENGTH} characters`,
+				sessionId,
+			),
+		);
+		sanitized = sanitized.slice(0, MAX_PROMPT_LENGTH);
+	}
 
-  return { sanitized, events };
+	return { sanitized, events };
 }
 
 // ─── Output Filtering ─────────────────────────────────────
@@ -246,57 +255,57 @@ export function sanitizePrompt(
  * is the system prompt itself saying "do not reveal instructions".
  */
 export function filterResponse(
-  response: string,
-  sessionId: string
+	response: string,
+	sessionId: string,
 ): {
-  readonly filtered: string;
-  readonly events: ReadonlyArray<SecurityEvent>;
+	readonly filtered: string;
+	readonly events: ReadonlyArray<SecurityEvent>;
 } {
-  const events: SecurityEvent[] = [];
-  let filtered = response;
+	const events: SecurityEvent[] = [];
+	let filtered = response;
 
-  // Check for system prompt leakage
-  // WHY case-insensitive: The model might rephrase in different cases
-  const lowerResponse = filtered.toLowerCase();
-  for (const marker of SYSTEM_PROMPT_MARKERS) {
-    if (lowerResponse.includes(marker)) {
-      events.push(
-        createSecurityEvent(
-          "response_filtered",
-          `System prompt leakage detected: response contained "${marker}"`,
-          sessionId
-        )
-      );
-      // Replace the entire sentence containing the marker
-      // WHY entire sentence: Partial redaction might leave enough context
-      // for the attacker to reconstruct the system prompt
-      const markerIndex = lowerResponse.indexOf(marker);
-      const sentenceStart = filtered.lastIndexOf(".", markerIndex) + 1;
-      const sentenceEnd = filtered.indexOf(".", markerIndex + marker.length);
-      const end = sentenceEnd === -1 ? filtered.length : sentenceEnd + 1;
-      filtered =
-        filtered.slice(0, sentenceStart) +
-        " [This content has been filtered for security reasons.] " +
-        filtered.slice(end);
-    }
-  }
+	// Check for system prompt leakage
+	// WHY case-insensitive: The model might rephrase in different cases
+	const lowerResponse = filtered.toLowerCase();
+	for (const marker of SYSTEM_PROMPT_MARKERS) {
+		if (lowerResponse.includes(marker)) {
+			events.push(
+				createSecurityEvent(
+					"response_filtered",
+					`System prompt leakage detected: response contained "${marker}"`,
+					sessionId,
+				),
+			);
+			// Replace the entire sentence containing the marker
+			// WHY entire sentence: Partial redaction might leave enough context
+			// for the attacker to reconstruct the system prompt
+			const markerIndex = lowerResponse.indexOf(marker);
+			const sentenceStart = filtered.lastIndexOf(".", markerIndex) + 1;
+			const sentenceEnd = filtered.indexOf(".", markerIndex + marker.length);
+			const end = sentenceEnd === -1 ? filtered.length : sentenceEnd + 1;
+			filtered =
+				filtered.slice(0, sentenceStart) +
+				" [This content has been filtered for security reasons.] " +
+				filtered.slice(end);
+		}
+	}
 
-  // Remove any stack traces that might leak internal paths
-  // WHY: Stack traces reveal the server's directory structure, Node.js version,
-  // dependency versions — all useful for crafting targeted exploits
-  filtered = filtered.replace(
-    /at\s+[\w.]+\s+\(\/[^)]+\)/g,
-    "[internal path redacted]"
-  );
+	// Remove any stack traces that might leak internal paths
+	// WHY: Stack traces reveal the server's directory structure, Node.js version,
+	// dependency versions — all useful for crafting targeted exploits
+	filtered = filtered.replace(
+		/at\s+[\w.]+\s+\(\/[^)]+\)/g,
+		"[internal path redacted]",
+	);
 
-  // Remove absolute paths outside sandbox
-  // WHY: Internal paths reveal server structure
-  filtered = filtered.replace(
-    /\/(?:usr|etc|var|home|root|tmp\/miniclaw-sandboxes)\/[\w/.+-]+/g,
-    "[path redacted]"
-  );
+	// Remove absolute paths outside sandbox
+	// WHY: Internal paths reveal server structure
+	filtered = filtered.replace(
+		/\/(?:usr|etc|var|home|root|tmp\/miniclaw-sandboxes)\/[\w/.+-]+/g,
+		"[path redacted]",
+	);
 
-  return { filtered, events };
+	return { filtered, events };
 }
 
 // ─── Prompt Routing ───────────────────────────────────────
@@ -318,76 +327,80 @@ export function filterResponse(
  * in a production implementation.
  */
 export async function routePrompt(
-  request: PromptRequest,
-  session: MiniClawSession
+	request: PromptRequest,
+	session: MiniClawSession,
 ): Promise<{
-  readonly response: PromptResponse;
-  readonly securityEvents: ReadonlyArray<SecurityEvent>;
+	readonly response: PromptResponse;
+	readonly securityEvents: ReadonlyArray<SecurityEvent>;
 }> {
-  const startTime = Date.now();
-  const allEvents: SecurityEvent[] = [];
+	const startTime = Date.now();
+	const allEvents: SecurityEvent[] = [];
 
-  // Step 1: Sanitize input
-  const { sanitized, events: sanitizeEvents } = sanitizePrompt(
-    request.prompt,
-    session.id
-  );
-  allEvents.push(...sanitizeEvents);
+	// Step 1: Sanitize input
+	const { sanitized, events: sanitizeEvents } = sanitizePrompt(
+		request.prompt,
+		session.id,
+	);
+	allEvents.push(...sanitizeEvents);
 
-  // Step 2: Check session timeout
-  // WHY: Enforce maximum session duration to prevent resource exhaustion
-  const sessionAge = Date.now() - new Date(session.createdAt).getTime();
-  if (sessionAge > session.maxDuration) {
-    allEvents.push(
-      createSecurityEvent("timeout", "Session has exceeded maximum duration", session.id)
-    );
-    return {
-      response: {
-        sessionId: session.id,
-        response: "Session has expired. Please create a new session.",
-        toolCalls: [],
-        duration: Date.now() - startTime,
-        tokenUsage: { input: 0, output: 0 },
-      },
-      securityEvents: allEvents,
-    };
-  }
+	// Step 2: Check session timeout
+	// WHY: Enforce maximum session duration to prevent resource exhaustion
+	const sessionAge = Date.now() - new Date(session.createdAt).getTime();
+	if (sessionAge > session.maxDuration) {
+		allEvents.push(
+			createSecurityEvent(
+				"timeout",
+				"Session has exceeded maximum duration",
+				session.id,
+			),
+		);
+		return {
+			response: {
+				sessionId: session.id,
+				response: "Session has expired. Please create a new session.",
+				toolCalls: [],
+				duration: Date.now() - startTime,
+				tokenUsage: { input: 0, output: 0 },
+			},
+			securityEvents: allEvents,
+		};
+	}
 
-  // Step 3: Process tool calls from the sanitized prompt
-  // In a production implementation, this is where the LLM would be called.
-  // The LLM's tool call requests would be validated here before execution.
-  // For now, we provide the routing infrastructure.
-  const toolCalls: ToolCallRecord[] = [];
+	// Step 3: Process tool calls from the sanitized prompt
+	// In a production implementation, this is where the LLM would be called.
+	// The LLM's tool call requests would be validated here before execution.
+	// For now, we provide the routing infrastructure.
+	const toolCalls: ToolCallRecord[] = [];
 
-  // Example: If the prompt contains a tool call request, validate and execute it
-  // This is a placeholder for the actual LLM integration
-  const processedResponse = await processPromptWithTools(
-    sanitized,
-    session,
-    toolCalls,
-    allEvents
-  );
+	// Example: If the prompt contains a tool call request, validate and execute it
+	// This is a placeholder for the actual LLM integration
+	const processedResponse = await processPromptWithTools(
+		sanitized,
+		session,
+		toolCalls,
+		allEvents,
+	);
 
-  // Step 4: Filter output
-  const { filtered, events: filterEvents } = filterResponse(
-    processedResponse,
-    session.id
-  );
-  allEvents.push(...filterEvents);
+	// Step 4: Filter output
+	const { filtered, events: filterEvents } = filterResponse(
+		processedResponse,
+		session.id,
+	);
+	allEvents.push(...filterEvents);
 
-  const duration = Date.now() - startTime;
+	const duration = Date.now() - startTime;
 
-  return {
-    response: {
-      sessionId: session.id,
-      response: filtered,
-      toolCalls,
-      duration,
-      // Token usage would come from the LLM response in production
-      tokenUsage: { input: sanitized.length, output: filtered.length },
-    },
-    securityEvents: allEvents,
-  };
+	return {
+		response: {
+			sessionId: session.id,
+			response: filtered,
+			toolCalls,
+			duration,
+			// Token usage would come from the LLM response in production
+			tokenUsage: { input: sanitized.length, output: filtered.length },
+		},
+		securityEvents: allEvents,
+	};
 }
 
 /**
@@ -402,64 +415,68 @@ export async function routePrompt(
  * security envelope in routePrompt.
  */
 async function processPromptWithTools(
-  sanitizedPrompt: string,
-  session: MiniClawSession,
-  _toolCalls: ToolCallRecord[],
-  events: SecurityEvent[]
+	sanitizedPrompt: string,
+	session: MiniClawSession,
+	_toolCalls: ToolCallRecord[],
+	events: SecurityEvent[],
 ): Promise<string> {
-  // In a future production backend, this would:
-  // 1. Send the sanitized prompt to the LLM
-  // 2. Receive tool call requests from the LLM
-  // 3. Validate each tool call against the whitelist
-  // 4. Execute approved tool calls within the sandbox
-  // 5. Return results to the LLM for final response generation
+	// In a future production backend, this would:
+	// 1. Send the sanitized prompt to the LLM
+	// 2. Receive tool call requests from the LLM
+	// 3. Validate each tool call against the whitelist
+	// 4. Execute approved tool calls within the sandbox
+	// 5. Return results to the LLM for final response generation
 
-  const toolNames = session.allowedTools.map((tool) => tool.name);
-  const blockedFragments = events.filter(
-    (event) => event.type === "prompt_injection_detected"
-  ).length;
+	const toolNames = session.allowedTools.map((tool) => tool.name);
+	const blockedFragments = events.filter(
+		(event) => event.type === "prompt_injection_detected",
+	).length;
 
-  const summaryLines = [
-    "MiniClaw fallback responder is active. No external LLM backend is configured in this runtime.",
-    `Session ${session.id} is sandboxed with ${toolNames.length} allowed tool${toolNames.length === 1 ? "" : "s"}: ${toolNames.join(", ") || "none"}.`,
-  ];
+	const summaryLines = [
+		"MiniClaw fallback responder is active. No external LLM backend is configured in this runtime.",
+		`Session ${session.id} is sandboxed with ${toolNames.length} allowed tool${toolNames.length === 1 ? "" : "s"}: ${toolNames.join(", ") || "none"}.`,
+	];
 
-  if (blockedFragments > 0) {
-    summaryLines.push(
-      `Security filters blocked ${blockedFragments} prompt fragment${blockedFragments === 1 ? "" : "s"} before routing.`
-    );
-  }
+	if (blockedFragments > 0) {
+		summaryLines.push(
+			`Security filters blocked ${blockedFragments} prompt fragment${blockedFragments === 1 ? "" : "s"} before routing.`,
+		);
+	}
 
-  const normalizedPrompt = sanitizedPrompt.trim().toLowerCase();
-  if (!normalizedPrompt) {
-    summaryLines.push(
-      "Send a prompt describing the file, directory, or policy question you want the sandboxed agent to inspect."
-    );
-    return summaryLines.join(" ");
-  }
+	const normalizedPrompt = sanitizedPrompt.trim().toLowerCase();
+	if (!normalizedPrompt) {
+		summaryLines.push(
+			"Send a prompt describing the file, directory, or policy question you want the sandboxed agent to inspect.",
+		);
+		return summaryLines.join(" ");
+	}
 
-  const asksAboutTools =
-    /\b(tool|tools|whitelist|allowed)\b/.test(normalizedPrompt);
-  const asksAboutSession =
-    /\b(session|sandbox|duration|timeout)\b/.test(normalizedPrompt);
+	const asksAboutTools = /\b(tool|tools|whitelist|allowed)\b/.test(
+		normalizedPrompt,
+	);
+	const asksAboutSession = /\b(session|sandbox|duration|timeout)\b/.test(
+		normalizedPrompt,
+	);
 
-  if (asksAboutTools) {
-    summaryLines.push(
-      `Tool whitelist: ${toolNames.map((tool) => `"${tool}"`).join(", ")}.`
-    );
-  }
+	if (asksAboutTools) {
+		summaryLines.push(
+			`Tool whitelist: ${toolNames.map((tool) => `"${tool}"`).join(", ")}.`,
+		);
+	}
 
-  if (asksAboutSession) {
-    const minutes = Math.max(1, Math.round(session.maxDuration / 60_000));
-    summaryLines.push(
-      `Session policy: sandbox-scoped filesystem access with a maximum duration of about ${minutes} minute${minutes === 1 ? "" : "s"}.`
-    );
-  }
+	if (asksAboutSession) {
+		const minutes = Math.max(1, Math.round(session.maxDuration / 60_000));
+		summaryLines.push(
+			`Session policy: sandbox-scoped filesystem access with a maximum duration of about ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+		);
+	}
 
-  summaryLines.push(`Sanitized prompt preview: "${sanitizedPrompt.slice(0, 240)}"`);
-  summaryLines.push(
-    "To turn this into a full agent, wire a backend model into processPromptWithTools() while keeping the existing sanitize/filter/tool-validation envelope intact."
-  );
+	summaryLines.push(
+		`Sanitized prompt preview: "${sanitizedPrompt.slice(0, 240)}"`,
+	);
+	summaryLines.push(
+		"To turn this into a full agent, wire a backend model into processPromptWithTools() while keeping the existing sanitize/filter/tool-validation envelope intact.",
+	);
 
-  return summaryLines.join(" ");
+	return summaryLines.join(" ");
 }

@@ -4,8 +4,8 @@ import type { Finding } from "../types.js";
  * Transform result after applying a fix to file content.
  */
 export interface TransformResult {
-  readonly content: string;
-  readonly applied: boolean;
+	readonly content: string;
+	readonly applied: boolean;
 }
 
 /**
@@ -15,25 +15,25 @@ export interface TransformResult {
  * with the `fix.after` value (typically `${SECRET_NAME}`).
  */
 export function replaceHardcodedSecret(
-  content: string,
-  finding: Finding
+	content: string,
+	finding: Finding,
 ): TransformResult {
-  if (!finding.fix) {
-    return { content, applied: false };
-  }
+	if (!finding.fix) {
+		return { content, applied: false };
+	}
 
-  const { before, after } = finding.fix;
+	const { before, after } = finding.fix;
 
-  if (!content.includes(before)) {
-    return { content, applied: false };
-  }
+	if (!content.includes(before)) {
+		return { content, applied: false };
+	}
 
-  // Replace only the first occurrence to be safe
-  const updatedContent = content.replace(before, after);
-  return {
-    content: updatedContent,
-    applied: updatedContent !== content,
-  };
+	// Replace only the first occurrence to be safe
+	const updatedContent = content.replace(before, after);
+	return {
+		content: updatedContent,
+		applied: updatedContent !== content,
+	};
 }
 
 /**
@@ -44,26 +44,26 @@ export function replaceHardcodedSecret(
  * text within the file content and replaces it with `fix.after`.
  */
 export function tightenWildcardPermission(
-  content: string,
-  finding: Finding
+	content: string,
+	finding: Finding,
 ): TransformResult {
-  if (!finding.fix) {
-    return { content, applied: false };
-  }
+	if (!finding.fix) {
+		return { content, applied: false };
+	}
 
-  const { before, after } = finding.fix;
+	const { before, after } = finding.fix;
 
-  if (!content.includes(before)) {
-    return { content, applied: false };
-  }
+	if (!content.includes(before)) {
+		return { content, applied: false };
+	}
 
-  // For permission tightening, the `before` is a single entry like `Bash(*)`
-  // and `after` is the scoped replacement like `Bash(git *), Bash(npm *)`
-  const updatedContent = content.replace(before, after);
-  return {
-    content: updatedContent,
-    applied: updatedContent !== content,
-  };
+	// For permission tightening, the `before` is a single entry like `Bash(*)`
+	// and `after` is the scoped replacement like `Bash(git *), Bash(npm *)`
+	const updatedContent = content.replace(before, after);
+	return {
+		content: updatedContent,
+		applied: updatedContent !== content,
+	};
 }
 
 /**
@@ -73,24 +73,24 @@ export function tightenWildcardPermission(
  * a specialized transform. Replaces `fix.before` with `fix.after`.
  */
 export function applyGenericTransform(
-  content: string,
-  finding: Finding
+	content: string,
+	finding: Finding,
 ): TransformResult {
-  if (!finding.fix) {
-    return { content, applied: false };
-  }
+	if (!finding.fix) {
+		return { content, applied: false };
+	}
 
-  const { before, after } = finding.fix;
+	const { before, after } = finding.fix;
 
-  if (!content.includes(before)) {
-    return { content, applied: false };
-  }
+	if (!content.includes(before)) {
+		return { content, applied: false };
+	}
 
-  const updatedContent = content.replace(before, after);
-  return {
-    content: updatedContent,
-    applied: updatedContent !== content,
-  };
+	const updatedContent = content.replace(before, after);
+	return {
+		content: updatedContent,
+		applied: updatedContent !== content,
+	};
 }
 
 /**
@@ -100,15 +100,15 @@ export function applyGenericTransform(
  * falling back to the generic transform.
  */
 export function applyTransform(
-  content: string,
-  finding: Finding
+	content: string,
+	finding: Finding,
 ): TransformResult {
-  switch (finding.category) {
-    case "secrets":
-      return replaceHardcodedSecret(content, finding);
-    case "permissions":
-      return tightenWildcardPermission(content, finding);
-    default:
-      return applyGenericTransform(content, finding);
-  }
+	switch (finding.category) {
+		case "secrets":
+			return replaceHardcodedSecret(content, finding);
+		case "permissions":
+			return tightenWildcardPermission(content, finding);
+		default:
+			return applyGenericTransform(content, finding);
+	}
 }

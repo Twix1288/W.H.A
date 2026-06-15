@@ -1,17 +1,17 @@
 export {
-  fingerprintFinding,
-  saveBaseline,
-  loadBaseline,
-  compareBaseline,
-  evaluateGate,
-  renderComparison,
-  renderGateResult,
+	compareBaseline,
+	evaluateGate,
+	fingerprintFinding,
+	loadBaseline,
+	renderComparison,
+	renderGateResult,
+	saveBaseline,
 } from "./compare.js";
-export { DEFAULT_GATE_CONFIG } from "./types.js";
 export type {
-  SerializedBaseline,
-  SerializedFinding,
-  BaselineComparison,
-  GateConfig,
-  GateResult,
+	BaselineComparison,
+	GateConfig,
+	GateResult,
+	SerializedBaseline,
+	SerializedFinding,
 } from "./types.js";
+export { DEFAULT_GATE_CONFIG } from "./types.js";

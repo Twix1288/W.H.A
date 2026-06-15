@@ -1,107 +1,118 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { resolveSettingsPath, RUNTIME_HOOK_MARKER } from "./install.js";
-import { RuntimePolicySchema } from "./types.js";
+import { RUNTIME_HOOK_MARKER, resolveSettingsPath } from "./install.js";
 import type { RuntimeStatusHealth, RuntimeStatusResult } from "./types.js";
+import { RuntimePolicySchema } from "./types.js";
 
 function defaultLogPath(targetPath: string): string {
-  return resolve(targetPath, ".wh-agent", "runtime.ndjson");
+	return resolve(targetPath, ".wh-agent", "runtime.ndjson");
 }
 
 function runtimePolicyPath(targetPath: string): string {
-  return join(targetPath, ".wh-agent", "runtime-policy.json");
+	return join(targetPath, ".wh-agent", "runtime-policy.json");
 }
 
 export function getRuntimeStatus(targetPath: string): RuntimeStatusResult {
-  const settingsPath = resolveSettingsPath(targetPath);
-  const settingsExists = existsSync(settingsPath);
-  const policyPath = runtimePolicyPath(targetPath);
-  const policyExists = existsSync(policyPath);
+	const settingsPath = resolveSettingsPath(targetPath);
+	const settingsExists = existsSync(settingsPath);
+	const policyPath = runtimePolicyPath(targetPath);
+	const policyExists = existsSync(policyPath);
 
-  let settingsValid = false;
-  let hookCount = 0;
+	let settingsValid = false;
+	let hookCount = 0;
 
-  if (settingsExists) {
-    try {
-      const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
-        throw new Error("settings.json must contain an object");
-      }
+	if (settingsExists) {
+		try {
+			const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			if (
+				parsed === null ||
+				Array.isArray(parsed) ||
+				typeof parsed !== "object"
+			) {
+				throw new Error("settings.json must contain an object");
+			}
 
-      const settings = parsed as {
-        hooks?: { PreToolUse?: Array<{ hook?: unknown }> };
-      };
-      const preToolUse = settings.hooks?.PreToolUse;
-      settingsValid = true;
-      if (Array.isArray(preToolUse)) {
-        hookCount = preToolUse.filter(
-          (entry) => typeof entry.hook === "string" && entry.hook.includes(RUNTIME_HOOK_MARKER)
-        ).length;
-      }
-    } catch {
-      settingsValid = false;
-    }
-  }
+			const settings = parsed as {
+				hooks?: { PreToolUse?: Array<{ hook?: unknown }> };
+			};
+			const preToolUse = settings.hooks?.PreToolUse;
+			settingsValid = true;
+			if (Array.isArray(preToolUse)) {
+				hookCount = preToolUse.filter(
+					(entry) =>
+						typeof entry.hook === "string" &&
+						entry.hook.includes(RUNTIME_HOOK_MARKER),
+				).length;
+			}
+		} catch {
+			settingsValid = false;
+		}
+	}
 
-  let policyValid = false;
-  let logPath = defaultLogPath(targetPath);
+	let policyValid = false;
+	let logPath = defaultLogPath(targetPath);
 
-  if (policyExists) {
-    try {
-      const parsed = JSON.parse(readFileSync(policyPath, "utf-8"));
-      const result = RuntimePolicySchema.safeParse(parsed);
-      if (result.success) {
-        policyValid = true;
-        const configuredLogPath = result.data.log?.path ?? ".wh-agent/runtime.ndjson";
-        logPath = resolve(targetPath, configuredLogPath);
-      }
-    } catch {
-      policyValid = false;
-    }
-  }
+	if (policyExists) {
+		try {
+			const parsed = JSON.parse(readFileSync(policyPath, "utf-8"));
+			const result = RuntimePolicySchema.safeParse(parsed);
+			if (result.success) {
+				policyValid = true;
+				const configuredLogPath =
+					result.data.log?.path ?? ".wh-agent/runtime.ndjson";
+				logPath = resolve(targetPath, configuredLogPath);
+			}
+		} catch {
+			policyValid = false;
+		}
+	}
 
-  const logExists = existsSync(logPath);
-  const hookInstalled = hookCount > 0;
+	const logExists = existsSync(logPath);
+	const hookInstalled = hookCount > 0;
 
-  let health: RuntimeStatusHealth;
-  let checkExitCode: number;
-  let message: string;
+	let health: RuntimeStatusHealth;
+	let checkExitCode: number;
+	let message: string;
 
-  if (settingsExists && !settingsValid) {
-    health = "invalid_settings";
-    checkExitCode = 2;
-    message = "settings.json exists but could not be parsed. Run `wh-agent runtime repair` to back it up and restore a valid runtime config.";
-  } else if (!hookInstalled) {
-    health = "not_installed";
-    checkExitCode = 1;
-    message = "W.H.Agent runtime hook is not installed. Run `wh-agent runtime install` to enable it.";
-  } else if (!policyExists) {
-    health = "missing_policy";
-    checkExitCode = 1;
-    message = "Runtime hook is installed, but runtime-policy.json is missing. Run `wh-agent runtime repair` to recreate it.";
-  } else if (!policyValid) {
-    health = "invalid_policy";
-    checkExitCode = 2;
-    message = "Runtime hook is installed, but runtime-policy.json is invalid. Run `wh-agent runtime repair` to replace it safely.";
-  } else {
-    health = "ready";
-    checkExitCode = 0;
-    message = "W.H.Agent runtime monitor is installed and ready.";
-  }
+	if (settingsExists && !settingsValid) {
+		health = "invalid_settings";
+		checkExitCode = 2;
+		message =
+			"settings.json exists but could not be parsed. Run `wh-agent runtime repair` to back it up and restore a valid runtime config.";
+	} else if (!hookInstalled) {
+		health = "not_installed";
+		checkExitCode = 1;
+		message =
+			"W.H.Agent runtime hook is not installed. Run `wh-agent runtime install` to enable it.";
+	} else if (!policyExists) {
+		health = "missing_policy";
+		checkExitCode = 1;
+		message =
+			"Runtime hook is installed, but runtime-policy.json is missing. Run `wh-agent runtime repair` to recreate it.";
+	} else if (!policyValid) {
+		health = "invalid_policy";
+		checkExitCode = 2;
+		message =
+			"Runtime hook is installed, but runtime-policy.json is invalid. Run `wh-agent runtime repair` to replace it safely.";
+	} else {
+		health = "ready";
+		checkExitCode = 0;
+		message = "W.H.Agent runtime monitor is installed and ready.";
+	}
 
-  return {
-    settingsPath,
-    settingsExists,
-    settingsValid,
-    hookInstalled,
-    hookCount,
-    policyPath,
-    policyExists,
-    policyValid,
-    logPath,
-    logExists,
-    health,
-    checkExitCode,
-    message,
-  };
+	return {
+		settingsPath,
+		settingsExists,
+		settingsValid,
+		hookInstalled,
+		hookCount,
+		policyPath,
+		policyExists,
+		policyValid,
+		logPath,
+		logExists,
+		health,
+		checkExitCode,
+		message,
+	};
 }

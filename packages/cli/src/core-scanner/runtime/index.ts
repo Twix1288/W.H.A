@@ -1,16 +1,16 @@
-export { loadPolicy, generateDefaultPolicy } from "./policy.js";
 export { evaluateToolCall, logEvalResult } from "./evaluator.js";
 export { installRuntime, repairRuntime, uninstallRuntime } from "./install.js";
+export { generateDefaultPolicy, loadPolicy } from "./policy.js";
 export { getRuntimeStatus } from "./status.js";
-export { RuntimePolicySchema } from "./types.js";
 export type {
-  RuntimePolicy,
-  ToolCall,
-  EvalDecision,
-  EvalResult,
-  RuntimeLogEntry,
-  InstallResult,
-  RuntimeRepairResult,
-  RuntimeStatusHealth,
-  RuntimeStatusResult,
+	EvalDecision,
+	EvalResult,
+	InstallResult,
+	RuntimeLogEntry,
+	RuntimePolicy,
+	RuntimeRepairResult,
+	RuntimeStatusHealth,
+	RuntimeStatusResult,
+	ToolCall,
 } from "./types.js";
+export { RuntimePolicySchema } from "./types.js";

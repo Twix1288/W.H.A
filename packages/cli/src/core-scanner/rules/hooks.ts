@@ -4,368 +4,403 @@ import type { ConfigFile, Finding, Rule } from "../types.js";
  * Patterns in hooks that could enable injection or information disclosure.
  */
 const INJECTION_PATTERNS: ReadonlyArray<{
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly description: string;
-  readonly severity: "critical" | "high" | "medium";
+	readonly name: string;
+	readonly pattern: RegExp;
+	readonly description: string;
+	readonly severity: "critical" | "high" | "medium";
 }> = [
-  {
-    name: "var-interpolation",
-    pattern: /\$\{(?:file|command|content|input|args?)\}/gi,
-    description:
-      "Hook uses variable interpolation that could be influenced by file content or command arguments. An attacker could craft filenames or content to inject commands.",
-    severity: "critical",
-  },
-  {
-    name: "shell-interpolation",
-    pattern: /\bsh\s+-c\s+["'].*\$\{/g,
-    description:
-      "Shell invocation with variable interpolation — classic command injection vector.",
-    severity: "critical",
-  },
-  {
-    name: "curl-interpolation",
-    pattern: /\bcurl\b.*\$\{/g,
-    description:
-      "HTTP request with variable interpolation — could be used for data exfiltration.",
-    severity: "high",
-  },
-  {
-    name: "wget-interpolation",
-    pattern: /\bwget\b.*\$\{/g,
-    description: "Download with variable interpolation — could fetch malicious payloads.",
-    severity: "high",
-  },
+	{
+		name: "var-interpolation",
+		pattern: /\$\{(?:file|command|content|input|args?)\}/gi,
+		description:
+			"Hook uses variable interpolation that could be influenced by file content or command arguments. An attacker could craft filenames or content to inject commands.",
+		severity: "critical",
+	},
+	{
+		name: "shell-interpolation",
+		pattern: /\bsh\s+-c\s+["'].*\$\{/g,
+		description:
+			"Shell invocation with variable interpolation — classic command injection vector.",
+		severity: "critical",
+	},
+	{
+		name: "curl-interpolation",
+		pattern: /\bcurl\b.*\$\{/g,
+		description:
+			"HTTP request with variable interpolation — could be used for data exfiltration.",
+		severity: "high",
+	},
+	{
+		name: "wget-interpolation",
+		pattern: /\bwget\b.*\$\{/g,
+		description:
+			"Download with variable interpolation — could fetch malicious payloads.",
+		severity: "high",
+	},
 ];
 
 /**
  * Hooks that send data to external services.
  */
 const EXFILTRATION_PATTERNS: ReadonlyArray<{
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly description: string;
+	readonly name: string;
+	readonly pattern: RegExp;
+	readonly description: string;
 }> = [
-  {
-    name: "curl-external",
-    pattern: /\bcurl\s+(-X\s+POST\s+)?https?:\/\//g,
-    description: "Hook sends data to external URL via curl",
-  },
-  {
-    name: "wget-external",
-    pattern: /\bwget\s+.*https?:\/\//g,
-    description: "Hook fetches from external URL via wget",
-  },
-  {
-    name: "netcat",
-    pattern: /\bnc\b|\bnetcat\b/g,
-    description: "Hook uses netcat — potential reverse shell or data exfiltration",
-  },
-  {
-    name: "sendmail",
-    pattern: /\bsendmail\b|\bmail\b.*-s/g,
-    description: "Hook sends email — potential data exfiltration",
-  },
+	{
+		name: "curl-external",
+		pattern: /\bcurl\s+(-X\s+POST\s+)?https?:\/\//g,
+		description: "Hook sends data to external URL via curl",
+	},
+	{
+		name: "wget-external",
+		pattern: /\bwget\s+.*https?:\/\//g,
+		description: "Hook fetches from external URL via wget",
+	},
+	{
+		name: "netcat",
+		pattern: /\bnc\b|\bnetcat\b/g,
+		description:
+			"Hook uses netcat — potential reverse shell or data exfiltration",
+	},
+	{
+		name: "sendmail",
+		pattern: /\bsendmail\b|\bmail\b.*-s/g,
+		description: "Hook sends email — potential data exfiltration",
+	},
 ];
 
 function findLineNumber(content: string, matchIndex: number): number {
-  return content.substring(0, matchIndex).split("\n").length;
+	return content.substring(0, matchIndex).split("\n").length;
 }
 
-function findAllMatches(content: string, pattern: RegExp): Array<RegExpMatchArray> {
-  return [...content.matchAll(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g"))];
+function findAllMatches(
+	content: string,
+	pattern: RegExp,
+): Array<RegExpMatchArray> {
+	return [
+		...content.matchAll(
+			new RegExp(
+				pattern.source,
+				pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+			),
+		),
+	];
 }
 
 interface HookSearchTarget {
-  readonly content: string;
-  readonly baseLine: number;
+	readonly content: string;
+	readonly baseLine: number;
 }
 
 interface HookMatch {
-  readonly match: RegExpMatchArray;
-  readonly line: number;
-  readonly content: string;
-  readonly commandContext: string;
+	readonly match: RegExpMatchArray;
+	readonly line: number;
+	readonly content: string;
+	readonly commandContext: string;
 }
 
 interface HookCodeLineMatch {
-  readonly line: number;
-  readonly content: string;
+	readonly line: number;
+	readonly content: string;
 }
 
 interface HookCodeContentMatch {
-  readonly line: number;
-  readonly content: string;
+	readonly line: number;
+	readonly content: string;
 }
 
 function isPluginHookManifest(file: ConfigFile): boolean {
-  return (
-    file.type === "settings-json" &&
-    /(?:^|[\\/])(?:\.claude[\\/])?hooks[\\/]hooks\.json$/i.test(file.path)
-  );
+	return (
+		file.type === "settings-json" &&
+		/(?:^|[\\/])(?:\.claude[\\/])?hooks[\\/]hooks\.json$/i.test(file.path)
+	);
 }
 
 function normalizeConfigPath(filePath: string): string {
-  return filePath.replace(/\\/g, "/");
+	return filePath.replace(/\\/g, "/");
 }
 
 function isProjectLocalSettingsFile(file: ConfigFile): boolean {
-  return /(?:^|\/)settings\.local\.json$/i.test(normalizeConfigPath(file.path));
+	return /(?:^|\/)settings\.local\.json$/i.test(normalizeConfigPath(file.path));
 }
 
 function isExactPermissionEntry(entry: string): boolean {
-  return !/[*`]|(?:\$\{)|(?:\$\()/.test(entry);
+	return !/[*`]|(?:\$\{)|(?:\$\()/.test(entry);
 }
 
 function isLocalOnlyScopedCommand(entry: string): boolean {
-  return !/\b(?:https?:\/\/|curl\b|wget\b|ssh\b|scp\b|nc\b|netcat\b|docker\b|kubectl\b)\b/i.test(
-    entry
-  );
+	return !/\b(?:https?:\/\/|curl\b|wget\b|ssh\b|scp\b|nc\b|netcat\b|docker\b|kubectl\b)\b/i.test(
+		entry,
+	);
 }
 
 function hasExactLocalOnlyAllowlist(content: string): boolean {
-  try {
-    const config = JSON.parse(content);
-    const allow = config?.permissions?.allow;
-    if (!Array.isArray(allow) || allow.length === 0) return false;
+	try {
+		const config = JSON.parse(content);
+		const allow = config?.permissions?.allow;
+		if (!Array.isArray(allow) || allow.length === 0) return false;
 
-    return allow.every(
-      (entry) =>
-        typeof entry === "string" && isExactPermissionEntry(entry) && isLocalOnlyScopedCommand(entry)
-    );
-  } catch {
-    return false;
-  }
+		return allow.every(
+			(entry) =>
+				typeof entry === "string" &&
+				isExactPermissionEntry(entry) &&
+				isLocalOnlyScopedCommand(entry),
+		);
+	} catch {
+		return false;
+	}
 }
 
 function stripSettingsPath(filePath: string): string | null {
-  const normalized = normalizeConfigPath(filePath);
-  if (/^\.claude\/settings(?:\.local)?\.json$/i.test(normalized)) return "";
-  if (/^settings(?:\.local)?\.json$/i.test(normalized)) return "";
+	const normalized = normalizeConfigPath(filePath);
+	if (/^\.claude\/settings(?:\.local)?\.json$/i.test(normalized)) return "";
+	if (/^settings(?:\.local)?\.json$/i.test(normalized)) return "";
 
-  const match = normalized.match(/^(.*?)(?:\/\.claude)?\/settings(?:\.local)?\.json$/i);
-  if (match) {
-    return match[1].replace(/\/$/, "");
-  }
+	const match = normalized.match(
+		/^(.*?)(?:\/\.claude)?\/settings(?:\.local)?\.json$/i,
+	);
+	if (match) {
+		return match[1].replace(/\/$/, "");
+	}
 
-  return null;
+	return null;
 }
 
-function getCompanionHookManifestPaths(file: ConfigFile): ReadonlyArray<string> {
-  const prefix = stripSettingsPath(file.path);
-  if (prefix === null) return [];
+function getCompanionHookManifestPaths(
+	file: ConfigFile,
+): ReadonlyArray<string> {
+	const prefix = stripSettingsPath(file.path);
+	if (prefix === null) return [];
 
-  const candidates = [
-    prefix ? `${prefix}/hooks/hooks.json` : "hooks/hooks.json",
-    prefix ? `${prefix}/.claude/hooks/hooks.json` : ".claude/hooks/hooks.json",
-  ];
+	const candidates = [
+		prefix ? `${prefix}/hooks/hooks.json` : "hooks/hooks.json",
+		prefix ? `${prefix}/.claude/hooks/hooks.json` : ".claude/hooks/hooks.json",
+	];
 
-  return [...new Set(candidates.map(normalizeConfigPath))];
+	return [...new Set(candidates.map(normalizeConfigPath))];
 }
 
 function hasPreToolUseHooksInConfig(content: string): boolean {
-  try {
-    const config = JSON.parse(content);
-    return Array.isArray(config?.hooks?.PreToolUse) && config.hooks.PreToolUse.length > 0;
-  } catch {
-    return false;
-  }
+	try {
+		const config = JSON.parse(content);
+		return (
+			Array.isArray(config?.hooks?.PreToolUse) &&
+			config.hooks.PreToolUse.length > 0
+		);
+	} catch {
+		return false;
+	}
 }
 
 function hasCompanionManifestPreToolUseHooks(
-  file: ConfigFile,
-  allFiles: ReadonlyArray<ConfigFile> | undefined
+	file: ConfigFile,
+	allFiles: ReadonlyArray<ConfigFile> | undefined,
 ): boolean {
-  if (!allFiles || allFiles.length === 0) return false;
+	if (!allFiles || allFiles.length === 0) return false;
 
-  const candidates = new Set(getCompanionHookManifestPaths(file));
-  if (candidates.size === 0) return false;
+	const candidates = new Set(getCompanionHookManifestPaths(file));
+	if (candidates.size === 0) return false;
 
-  return allFiles.some(
-    (other) =>
-      other !== file &&
-      other.type === "settings-json" &&
-      candidates.has(normalizeConfigPath(other.path)) &&
-      hasPreToolUseHooksInConfig(other.content)
-  );
+	return allFiles.some(
+		(other) =>
+			other !== file &&
+			other.type === "settings-json" &&
+			candidates.has(normalizeConfigPath(other.path)) &&
+			hasPreToolUseHooksInConfig(other.content),
+	);
 }
 
 function getJsonStringRanges(
-  content: string,
-  values: ReadonlyArray<string>
+	content: string,
+	values: ReadonlyArray<string>,
 ): ReadonlyArray<{ readonly start: number; readonly end: number }> {
-  const ranges: Array<{ readonly start: number; readonly end: number }> = [];
-  const searchOffsets = new Map<string, number>();
+	const ranges: Array<{ readonly start: number; readonly end: number }> = [];
+	const searchOffsets = new Map<string, number>();
 
-  for (const value of values) {
-    const escapedValue = JSON.stringify(value).slice(1, -1);
-    const startIndex = searchOffsets.get(escapedValue) ?? 0;
-    const index = content.indexOf(escapedValue, startIndex);
+	for (const value of values) {
+		const escapedValue = JSON.stringify(value).slice(1, -1);
+		const startIndex = searchOffsets.get(escapedValue) ?? 0;
+		const index = content.indexOf(escapedValue, startIndex);
 
-    if (index === -1) {
-      continue;
-    }
+		if (index === -1) {
+			continue;
+		}
 
-    ranges.push({ start: index, end: index + escapedValue.length });
-    searchOffsets.set(escapedValue, index + escapedValue.length);
-  }
+		ranges.push({ start: index, end: index + escapedValue.length });
+		searchOffsets.set(escapedValue, index + escapedValue.length);
+	}
 
-  return ranges;
+	return ranges;
 }
 
 function getPermissionDenyStringRanges(
-  file: ConfigFile
+	file: ConfigFile,
 ): ReadonlyArray<{ readonly start: number; readonly end: number }> {
-  if (file.type !== "settings-json") {
-    return [];
-  }
+	if (file.type !== "settings-json") {
+		return [];
+	}
 
-  try {
-    const config = JSON.parse(file.content);
-    const deny = config?.permissions?.deny;
+	try {
+		const config = JSON.parse(file.content);
+		const deny = config?.permissions?.deny;
 
-    if (!Array.isArray(deny)) {
-      return [];
-    }
+		if (!Array.isArray(deny)) {
+			return [];
+		}
 
-    return getJsonStringRanges(
-      file.content,
-      deny.filter((entry): entry is string => typeof entry === "string")
-    );
-  } catch {
-    return [];
-  }
+		return getJsonStringRanges(
+			file.content,
+			deny.filter((entry): entry is string => typeof entry === "string"),
+		);
+	} catch {
+		return [];
+	}
 }
 
 function isIndexInRanges(
-  index: number,
-  ranges: ReadonlyArray<{ readonly start: number; readonly end: number }>
+	index: number,
+	ranges: ReadonlyArray<{ readonly start: number; readonly end: number }>,
 ): boolean {
-  return ranges.some((range) => index >= range.start && index < range.end);
+	return ranges.some((range) => index >= range.start && index < range.end);
 }
 
 function extractHookCommands(entry: unknown): ReadonlyArray<string> {
-  const commands: string[] = [];
+	const commands: string[] = [];
 
-  if (!entry || typeof entry !== "object") {
-    return commands;
-  }
+	if (!entry || typeof entry !== "object") {
+		return commands;
+	}
 
-  const record = entry as {
-    hook?: unknown;
-    command?: unknown;
-    hooks?: unknown;
-  };
+	const record = entry as {
+		hook?: unknown;
+		command?: unknown;
+		hooks?: unknown;
+	};
 
-  if (typeof record.hook === "string" && record.hook.length > 0) {
-    commands.push(record.hook);
-  }
+	if (typeof record.hook === "string" && record.hook.length > 0) {
+		commands.push(record.hook);
+	}
 
-  if (typeof record.command === "string" && record.command.length > 0) {
-    commands.push(record.command);
-  }
+	if (typeof record.command === "string" && record.command.length > 0) {
+		commands.push(record.command);
+	}
 
-  if (Array.isArray(record.hooks)) {
-    for (const nestedHook of record.hooks) {
-      if (!nestedHook || typeof nestedHook !== "object") {
-        continue;
-      }
+	if (Array.isArray(record.hooks)) {
+		for (const nestedHook of record.hooks) {
+			if (!nestedHook || typeof nestedHook !== "object") {
+				continue;
+			}
 
-      const command = (nestedHook as { command?: unknown }).command;
-      if (typeof command === "string" && command.length > 0) {
-        commands.push(command);
-      }
-    }
-  }
+			const command = (nestedHook as { command?: unknown }).command;
+			if (typeof command === "string" && command.length > 0) {
+				commands.push(command);
+			}
+		}
+	}
 
-  return commands;
+	return commands;
 }
 
 function findJsonStringIndex(
-  content: string,
-  value: string,
-  searchOffsets: Map<string, number>,
+	content: string,
+	value: string,
+	searchOffsets: Map<string, number>,
 ): number {
-  const escapedValue = JSON.stringify(value).slice(1, -1);
-  const startIndex = searchOffsets.get(escapedValue) ?? 0;
-  const index = content.indexOf(escapedValue, startIndex);
+	const escapedValue = JSON.stringify(value).slice(1, -1);
+	const startIndex = searchOffsets.get(escapedValue) ?? 0;
+	const index = content.indexOf(escapedValue, startIndex);
 
-  if (index !== -1) {
-    searchOffsets.set(escapedValue, index + escapedValue.length);
-  }
+	if (index !== -1) {
+		searchOffsets.set(escapedValue, index + escapedValue.length);
+	}
 
-  return index;
+	return index;
 }
 
-function getHookSearchTargets(file: ConfigFile): ReadonlyArray<HookSearchTarget> {
-  if (file.type === "hook-script") {
-    return [{ content: file.content, baseLine: 1 }];
-  }
+function getHookSearchTargets(
+	file: ConfigFile,
+): ReadonlyArray<HookSearchTarget> {
+	if (file.type === "hook-script") {
+		return [{ content: file.content, baseLine: 1 }];
+	}
 
-  if (file.type !== "settings-json") {
-    return [];
-  }
+	if (file.type !== "settings-json") {
+		return [];
+	}
 
-  try {
-    const config = JSON.parse(file.content);
-    const hookGroups = config?.hooks;
+	try {
+		const config = JSON.parse(file.content);
+		const hookGroups = config?.hooks;
 
-    if (!hookGroups || typeof hookGroups !== "object") {
-      return [];
-    }
+		if (!hookGroups || typeof hookGroups !== "object") {
+			return [];
+		}
 
-    const targets: HookSearchTarget[] = [];
-    const searchOffsets = new Map<string, number>();
+		const targets: HookSearchTarget[] = [];
+		const searchOffsets = new Map<string, number>();
 
-    for (const group of Object.values(hookGroups)) {
-      if (!Array.isArray(group)) {
-        continue;
-      }
+		for (const group of Object.values(hookGroups)) {
+			if (!Array.isArray(group)) {
+				continue;
+			}
 
-      for (const entry of group) {
-        for (const command of extractHookCommands(entry)) {
-          const index = findJsonStringIndex(file.content, command, searchOffsets);
-          const baseLine = index === -1 ? 1 : findLineNumber(file.content, index);
-          targets.push({ content: command, baseLine });
-        }
-      }
-    }
+			for (const entry of group) {
+				for (const command of extractHookCommands(entry)) {
+					const index = findJsonStringIndex(
+						file.content,
+						command,
+						searchOffsets,
+					);
+					const baseLine =
+						index === -1 ? 1 : findLineNumber(file.content, index);
+					targets.push({ content: command, baseLine });
+				}
+			}
+		}
 
-    return targets;
-  } catch {
-    return [];
-  }
+		return targets;
+	} catch {
+		return [];
+	}
 }
 
-function getLineBounds(content: string, index: number): { start: number; end: number } {
-  const start = content.lastIndexOf("\n", index - 1) + 1;
-  const nextNewline = content.indexOf("\n", index);
-  return {
-    start,
-    end: nextNewline === -1 ? content.length : nextNewline,
-  };
+function getLineBounds(
+	content: string,
+	index: number,
+): { start: number; end: number } {
+	const start = content.lastIndexOf("\n", index - 1) + 1;
+	const nextNewline = content.indexOf("\n", index);
+	return {
+		start,
+		end: nextNewline === -1 ? content.length : nextNewline,
+	};
 }
 
 function getLineContentAtIndex(content: string, index: number): string {
-  const { start, end } = getLineBounds(content, index);
-  return content.slice(start, end);
+	const { start, end } = getLineBounds(content, index);
+	return content.slice(start, end);
 }
 
 function isCommentOnlyShellMatch(content: string, index: number): boolean {
-  const line = getLineContentAtIndex(content, index).trimStart();
-  return line.startsWith("#");
+	const line = getLineContentAtIndex(content, index).trimStart();
+	return line.startsWith("#");
 }
 
-function isCommentOnlyAutomationMatch(file: ConfigFile, content: string, index: number): boolean {
-  if (file.type === "settings-json") return false;
+function isCommentOnlyAutomationMatch(
+	file: ConfigFile,
+	content: string,
+	index: number,
+): boolean {
+	if (file.type === "settings-json") return false;
 
-  const line = getLineContentAtIndex(content, index).trimStart();
-  if (line.startsWith("#")) return true;
-  if (file.type === "hook-code") {
-    return /^(?:\/\/|\/\*|\*|\*\/)/.test(line);
-  }
+	const line = getLineContentAtIndex(content, index).trimStart();
+	if (line.startsWith("#")) return true;
+	if (file.type === "hook-code") {
+		return /^(?:\/\/|\/\*|\*|\*\/)/.test(line);
+	}
 
-  return false;
+	return false;
 }
 
 /**
@@ -380,69 +415,72 @@ function isCommentOnlyAutomationMatch(file: ConfigFile, content: string, index: 
  *   case "$tool" in *ssh-keygen*) ...
  */
 function isInsideTestPattern(content: string, matchIndex: number): boolean {
-  // Look backwards from matchIndex for enclosing quotes and a test/grep/case context
-  const prefix = content.slice(0, matchIndex);
+	// Look backwards from matchIndex for enclosing quotes and a test/grep/case context
+	const prefix = content.slice(0, matchIndex);
 
-  // Find the innermost enclosing single or double quote
-  let lastSingleQuote = -1;
-  let lastDoubleQuote = -1;
-  let inSingle = false;
-  let inDouble = false;
+	// Find the innermost enclosing single or double quote
+	let lastSingleQuote = -1;
+	let lastDoubleQuote = -1;
+	let inSingle = false;
+	let inDouble = false;
 
-  for (let i = 0; i < prefix.length; i++) {
-    const ch = prefix[i];
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      if (inSingle) lastSingleQuote = i;
-    } else if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      if (inDouble) lastDoubleQuote = i;
-    }
-  }
+	for (let i = 0; i < prefix.length; i++) {
+		const ch = prefix[i];
+		if (ch === "'" && !inDouble) {
+			inSingle = !inSingle;
+			if (inSingle) lastSingleQuote = i;
+		} else if (ch === '"' && !inSingle) {
+			inDouble = !inDouble;
+			if (inDouble) lastDoubleQuote = i;
+		}
+	}
 
-  // We are inside a quoted string — check what precedes the opening quote
-  const quoteStart = Math.max(lastSingleQuote, lastDoubleQuote);
-  if ((inSingle || inDouble) && quoteStart > 0) {
-    const beforeQuote = prefix.slice(0, quoteStart).trimEnd();
+	// We are inside a quoted string — check what precedes the opening quote
+	const quoteStart = Math.max(lastSingleQuote, lastDoubleQuote);
+	if ((inSingle || inDouble) && quoteStart > 0) {
+		const beforeQuote = prefix.slice(0, quoteStart).trimEnd();
 
-    // grep/egrep/fgrep pattern argument
-    if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s*$/i.test(beforeQuote)) {
-      return true;
-    }
+		// grep/egrep/fgrep pattern argument
+		if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s*$/i.test(beforeQuote)) {
+			return true;
+		}
 
-    // test/[[ comparisons:  [[ "$x" == *keyword* ]]  or  [ "$x" = "keyword" ]
-    if (/\[\[?\s+.*(?:==|=|!=|=~)\s*(?:\*?)?$/.test(beforeQuote)) {
-      return true;
-    }
+		// test/[[ comparisons:  [[ "$x" == *keyword* ]]  or  [ "$x" = "keyword" ]
+		if (/\[\[?\s+.*(?:==|=|!=|=~)\s*(?:\*?)?$/.test(beforeQuote)) {
+			return true;
+		}
 
-    // case pattern:  case ... in  or  *)  or  pattern)
-    if (/\bcase\b/.test(beforeQuote) || /\)\s*$/.test(beforeQuote) === false && /\|\s*$/.test(beforeQuote)) {
-      // More robust: check if we are inside a case block
-      if (/\bcase\s+/.test(content.slice(0, quoteStart))) {
-        return true;
-      }
-    }
-  }
+		// case pattern:  case ... in  or  *)  or  pattern)
+		if (
+			/\bcase\b/.test(beforeQuote) ||
+			(/\)\s*$/.test(beforeQuote) === false && /\|\s*$/.test(beforeQuote))
+		) {
+			// More robust: check if we are inside a case block
+			if (/\bcase\s+/.test(content.slice(0, quoteStart))) {
+				return true;
+			}
+		}
+	}
 
-  // Also catch unquoted glob patterns in case/[[ like:  *sudo*)
-  // Look for case-style pattern context
-  const lineStart = prefix.lastIndexOf("\n") + 1;
-  const linePrefix = prefix.slice(lineStart).trimStart();
+	// Also catch unquoted glob patterns in case/[[ like:  *sudo*)
+	// Look for case-style pattern context
+	const lineStart = prefix.lastIndexOf("\n") + 1;
+	const linePrefix = prefix.slice(lineStart).trimStart();
 
-  // case pattern:  *keyword*)  or  keyword)
-  if (/^\*?[a-zA-Z_-]+\*?\)/.test(linePrefix) || /^\|?\s*\*/.test(linePrefix)) {
-    // Check if a case block is active
-    if (/\bcase\s+/.test(content.slice(0, matchIndex))) {
-      return true;
-    }
-  }
+	// case pattern:  *keyword*)  or  keyword)
+	if (/^\*?[a-zA-Z_-]+\*?\)/.test(linePrefix) || /^\|?\s*\*/.test(linePrefix)) {
+		// Check if a case block is active
+		if (/\bcase\s+/.test(content.slice(0, matchIndex))) {
+			return true;
+		}
+	}
 
-  // grep without quotes:  grep sudo  or  grep -q sudo
-  if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s+$/.test(linePrefix)) {
-    return true;
-  }
+	// grep without quotes:  grep sudo  or  grep -q sudo
+	if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s+$/.test(linePrefix)) {
+		return true;
+	}
 
-  return false;
+	return false;
 }
 
 /**
@@ -452,42 +490,47 @@ function isInsideTestPattern(content: string, matchIndex: number): boolean {
  * `echo 'Blocked: sudo' >&2`.
  */
 function isInsideQuotedString(content: string, matchIndex: number): boolean {
-  const prefix = content.slice(0, matchIndex);
+	const prefix = content.slice(0, matchIndex);
 
-  let inSingle = false;
-  let inDouble = false;
+	let inSingle = false;
+	let inDouble = false;
 
-  for (let i = 0; i < prefix.length; i++) {
-    const ch = prefix[i];
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-    } else if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-    }
-  }
+	for (let i = 0; i < prefix.length; i++) {
+		const ch = prefix[i];
+		if (ch === "'" && !inDouble) {
+			inSingle = !inSingle;
+		} else if (ch === '"' && !inSingle) {
+			inDouble = !inDouble;
+		}
+	}
 
-  return inSingle || inDouble;
+	return inSingle || inDouble;
 }
 
 function isInsideRegexLiteral(line: string, relativeIndex: number): boolean {
-  const before = line.slice(0, relativeIndex);
-  const after = line.slice(relativeIndex);
+	const before = line.slice(0, relativeIndex);
+	const after = line.slice(relativeIndex);
 
-  return /(?:^|[=\s(:[,])\/[^/\n]*$/.test(before) && /^[^/\n]*\//.test(after);
+	return /(?:^|[=\s(:[,])\/[^/\n]*$/.test(before) && /^[^/\n]*\//.test(after);
 }
 
-function isRegexLikeAlternationLiteral(content: string, matchIndex: number): boolean {
-  const line = getLineContentAtIndex(content, matchIndex);
-  const { start } = getLineBounds(content, matchIndex);
-  const relativeIndex = matchIndex - start;
-  const beforeMatch = line.slice(0, relativeIndex);
-  const afterMatch = line.slice(relativeIndex);
-  const isPatternContainer = isInsideQuotedString(content, matchIndex) || isInsideRegexLiteral(line, relativeIndex);
+function isRegexLikeAlternationLiteral(
+	content: string,
+	matchIndex: number,
+): boolean {
+	const line = getLineContentAtIndex(content, matchIndex);
+	const { start } = getLineBounds(content, matchIndex);
+	const relativeIndex = matchIndex - start;
+	const beforeMatch = line.slice(0, relativeIndex);
+	const afterMatch = line.slice(relativeIndex);
+	const isPatternContainer =
+		isInsideQuotedString(content, matchIndex) ||
+		isInsideRegexLiteral(line, relativeIndex);
 
-  if (!isPatternContainer) return false;
-  if (!beforeMatch.includes("|") && !afterMatch.includes("|")) return false;
+	if (!isPatternContainer) return false;
+	if (!beforeMatch.includes("|") && !afterMatch.includes("|")) return false;
 
-  return /\b(?:credential|password|pattern|regex|secret|token)\b/i.test(line);
+	return /\b(?:credential|password|pattern|regex|secret|token)\b/i.test(line);
 }
 
 /**
@@ -501,2146 +544,2330 @@ function isRegexLikeAlternationLiteral(content: string, matchIndex: number): boo
  *   [[ "$tool" == *crontab* ]] && echo "Blocked" >&2 && exit 2
  */
 function isBlockingGuardCommand(content: string): boolean {
-  // Must contain exit 2 (Claude Code reject code)
-  return /\bexit\s+2\b/.test(content);
+	// Must contain exit 2 (Claude Code reject code)
+	return /\bexit\s+2\b/.test(content);
 }
 
-function findAllHookMatches(file: ConfigFile, pattern: RegExp): Array<HookMatch> {
-  const matches: HookMatch[] = [];
+function findAllHookMatches(
+	file: ConfigFile,
+	pattern: RegExp,
+): Array<HookMatch> {
+	const matches: HookMatch[] = [];
 
-  for (const target of getHookSearchTargets(file)) {
-    for (const match of findAllMatches(target.content, pattern)) {
-      if (file.type === "hook-script" && isCommentOnlyShellMatch(target.content, match.index ?? 0)) {
-        continue;
-      }
+	for (const target of getHookSearchTargets(file)) {
+		for (const match of findAllMatches(target.content, pattern)) {
+			if (
+				file.type === "hook-script" &&
+				isCommentOnlyShellMatch(target.content, match.index ?? 0)
+			) {
+				continue;
+			}
 
-      const matchIndex = match.index ?? 0;
+			const matchIndex = match.index ?? 0;
 
-      // Skip matches in blocking guard commands (PreToolUse hooks with exit 2).
-      // In a guard command, keywords appear either inside test patterns
-      // (grep -q 'sudo') or inside quoted error messages (echo 'Blocked: sudo').
-      // Both are defensive, not offensive.
-      if (isBlockingGuardCommand(target.content)) {
-        if (isInsideTestPattern(target.content, matchIndex) ||
-            isInsideQuotedString(target.content, matchIndex)) {
-          continue;
-        }
-      }
+			// Skip matches in blocking guard commands (PreToolUse hooks with exit 2).
+			// In a guard command, keywords appear either inside test patterns
+			// (grep -q 'sudo') or inside quoted error messages (echo 'Blocked: sudo').
+			// Both are defensive, not offensive.
+			if (isBlockingGuardCommand(target.content)) {
+				if (
+					isInsideTestPattern(target.content, matchIndex) ||
+					isInsideQuotedString(target.content, matchIndex)
+				) {
+					continue;
+				}
+			}
 
-      matches.push({
-        match,
-        line: target.baseLine + findLineNumber(target.content, matchIndex) - 1,
-        content: target.content,
-        commandContext: getCommandContext(target.content, matchIndex),
-      });
-    }
-  }
+			matches.push({
+				match,
+				line: target.baseLine + findLineNumber(target.content, matchIndex) - 1,
+				content: target.content,
+				commandContext: getCommandContext(target.content, matchIndex),
+			});
+		}
+	}
 
-  return matches;
+	return matches;
 }
 
 function getCommandContext(content: string, matchIndex: number): string {
-  const prefix = content.slice(0, matchIndex);
-  const separators: ReadonlyArray<{ token: string; width: number }> = [
-    { token: "&&", width: 2 },
-    { token: "||", width: 2 },
-    { token: ";", width: 1 },
-    { token: "\n", width: 1 },
-    { token: "|", width: 1 },
-  ];
+	const prefix = content.slice(0, matchIndex);
+	const separators: ReadonlyArray<{ token: string; width: number }> = [
+		{ token: "&&", width: 2 },
+		{ token: "||", width: 2 },
+		{ token: ";", width: 1 },
+		{ token: "\n", width: 1 },
+		{ token: "|", width: 1 },
+	];
 
-  let startIndex = 0;
-  for (const { token, width } of separators) {
-    const index = prefix.lastIndexOf(token);
-    if (index !== -1 && index + width > startIndex) {
-      startIndex = index + width;
-    }
-  }
+	let startIndex = 0;
+	for (const { token, width } of separators) {
+		const index = prefix.lastIndexOf(token);
+		if (index !== -1 && index + width > startIndex) {
+			startIndex = index + width;
+		}
+	}
 
-  return prefix.slice(startIndex).trim();
+	return prefix.slice(startIndex).trim();
 }
 
 function isBenignLoggingProbe(commandContext: string): boolean {
-  const normalized = commandContext.replace(/\s+/g, " ").trim().toLowerCase();
+	const normalized = commandContext.replace(/\s+/g, " ").trim().toLowerCase();
 
-  const benignProbePatterns: ReadonlyArray<RegExp> = [
-    /^(?:(?:el)?if\s+)?command\s+-v\b/,
-    /^(?:(?:el)?if\s+)?which\b/,
-    /^(?:(?:el)?if\s+)?type\b/,
-    /^(?:(?:el)?if\s+)?hash\b/,
-    /^(?:(?:el)?if\s+)?git\s+rev-parse\s+--git-dir\b/,
-    /^(?:(?:el)?if\s+)?(?:pnpm|npm)\s+list\b/,
-  ];
+	const benignProbePatterns: ReadonlyArray<RegExp> = [
+		/^(?:(?:el)?if\s+)?command\s+-v\b/,
+		/^(?:(?:el)?if\s+)?which\b/,
+		/^(?:(?:el)?if\s+)?type\b/,
+		/^(?:(?:el)?if\s+)?hash\b/,
+		/^(?:(?:el)?if\s+)?git\s+rev-parse\s+--git-dir\b/,
+		/^(?:(?:el)?if\s+)?(?:pnpm|npm)\s+list\b/,
+	];
 
-  return benignProbePatterns.some((pattern) => pattern.test(normalized));
+	return benignProbePatterns.some((pattern) => pattern.test(normalized));
 }
 
-function findHookCodeLineMatch(file: ConfigFile, patterns: ReadonlyArray<RegExp>): HookCodeLineMatch | null {
-  if (file.type !== "hook-code") return null;
+function findHookCodeLineMatch(
+	file: ConfigFile,
+	patterns: ReadonlyArray<RegExp>,
+): HookCodeLineMatch | null {
+	if (file.type !== "hook-code") return null;
 
-  const lines = file.content.split("\n");
+	const lines = file.content.split("\n");
 
-  for (const [index, lineContent] of lines.entries()) {
-    const trimmed = lineContent.trim();
-    if (trimmed.length === 0) continue;
-    if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(trimmed)) continue;
+	for (const [index, lineContent] of lines.entries()) {
+		const trimmed = lineContent.trim();
+		if (trimmed.length === 0) continue;
+		if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(trimmed)) continue;
 
-    for (const pattern of patterns) {
-      const regex = new RegExp(
-        pattern.source,
-        pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
-      );
-      if (regex.test(lineContent)) {
-        return {
-          line: index + 1,
-          content: trimmed,
-        };
-      }
-    }
-  }
+		for (const pattern of patterns) {
+			const regex = new RegExp(
+				pattern.source,
+				pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+			);
+			if (regex.test(lineContent)) {
+				return {
+					line: index + 1,
+					content: trimmed,
+				};
+			}
+		}
+	}
 
-  return null;
+	return null;
 }
 
 function findHookCodeContentMatch(
-  file: ConfigFile,
-  patterns: ReadonlyArray<RegExp>
+	file: ConfigFile,
+	patterns: ReadonlyArray<RegExp>,
 ): HookCodeContentMatch | null {
-  if (file.type !== "hook-code") return null;
+	if (file.type !== "hook-code") return null;
 
-  for (const pattern of patterns) {
-    const regex = new RegExp(
-      pattern.source,
-      pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
-    );
+	for (const pattern of patterns) {
+		const regex = new RegExp(
+			pattern.source,
+			pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+		);
 
-    const match = regex.exec(file.content);
-    if (!match || match.index == null) continue;
+		const match = regex.exec(file.content);
+		if (!match || match.index == null) continue;
 
-    const line = findLineNumber(file.content, match.index);
-    const lineContent = file.content.split("\n")[line - 1]?.trim() ?? match[0].trim();
-    if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(lineContent)) continue;
+		const line = findLineNumber(file.content, match.index);
+		const lineContent =
+			file.content.split("\n")[line - 1]?.trim() ?? match[0].trim();
+		if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(lineContent)) continue;
 
-    return {
-      line,
-      content: lineContent || match[0].trim(),
-    };
-  }
+		return {
+			line,
+			content: lineContent || match[0].trim(),
+		};
+	}
 
-  return null;
+	return null;
 }
 
 const HOOK_CODE_CONTEXT_OUTPUT_PATTERN = /\boutput\s*\(/g;
 
 const HOOK_CODE_TRANSCRIPT_ACCESS_PATTERNS: ReadonlyArray<RegExp> = [
-  /\.\s*transcript_path\b/g,
-  /\[['"]transcript_path['"]\]/g,
-  /\bprocess\.env\.CLAUDE_TRANSCRIPT_PATH\b/g,
-  /\bos\.environ(?:\.get)?\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
-  /\bos\.getenv\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
-  /\bENV\[\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\]/g,
+	/\.\s*transcript_path\b/g,
+	/\[['"]transcript_path['"]\]/g,
+	/\bprocess\.env\.CLAUDE_TRANSCRIPT_PATH\b/g,
+	/\bos\.environ(?:\.get)?\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
+	/\bos\.getenv\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
+	/\bENV\[\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\]/g,
 ];
 
 const HOOK_CODE_REMOTE_SHELL_PAYLOAD_PATTERNS: ReadonlyArray<RegExp> = [
-  /\b(?:spawnSync|spawn|execFileSync|execFile)\s*\([\s\S]{0,120}["'`](?:bash|sh|zsh)["'`][\s\S]{0,120}["'`]-l?c["'`][\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi,
-  /\bexecSync\s*\([\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi,
+	/\b(?:spawnSync|spawn|execFileSync|execFile)\s*\([\s\S]{0,120}["'`](?:bash|sh|zsh)["'`][\s\S]{0,120}["'`]-l?c["'`][\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi,
+	/\bexecSync\s*\([\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi,
 ];
 
 const AI_TOOL_PERSISTENCE_IOCS: ReadonlyArray<{
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly description: string;
+	readonly name: string;
+	readonly pattern: RegExp;
+	readonly description: string;
 }> = [
-  {
-    name: "tanstack-malicious-git-ref",
-    pattern:
-      /(?:@tanstack\/setup|github:tanstack\/router#79ac49eedf774dd4b0cfa308722bc463cfe5885c)/gi,
-    description:
-      "Matches the fictitious @tanstack/setup dependency or malicious git ref from the May 2026 TanStack/Mini Shai-Hulud campaign.",
-  },
-  {
-    name: "mini-shai-hulud-payload-filename",
-    pattern:
-      /\b(?:router_init\.js|tanstack_runner\.js|opensearch_init\.js|vite_setup\.mjs|execution\.js|shai-hulud-workflow\.ya?ml)\b/gi,
-    description:
-      "Matches payload and workflow filenames used by the May 2026 TanStack/Mini Shai-Hulud npm campaign and follow-on package waves.",
-  },
-  {
-    name: "tanstack-exfil-network",
-    pattern:
-      /\b(?:api\.masscan\.cloud|filev2\.getsession\.org|git-tanstack\.com|seed[123]\.getsession\.org|83\.142\.209\.194|169\.254\.169\.254|169\.254\.170\.2|127\.0\.0\.1:8200|vault\.svc\.cluster\.local:8200|litter\.catbox\.moe\/(?:h8nc9u\.js|7rrc6l\.mjs))\b/gi,
-    description:
-      "Matches exfiltration or second-stage URLs reported for the May 2026 TanStack/Mini Shai-Hulud campaign.",
-  },
-  {
-    name: "mini-shai-hulud-payload-hash",
-    pattern:
-      /(?:ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c|2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96|7c12d8619f2db233e3d965a9307093355f149d5babc458912757a5e88fec0f54|0c0e8730695e997b3a53d77483f28573392319ec023f8fd6d7282121cf7cf192)/gi,
-    description:
-      "Matches payload, package, and encryption-key hashes reported for the May 2026 Mini Shai-Hulud campaign.",
-  },
-  {
-    name: "ai-tool-persistence-payload",
-    pattern:
-      /(?:\.claude\/(?:router_runtime\.js|setup\.mjs)|\.(?:vscode|zed)\/setup\.mjs|\.github\/workflows\/codeql_analysis\.ya?ml)/gi,
-    description:
-      "Matches AI developer-tool persistence payload paths used to re-execute through Claude Code, VS Code, or Zed automation surfaces.",
-  },
-  {
-    name: "github-actions-secrets-serialization",
-    pattern: /\btoJSON\s*\(\s*secrets\s*\)/gi,
-    description:
-      "Matches GitHub Actions workflow code that serializes all repository secrets, a Mini Shai-Hulud workflow-exfiltration pattern.",
-  },
-  {
-    name: "mini-shai-hulud-deadman-daemon",
-    pattern:
-      /(?:\.config\/gh-token-monitor\/token|\b(?:gh-token-monitor|com\.user\.gh-token-monitor\.plist|gh-token-monitor\.service|gh-token-monitor\.sh)\b)/gi,
-    description:
-      "Matches dead-man switch persistence artifacts and token-store files associated with the May 2026 Mini Shai-Hulud campaign.",
-  },
-  {
-    name: "mini-shai-hulud-campaign-marker",
-    pattern:
-      /(?:Shai-Hulud:\s*Here We Go Again|A Mini Shai-Hulud has Appeared|IfYouRevokeThisTokenItWillWipeTheComputerOfTheOwner|PUSH UR T3MPRR|svksjrhjkcejg|dependabot\/github_actions\/format\/|claude@users\.noreply\.github\.com)/gi,
-    description:
-      "Matches repository descriptions or commit messages reported in Mini Shai-Hulud propagation and token-wiper flows.",
-  },
-  {
-    name: "mini-shai-hulud-python-payload",
-    pattern:
-      /(?:\/tmp\/transformers\.pyz|\btransformers\.pyz\b|tmp\.ts018051808\.lock|\bpgmonitor\.py\b|\bpgsql-monitor\.service\b|\bMISTRAL_INIT\b)/gi,
-    description:
-      "Matches Python/PyPI Mini Shai-Hulud payload artifacts reported for compromised Mistral and Guardrails package versions.",
-  },
+	{
+		name: "tanstack-malicious-git-ref",
+		pattern:
+			/(?:@tanstack\/setup|github:tanstack\/router#79ac49eedf774dd4b0cfa308722bc463cfe5885c)/gi,
+		description:
+			"Matches the fictitious @tanstack/setup dependency or malicious git ref from the May 2026 TanStack/Mini Shai-Hulud campaign.",
+	},
+	{
+		name: "mini-shai-hulud-payload-filename",
+		pattern:
+			/\b(?:router_init\.js|tanstack_runner\.js|opensearch_init\.js|vite_setup\.mjs|execution\.js|shai-hulud-workflow\.ya?ml)\b/gi,
+		description:
+			"Matches payload and workflow filenames used by the May 2026 TanStack/Mini Shai-Hulud npm campaign and follow-on package waves.",
+	},
+	{
+		name: "tanstack-exfil-network",
+		pattern:
+			/\b(?:api\.masscan\.cloud|filev2\.getsession\.org|git-tanstack\.com|seed[123]\.getsession\.org|83\.142\.209\.194|169\.254\.169\.254|169\.254\.170\.2|127\.0\.0\.1:8200|vault\.svc\.cluster\.local:8200|litter\.catbox\.moe\/(?:h8nc9u\.js|7rrc6l\.mjs))\b/gi,
+		description:
+			"Matches exfiltration or second-stage URLs reported for the May 2026 TanStack/Mini Shai-Hulud campaign.",
+	},
+	{
+		name: "mini-shai-hulud-payload-hash",
+		pattern:
+			/(?:ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c|2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96|7c12d8619f2db233e3d965a9307093355f149d5babc458912757a5e88fec0f54|0c0e8730695e997b3a53d77483f28573392319ec023f8fd6d7282121cf7cf192)/gi,
+		description:
+			"Matches payload, package, and encryption-key hashes reported for the May 2026 Mini Shai-Hulud campaign.",
+	},
+	{
+		name: "ai-tool-persistence-payload",
+		pattern:
+			/(?:\.claude\/(?:router_runtime\.js|setup\.mjs)|\.(?:vscode|zed)\/setup\.mjs|\.github\/workflows\/codeql_analysis\.ya?ml)/gi,
+		description:
+			"Matches AI developer-tool persistence payload paths used to re-execute through Claude Code, VS Code, or Zed automation surfaces.",
+	},
+	{
+		name: "github-actions-secrets-serialization",
+		pattern: /\btoJSON\s*\(\s*secrets\s*\)/gi,
+		description:
+			"Matches GitHub Actions workflow code that serializes all repository secrets, a Mini Shai-Hulud workflow-exfiltration pattern.",
+	},
+	{
+		name: "mini-shai-hulud-deadman-daemon",
+		pattern:
+			/(?:\.config\/gh-token-monitor\/token|\b(?:gh-token-monitor|com\.user\.gh-token-monitor\.plist|gh-token-monitor\.service|gh-token-monitor\.sh)\b)/gi,
+		description:
+			"Matches dead-man switch persistence artifacts and token-store files associated with the May 2026 Mini Shai-Hulud campaign.",
+	},
+	{
+		name: "mini-shai-hulud-campaign-marker",
+		pattern:
+			/(?:Shai-Hulud:\s*Here We Go Again|A Mini Shai-Hulud has Appeared|IfYouRevokeThisTokenItWillWipeTheComputerOfTheOwner|PUSH UR T3MPRR|svksjrhjkcejg|dependabot\/github_actions\/format\/|claude@users\.noreply\.github\.com)/gi,
+		description:
+			"Matches repository descriptions or commit messages reported in Mini Shai-Hulud propagation and token-wiper flows.",
+	},
+	{
+		name: "mini-shai-hulud-python-payload",
+		pattern:
+			/(?:\/tmp\/transformers\.pyz|\btransformers\.pyz\b|tmp\.ts018051808\.lock|\bpgmonitor\.py\b|\bpgsql-monitor\.service\b|\bMISTRAL_INIT\b)/gi,
+		description:
+			"Matches Python/PyPI Mini Shai-Hulud payload artifacts reported for compromised Mistral and Guardrails package versions.",
+	},
 ];
 
 export const hookRules: ReadonlyArray<Rule> = [
-  {
-    id: "hooks-ai-tool-persistence-ioc",
-    name: "AI Tool Persistence IOC",
-    description:
-      "Checks hook and editor automation configs for known AI developer-tool supply-chain persistence indicators",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script" && file.type !== "hook-code") {
-        return [];
-      }
-
-      const findings: Finding[] = [];
-      const defensiveDenyRanges = getPermissionDenyStringRanges(file);
-      const searchTargets = [
-        { content: file.content, source: "content" },
-        { content: normalizeConfigPath(file.path), source: "path" },
-      ] as const;
-
-      for (const ioc of AI_TOOL_PERSISTENCE_IOCS) {
-        for (const target of searchTargets) {
-          for (const match of findAllMatches(target.content, ioc.pattern)) {
-            const index = match.index ?? 0;
-            if (target.source === "content" && isCommentOnlyAutomationMatch(file, target.content, index)) {
-              continue;
-            }
-            if (target.source === "content" && isIndexInRanges(index, defensiveDenyRanges)) {
-              continue;
-            }
-
-            findings.push({
-              id: `hooks-ai-tool-persistence-ioc-${ioc.name}-${target.source}-${index}`,
-              severity: "critical",
-              category: "hooks",
-              title: "Known AI tool supply-chain persistence indicator",
-              description:
-                `${ioc.description} Treat this host or repository as potentially compromised until the hook/editor automation chain is removed and credentials are rotated.`,
-              file: file.path,
-              line: target.source === "content" ? findLineNumber(target.content, index) : undefined,
-              evidence: match[0],
-            });
-          }
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-hook-code-context-output",
-    name: "Hook Code Context Output",
-    description:
-      "Checks non-shell hook implementations for explicit output back into Claude context",
-    severity: "info",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      const match = findHookCodeLineMatch(file, [HOOK_CODE_CONTEXT_OUTPUT_PATTERN]);
-      if (!match) return [];
-      return [
-        {
-          id: `hooks-code-context-output-${match.line}`,
-          severity: "info",
-          category: "hooks",
-          title: "Hook code injects content into Claude context",
-          description:
-            "This non-shell hook implementation calls an output helper that writes content back into Claude context. That is often legitimate, but it should be reviewed because untrusted summaries or derived data can become prompt-injection surface.",
-          file: file.path,
-          line: match.line,
-          evidence: match.content,
-        },
-      ];
-    },
-  },
-  {
-    id: "hooks-hook-code-transcript-access",
-    name: "Hook Code Transcript Access",
-    description:
-      "Checks non-shell hook implementations for direct access to Claude transcript input",
-    severity: "info",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      const match = findHookCodeLineMatch(file, HOOK_CODE_TRANSCRIPT_ACCESS_PATTERNS);
-      if (!match) return [];
-
-      return [
-        {
-          id: `hooks-code-transcript-access-${match.line}`,
-          severity: "info",
-          category: "hooks",
-          title: "Hook code reads Claude transcript input",
-          description:
-            "This non-shell hook implementation reads transcript-derived input (`transcript_path` or `CLAUDE_TRANSCRIPT_PATH`). That is common for Stop and SessionEnd hooks, but it should be reviewed because downstream logic can process sensitive prompt and tool history.",
-          file: file.path,
-          line: match.line,
-          evidence: match.content,
-        },
-      ];
-    },
-  },
-  {
-    id: "hooks-hook-code-remote-shell-payload",
-    name: "Hook Code Remote Shell Payload",
-    description:
-      "Checks non-shell hook implementations for child-process execution that downloads and pipes remote shell payloads",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      const match = findHookCodeContentMatch(file, HOOK_CODE_REMOTE_SHELL_PAYLOAD_PATTERNS);
-      if (!match) return [];
-
-      return [
-        {
-          id: `hooks-code-remote-shell-payload-${match.line}`,
-          severity: "high",
-          category: "hooks",
-          title: "Hook code executes remote shell payload via child process",
-          description:
-            "This non-shell hook implementation shells out to a command interpreter and pipes a remote download into `bash`/`sh`. That hides dangerous shell behavior behind a wrapper language and can reintroduce prompt-injection, supply-chain, or remote-code-execution risk.",
-          file: file.path,
-          line: match.line,
-          evidence: match.content,
-        },
-      ];
-    },
-  },
-  {
-    id: "hooks-injection",
-    name: "Hook Command Injection",
-    description: "Checks hooks for command injection vulnerabilities via variable interpolation",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      for (const injPattern of INJECTION_PATTERNS) {
-        const matches = findAllHookMatches(file, injPattern.pattern);
-
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-injection-${match.index}`,
-            severity: "critical",
-            category: "injection",
-            title: "Potential command injection in hook",
-            description: injPattern.description,
-            file: file.path,
-            line,
-            evidence: match[0],
-            fix: {
-              description:
-                "Sanitize inputs before interpolation, or use a whitelist approach instead of shell interpolation",
-              before: match[0],
-              after: "# Use validated, sanitized input only",
-              auto: false,
-            },
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-exfiltration",
-    name: "Hook Data Exfiltration",
-    description: "Checks hooks for patterns that could exfiltrate data to external services",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      for (const exfilPattern of EXFILTRATION_PATTERNS) {
-        const matches = findAllHookMatches(file, exfilPattern.pattern);
-
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-exfiltration-${match.index}`,
-            severity: "high",
-            category: "exposure",
-            title: "Hook sends data to external service",
-            description: `${exfilPattern.description}. If a hook is compromised or misconfigured, it could exfiltrate code, secrets, or session data.`,
-            file: file.path,
-            line,
-            evidence: match[0],
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-no-error-handling",
-    name: "Hook Missing Error Handling",
-    description: "Checks if hooks suppress errors silently",
-    severity: "medium",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-      if (isPluginHookManifest(file)) return [];
-
-      const findings: Finding[] = [];
-
-      const silentFailPatterns = [
-        { pattern: /2>\/dev\/null/g, desc: "stderr silenced" },
-        { pattern: /\|\|\s*true\b/g, desc: "errors suppressed with || true" },
-        { pattern: /\|\|\s*:\s*(?:$|[)"'])/gm, desc: "errors suppressed with || :" },
-      ];
-
-      for (const { pattern, desc } of silentFailPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-silent-fail-${match.index}`,
-            severity: "medium",
-            category: "hooks",
-            title: `Hook silently suppresses errors: ${desc}`,
-            description: `Hook uses "${match[0]}" which suppresses errors. A failing security hook that silently passes could miss real vulnerabilities.`,
-            file: file.path,
-            line,
-            evidence: match[0],
-            fix: {
-              description: "Remove error suppression to surface failures",
-              before: match[0],
-              after: "# [REMOVED: error suppression]",
-              auto: true,
-            },
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-missing-pretooluse",
-    name: "No PreToolUse Security Hooks",
-    description: "Checks if there are PreToolUse hooks for security validation",
-    severity: "medium",
-    category: "misconfiguration",
-    check(file: ConfigFile, allFiles?: ReadonlyArray<ConfigFile>): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-      if (isPluginHookManifest(file)) return [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const preHooks = config?.hooks?.PreToolUse ?? [];
-
-        if (preHooks.length === 0) {
-          if (hasCompanionManifestPreToolUseHooks(file, allFiles)) {
-            return [];
-          }
-
-          const severity =
-            isProjectLocalSettingsFile(file) && hasExactLocalOnlyAllowlist(file.content)
-              ? "low"
-              : "medium";
-          const description =
-            severity === "low"
-              ? "No PreToolUse hooks are defined. This config is project-local and narrowly scoped to exact local commands, so the missing hook is still worth noting but is less urgent than broader runtime configs."
-              : "No PreToolUse hooks are defined. These hooks can catch dangerous operations before they run, providing an essential security layer.";
-
-          return [
-            {
-              id: "hooks-no-pretooluse",
-              severity,
-              category: "misconfiguration",
-              title: "No PreToolUse security hooks configured",
-              description,
-              file: file.path,
-              fix: {
-                description: "Add PreToolUse hooks for security-sensitive operations",
-                before: '"hooks": {}',
-                after:
-                  '"hooks": { "PreToolUse": [{ "matcher": "Bash && command matches \'rm -rf\'", "hook": "echo \'Blocked\' >&2 && exit 1" }] }',
-                auto: false,
-              },
-            },
-          ];
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return [];
-    },
-  },
-  {
-    id: "hooks-unthrottled-network",
-    name: "Hook Unthrottled Network Requests",
-    description: "Checks for PostToolUse hooks making HTTP requests on frequent tool calls without throttling",
-    severity: "medium",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-
-      const findings: Finding[] = [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const postHooks = config?.hooks?.PostToolUse ?? [];
-
-        const broadMatchers = ["Edit", "Write", "Read", "Bash", ""];
-        const networkPatterns = /\b(curl|wget|fetch|http|nc|netcat)\b/i;
-
-        for (const hook of postHooks) {
-          const hookConfig = hook as { matcher?: string };
-          const matcher = hookConfig.matcher ?? "";
-          const isBroadMatcher =
-            matcher === "" ||
-            broadMatchers.some((m) => m !== "" && matcher === m);
-
-          for (const command of extractHookCommands(hook)) {
-            if (isBroadMatcher && networkPatterns.test(command)) {
-              findings.push({
-                id: `hooks-unthrottled-network-${findings.length}`,
-                severity: "medium",
-                category: "hooks",
-                title: `PostToolUse hook makes network request on broad matcher "${matcher || "*"}"`,
-                description: `A PostToolUse hook fires on "${matcher || "every tool call"}" and runs a network command (${command.substring(0, 60)}...). Without throttling, this fires on every matching tool call — potentially hundreds per session — causing performance degradation and potential data exposure.`,
-                file: file.path,
-                evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
-                fix: {
-                  description: "Add rate limiting or narrow the matcher",
-                  before: `"matcher": "${matcher}"`,
-                  after: `"matcher": "Bash(npm publish)" or add throttle logic`,
-                  auto: false,
-                },
-              });
-            }
-          }
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-sensitive-file-access",
-    name: "Hook Accesses Sensitive Files",
-    description: "Checks for hooks that read or write to sensitive system files",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const sensitivePathPatterns = [
-        {
-          pattern: /\/etc\/(?:passwd|shadow|sudoers|hosts)/g,
-          desc: "system authentication/configuration file",
-        },
-        {
-          pattern: /~\/\.ssh\/|\/\.ssh\//g,
-          desc: "SSH directory (may contain private keys)",
-        },
-        {
-          pattern: /~\/\.aws\/|\/\.aws\//g,
-          desc: "AWS credentials directory",
-        },
-        {
-          pattern: /~\/\.gnupg\/|\/\.gnupg\//g,
-          desc: "GPG keyring directory",
-        },
-        {
-          pattern: /~\/\.env|\/\.env\b/g,
-          desc: "environment file (likely contains secrets)",
-        },
-        {
-          pattern: /\/etc\/ssl\/|\/etc\/pki\//g,
-          desc: "SSL/TLS certificate directory",
-        },
-      ];
-
-      for (const { pattern, desc } of sensitivePathPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-sensitive-file-${match.index}`,
-            severity: "high",
-            category: "exposure",
-            title: `Hook accesses sensitive path: ${match[0]}`,
-            description: `A hook references "${match[0]}" — ${desc}. Hooks should not access sensitive system files. This could expose credentials, keys, or system configuration.`,
-            file: file.path,
-            line,
-            evidence: match[0],
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-no-stop-hooks",
-    name: "No Stop Hooks for Session Verification",
-    description: "Checks if there are Stop hooks for end-of-session verification",
-    severity: "low",
-    category: "misconfiguration",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const hooks = config?.hooks ?? {};
-
-        // Only flag if hooks object exists but no Stop hooks
-        if (Object.keys(hooks).length > 0 && !hooks.Stop?.length) {
-          return [
-            {
-              id: "hooks-no-stop-hooks",
-              severity: "low",
-              category: "misconfiguration",
-              title: "No Stop hooks for session-end verification",
-              description:
-                "Hooks are configured but no Stop hooks exist. Stop hooks run when a session ends and are useful for final verification — checking for uncommitted secrets, ensuring console.log statements were removed, or auditing file changes.",
-              file: file.path,
-              fix: {
-                description: "Add a Stop hook for session-end checks",
-                before: '"hooks": { ... }',
-                after:
-                  '"hooks": { ..., "Stop": [{ "hook": "check-for-secrets.sh" }] }',
-                auto: false,
-              },
-            },
-          ];
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return [];
-    },
-  },
-  {
-    id: "hooks-session-start-download",
-    name: "Hook SessionStart Downloads Remote Content",
-    description: "Checks for SessionStart hooks that download or execute remote scripts",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-
-      const findings: Finding[] = [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const sessionHooks = config?.hooks?.SessionStart ?? [];
-
-        const remoteExecutionPatterns = [
-          {
-            pattern: /\b(curl|wget)\b.*\|\s*(sh|bash|zsh|node|python)/i,
-            desc: "Downloads and pipes to shell — classic remote code execution vector",
-            severity: "critical" as const,
-          },
-          {
-            pattern: /\b(curl|wget)\b.*https?:\/\//i,
-            desc: "Downloads remote content on every session start",
-            severity: "high" as const,
-          },
-          {
-            pattern: /\bgit\s+clone\b/i,
-            desc: "Clones a repository on session start — could pull malicious code",
-            severity: "medium" as const,
-          },
-        ];
-
-        for (const hook of sessionHooks) {
-          for (const command of extractHookCommands(hook)) {
-            for (const { pattern, desc, severity } of remoteExecutionPatterns) {
-              if (pattern.test(command)) {
-                findings.push({
-                  id: `hooks-session-start-download-${findings.length}`,
-                  severity,
-                  category: "hooks",
-                  title: `SessionStart hook downloads remote content`,
-                  description: `A SessionStart hook runs "${command.substring(0, 80)}". ${desc}. SessionStart hooks run automatically at the beginning of every session without user confirmation.`,
-                  file: file.path,
-                  evidence: command.substring(0, 100),
-                  fix: {
-                    description: "Remove remote downloads from SessionStart or use a local script",
-                    before: command.substring(0, 60),
-                    after: "# Use pre-installed local tools instead",
-                    auto: false,
-                  },
-                });
-                break;
-              }
-            }
-          }
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-background-process",
-    name: "Hook Spawns Background Process",
-    description: "Checks for hooks that spawn background processes which persist beyond the hook's execution",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const bgPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bnohup\b/g,
-          description: "nohup keeps a process running after the hook exits — potential persistence mechanism",
-        },
-        {
-          pattern: /\bdisown\b/g,
-          description: "disown detaches a process from the shell — hides background activity",
-        },
-        {
-          pattern: /&\s*(?:$|[;)]|&&)/gm,
-          description: "Background process via & — may run indefinitely after hook completes",
-        },
-        {
-          pattern: /\bscreen\s+-[dS]/g,
-          description: "screen session — creates persistent hidden shell sessions",
-        },
-        {
-          pattern: /\btmux\s+(?:new|send)/g,
-          description: "tmux session — creates persistent hidden shell sessions",
-        },
-      ];
-
-      for (const { pattern, description } of bgPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-bg-process-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook spawns background process: ${match[0].trim()}`,
-            description: `${description}. Background processes in hooks can be used for persistent backdoors or data exfiltration that outlives the session.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-env-exfiltration",
-    name: "Hook Env Var Exfiltration",
-    description: "Checks for hooks that access environment variables and send them to external services",
-    severity: "critical",
-    category: "exposure",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const envAccessPatterns = /\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|PASS|CRED|AUTH)\w*\}?/gi;
-      const envAccessRegex = new RegExp(envAccessPatterns.source, envAccessPatterns.flags);
-      const networkCheck = /\b(curl|wget|nc|netcat|sendmail|mail\s+-s)\b/i;
-
-      for (const { match, line, content } of findAllHookMatches(file, envAccessRegex)) {
-        // Check if there's a network command in the same hook command line.
-        const lineStart = content.lastIndexOf("\n", match.index ?? 0) + 1;
-        const lineEnd = content.indexOf("\n", (match.index ?? 0) + match[0].length);
-        const evidenceLine = content.substring(lineStart, lineEnd === -1 ? undefined : lineEnd);
-
-        if (networkCheck.test(evidenceLine)) {
-          findings.push({
-            id: `hooks-env-exfil-${match.index}`,
-            severity: "critical",
-            category: "exposure",
-            title: `Hook combines env var access with network call`,
-            description: `A hook accesses an environment variable (${match[0]}) and sends data over the network in the same command. This pattern can exfiltrate secrets from the environment to external services.`,
-            file: file.path,
-            line,
-            evidence: evidenceLine.trim().substring(0, 100),
-          });
-          break; // One finding per file for this pattern
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-chained-commands",
-    name: "Hook Chained Shell Commands",
-    description: "Checks for hooks that chain multiple commands, which may execute beyond the matcher's intended scope",
-    severity: "medium",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-      if (isPluginHookManifest(file)) return [];
-
-      const findings: Finding[] = [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const allHooks = [
-          ...(config?.hooks?.PreToolUse ?? []),
-          ...(config?.hooks?.PostToolUse ?? []),
-          ...(config?.hooks?.SessionStart ?? []),
-          ...(config?.hooks?.Stop ?? []),
-        ];
-
-        const chainPatterns = [
-          { pattern: /&&/, desc: "AND chain (&&)" },
-          { pattern: /;\s*[a-zA-Z]/, desc: "semicolon chain" },
-          { pattern: /\|\s*[a-zA-Z]/, desc: "pipe chain" },
-        ];
-
-        for (const hook of allHooks) {
-          for (const command of extractHookCommands(hook)) {
-            // Exempt blocking guard commands (if ... grep ... exit 2; fi)
-            // These are defensive PreToolUse hooks that use chaining to
-            // test-and-reject dangerous operations.
-            if (isBlockingGuardCommand(command)) {
-              continue;
-            }
-
-            // Only flag if there are 3+ chained commands (2 is common/normal)
-            let chainCount = 0;
-            for (const { pattern } of chainPatterns) {
-              const matches = [...command.matchAll(new RegExp(pattern.source, "g"))];
-              chainCount += matches.length;
-            }
-
-            if (chainCount >= 3) {
-              findings.push({
-                id: `hooks-chained-commands-${findings.length}`,
-                severity: "medium",
-                category: "hooks",
-                title: `Hook has ${chainCount + 1} chained commands`,
-                description: `A hook chains ${chainCount + 1} commands together: "${command.substring(0, 80)}...". Complex chained commands in hooks are harder to audit and may perform operations beyond the hook's stated purpose. Consider breaking into a dedicated script file.`,
-                file: file.path,
-                evidence: command.substring(0, 100),
-                fix: {
-                  description: "Move complex logic to a script file",
-                  before: command.substring(0, 50),
-                  after: '"hook": "./scripts/hook-check.sh"',
-                  auto: false,
-                },
-              });
-            }
-          }
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-expensive-unscoped",
-    name: "Hook Expensive Unscoped Command",
-    description: "Checks for PostToolUse hooks running expensive build/lint commands with broad matchers",
-    severity: "low",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json") return [];
-
-      const findings: Finding[] = [];
-
-      try {
-        const config = JSON.parse(file.content);
-        const postHooks = config?.hooks?.PostToolUse ?? [];
-
-        const expensiveCommands =
-          /\b(tsc|eslint|prettier|webpack|jest|vitest|mocha|esbuild|rollup|turbo)\b/;
-        const broadMatchers = ["Edit", "Write", ""];
-
-        for (const hook of postHooks) {
-          const hookConfig = hook as { matcher?: string };
-          const matcher = hookConfig.matcher ?? "";
-          const isBroadMatcher =
-            matcher === "" ||
-            broadMatchers.some((m) => m !== "" && matcher === m);
-
-          for (const command of extractHookCommands(hook)) {
-            const expensiveMatch = command.match(expensiveCommands);
-            if (isBroadMatcher && expensiveMatch) {
-              findings.push({
-                id: `hooks-expensive-unscoped-${findings.length}`,
-                severity: "low",
-                category: "hooks",
-                title: `PostToolUse runs "${expensiveMatch[0]}" on broad matcher "${matcher || "*"}"`,
-                description: `A PostToolUse hook runs "${expensiveMatch[0]}" on every "${matcher || "tool call"}" event. Build tools and linters can take seconds to run — firing on every edit wastes resources and slows down the agent. Scope the matcher to specific file types or add conditional checks.`,
-                file: file.path,
-                evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
-                fix: {
-                  description: "Scope the matcher to reduce unnecessary runs",
-                  before: `"matcher": "${matcher}"`,
-                  after: `"matcher": "Edit(*.ts)" or add file-extension check in the hook script`,
-                  auto: false,
-                },
-              });
-            }
-          }
-        }
-      } catch {
-        // JSON parse errors handled elsewhere
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-output-to-world-readable",
-    name: "Hook Writes to World-Readable Path",
-    description: "Checks for hooks that redirect output to world-readable directories like /tmp",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const worldReadablePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: />\s*\/tmp\//g,
-          description: "Redirects output to /tmp — readable by all users on the system",
-        },
-        {
-          pattern: /\btee\s+\/tmp\//g,
-          description: "Uses tee to write to /tmp — creates world-readable file",
-        },
-        {
-          pattern: />\s*\/var\/tmp\//g,
-          description: "Redirects output to /var/tmp — persistent and world-readable",
-        },
-        {
-          pattern: /\bmktemp\b/g,
-          description: "Creates temporary file — ensure secure permissions (mktemp is generally safe but verify cleanup)",
-        },
-      ];
-
-      for (const { pattern, description } of worldReadablePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          // mktemp is generally safe — only flag if combined with risky patterns
-          if (pattern.source.includes("mktemp")) continue;
-
-          findings.push({
-            id: `hooks-world-readable-${match.index}`,
-            severity: "high",
-            category: "exposure",
-            title: `Hook writes to world-readable path: ${match[0].trim()}`,
-            description: `${description}. Other users or processes on the system can read the output, which may contain secrets, code, or session data.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-source-from-env",
-    name: "Hook Sources Script from Environment Path",
-    description: "Checks for hooks that source scripts from environment variable paths",
-    severity: "high",
-    category: "injection",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const sourcePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bsource\s+\$\{?\w+\}?\//g,
-          description: "Sources a script from an environment variable path",
-        },
-        {
-          pattern: /\.\s+\$\{?\w+\}?\//g,
-          description: "Dot-sources a script from an environment variable path",
-        },
-        {
-          pattern: /\beval\s+\$\{?\w+/g,
-          description: "Evaluates content from an environment variable",
-        },
-      ];
-
-      for (const { pattern, description } of sourcePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-source-env-${match.index}`,
-            severity: "high",
-            category: "injection",
-            title: `Hook sources script from environment path: ${match[0].trim()}`,
-            description: `${description}. If the environment variable is attacker-controlled, this enables arbitrary code execution through the sourced script.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-file-deletion",
-    name: "Hook Deletes Files",
-    description: "Checks for hooks that delete files, which could destroy work or cover tracks",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const deletePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f?\b/g,
-          description: "Recursive file deletion (rm -rf) — can destroy entire directories",
-        },
-        {
-          pattern: /\brm\s+-[a-zA-Z]*f\b/g,
-          description: "Force file deletion (rm -f) — deletes without confirmation",
-        },
-        {
-          pattern: /\bshred\b/g,
-          description: "Secure file erasure (shred) — irrecoverable deletion used to cover tracks",
-        },
-        {
-          pattern: /\bunlink\b/g,
-          description: "File deletion via unlink",
-        },
-      ];
-
-      for (const { pattern, description } of deletePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-file-delete-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook deletes files: ${match[0].trim()}`,
-            description: `${description}. A hook that deletes files could destroy source code, logs, or evidence of compromise.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-cron-persistence",
-    name: "Hook Installs Cron Job",
-    description: "Checks for hooks that install cron jobs for persistent access",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const cronPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bcrontab\b/g,
-          description: "Modifies crontab — installs persistent scheduled tasks",
-        },
-        {
-          pattern: /\/etc\/cron/g,
-          description: "Writes to system cron directory — installs persistent scheduled tasks",
-        },
-        {
-          pattern: /\bat\s+-[a-z]/g,
-          description: "Schedules deferred command execution via at",
-        },
-        {
-          pattern: /\bsystemctl\s+(?:enable|start)/g,
-          description: "Enables/starts a systemd service — potential persistence mechanism",
-        },
-        {
-          pattern: /\blaunchctl\s+load/g,
-          description: "Loads a macOS launch agent — persistent background process",
-        },
-      ];
-
-      for (const { pattern, description } of cronPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-cron-persist-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook installs persistence mechanism: ${match[0].trim()}`,
-            description: `${description}. Hooks should not install persistence mechanisms. This could allow a compromised hook to maintain access even after the session ends.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-env-mutation",
-    name: "Hook Mutates Environment Variables",
-    description: "Checks for hooks that set or export environment variables, which can alter subsequent command behavior",
-    severity: "medium",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const envMutationPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-        readonly severity: "high" | "medium";
-      }> = [
-        {
-          pattern: /\bexport\s+PATH=/g,
-          description: "Modifies PATH — can redirect which binaries are executed",
-          severity: "high",
-        },
-        {
-          pattern: /\bexport\s+(?:LD_PRELOAD|LD_LIBRARY_PATH|DYLD_)=/gi,
-          description: "Modifies dynamic linker variables — can inject shared libraries",
-          severity: "high",
-        },
-        {
-          pattern: /\bexport\s+(?:NODE_OPTIONS|PYTHONPATH|RUBYLIB)=/gi,
-          description: "Modifies runtime import paths — can load malicious modules",
-          severity: "high",
-        },
-        {
-          pattern: /\bexport\s+(?:http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY)=/gi,
-          description: "Sets proxy variables — can redirect all network traffic through attacker-controlled proxy",
-          severity: "high",
-        },
-      ];
-
-      for (const { pattern, description, severity } of envMutationPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-env-mutation-${match.index}`,
-            severity,
-            category: "hooks",
-            title: `Hook mutates environment: ${match[0].trim()}`,
-            description: `${description}. Hooks that modify environment variables can silently alter the behavior of all subsequent commands in the session.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-git-config-modification",
-    name: "Hook Modifies Git Configuration",
-    description: "Checks for hooks that modify git config, which can alter commit authorship, disable signing, or change hooks",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const gitConfigPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bgit\s+config\s+--global/g,
-          description: "Modifies global git config — affects all repositories on the system",
-        },
-        {
-          pattern: /\bgit\s+config\s+(?:--system)/g,
-          description: "Modifies system-level git config — affects all users",
-        },
-        {
-          pattern: /\bgit\s+config\s+(?:.*\s+)?(?:user\.email|user\.name)/g,
-          description: "Changes git commit author identity — could attribute commits to someone else",
-        },
-        {
-          pattern: /\bgit\s+config\s+(?:.*\s+)?(?:commit\.gpgsign|tag\.gpgsign)\s+false/g,
-          description: "Disables GPG commit signing — weakens commit verification",
-        },
-        {
-          pattern: /\bgit\s+config\s+(?:.*\s+)?core\.hooksPath/g,
-          description: "Changes git hooks directory — could redirect to malicious hooks",
-        },
-      ];
-
-      for (const { pattern, description } of gitConfigPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-git-config-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook modifies git config: ${match[0].trim()}`,
-            description: `${description}. Hooks should not modify git configuration as this can undermine version control integrity.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-user-account-modification",
-    name: "Hook Creates or Modifies User Accounts",
-    description: "Checks for hooks that create, modify, or delete user accounts",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const userModPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\buseradd\b/g,
-          description: "Creates a new user account (useradd)",
-        },
-        {
-          pattern: /\badduser\b/g,
-          description: "Creates a new user account (adduser)",
-        },
-        {
-          pattern: /\busermod\b/g,
-          description: "Modifies an existing user account (usermod)",
-        },
-        {
-          pattern: /\buserdel\b/g,
-          description: "Deletes a user account (userdel)",
-        },
-        {
-          pattern: /\bpasswd\b/g,
-          description: "Changes a user password (passwd)",
-        },
-      ];
-
-      for (const { pattern, description } of userModPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line, content } of matches) {
-          if (isRegexLikeAlternationLiteral(content, match.index ?? 0)) {
-            continue;
-          }
-
-          findings.push({
-            id: `hooks-user-mod-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook modifies user accounts: ${match[0].trim()}`,
-            description: `${description}. Hooks should never create, modify, or delete user accounts. A compromised hook with this capability can create backdoor accounts for persistent access.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-privilege-escalation",
-    name: "Hook Uses Privilege Escalation",
-    description: "Checks for hooks that use sudo, su, or other privilege escalation commands",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const privEscPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bsudo\b/g,
-          description: "Runs commands as root via sudo",
-        },
-        {
-          pattern: /\bsu\s+-?\s*\w/g,
-          description: "Switches to another user via su",
-        },
-        {
-          pattern: /\bdoas\b/g,
-          description: "Runs commands as another user via doas (OpenBSD sudo alternative)",
-        },
-        {
-          pattern: /\bpkexec\b/g,
-          description: "Runs commands as another user via polkit (pkexec)",
-        },
-        {
-          pattern: /\brunas\b/gi,
-          description: "Runs commands as another user via runas (Windows)",
-        },
-      ];
-
-      for (const { pattern, description } of privEscPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-priv-esc-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook uses privilege escalation: ${match[0].trim()}`,
-            description: `${description}. Hooks should never escalate privileges. A compromised hook with root access can take over the entire system.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-network-listener",
-    name: "Hook Opens Network Listener",
-    description: "Checks for hooks that bind to network ports, which could create reverse shells or backdoors",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const listenerPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bnc\s+.*-l/g,
-          description: "Opens a netcat listener — classic reverse shell vector",
-        },
-        {
-          pattern: /\bsocat\b/g,
-          description: "Uses socat for bidirectional data transfer — can create tunnels and reverse shells",
-        },
-        {
-          pattern: /\bpython3?\s+.*-m\s+http\.server/g,
-          description: "Starts a Python HTTP server — exposes local files over the network",
-        },
-        {
-          pattern: /\bpython3?\s+.*SimpleHTTPServer/g,
-          description: "Starts a Python 2 HTTP server — exposes local files over the network",
-        },
-        {
-          pattern: /\bphp\s+-S\b/g,
-          description: "Starts a PHP built-in server — serves files and executes PHP code",
-        },
-      ];
-
-      for (const { pattern, description } of listenerPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-network-listener-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook opens network listener: ${match[0].trim()}`,
-            description: `${description}. Hooks should not open network listeners. This could create a backdoor accessible from the network.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-disk-wipe",
-    name: "Hook Uses Disk Wiping Commands",
-    description: "Checks for hooks that use destructive disk operations",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const wipePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bdd\s+if=\/dev\/(?:zero|urandom)/g,
-          description: "Overwrites disk with zeros/random data via dd",
-        },
-        {
-          pattern: /\bmkfs\b/g,
-          description: "Formats a filesystem — destroys all data on the target device",
-        },
-        {
-          pattern: /\bwipefs\b/g,
-          description: "Wipes filesystem signatures — makes data unrecoverable",
-        },
-      ];
-
-      for (const { pattern, description } of wipePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-disk-wipe-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook uses disk wiping command: ${match[0].trim()}`,
-            description: `${description}. Hooks should never perform destructive disk operations. This could permanently destroy data.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-shell-profile-modification",
-    name: "Hook Modifies Shell Profile",
-    description: "Checks for hooks that modify shell init files (.bashrc, .zshrc, .profile) for persistence",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const profilePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\.bashrc/g,
-          description: "Modifies .bashrc — commands here run on every new bash shell",
-        },
-        {
-          pattern: /\.zshrc/g,
-          description: "Modifies .zshrc — commands here run on every new zsh shell",
-        },
-        {
-          pattern: /\.bash_profile/g,
-          description: "Modifies .bash_profile — commands here run on every login shell",
-        },
-        {
-          pattern: /\.profile/g,
-          description: "Modifies .profile — commands here run on every login shell",
-        },
-        {
-          pattern: /\/etc\/environment/g,
-          description: "Modifies /etc/environment — affects all users on the system",
-        },
-      ];
-
-      for (const { pattern, description } of profilePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line, content } of matches) {
-          // Check if the context suggests writing/appending (not just reading)
-          const idx = match.index ?? 0;
-          const contextStart = Math.max(0, idx - 50);
-          const context = content.substring(contextStart, idx + match[0].length + 50);
-          const isWrite = />>|>|tee|echo\s+.*>|sed\s+-i|append/.test(context);
-
-          if (isWrite) {
-            findings.push({
-              id: `hooks-shell-profile-${match.index}`,
-              severity: "critical",
-              category: "hooks",
-              title: `Hook modifies shell profile: ${match[0].trim()}`,
-              description: `${description}. Writing to shell profile files is a classic persistence technique — malicious code injected here survives across reboots and terminal sessions.`,
-              file: file.path,
-              line,
-              evidence: context.trim().substring(0, 80),
-            });
-          }
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-logging-disabled",
-    name: "Hook Disables Logging or Audit Trail",
-    description: "Checks for hooks that clear logs or disable audit mechanisms",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-      const seenFindings = new Set<string>();
-
-      const logPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: />\s*\/dev\/null\s+2>&1|&>\s*\/dev\/null/g,
-          description: "Redirects all output to /dev/null — hides both stdout and stderr",
-        },
-        {
-          pattern: /\bhistory\s+-[cwd]/g,
-          description: "Clears or disables shell history — covers tracks",
-        },
-        {
-          pattern: /\bunset\s+HISTFILE/g,
-          description: "Unsets HISTFILE — prevents command history from being saved",
-        },
-        {
-          pattern: /\btruncate\s+.*\/var\/log/g,
-          description: "Truncates system log files — destroys audit trail",
-        },
-      ];
-
-      for (const { pattern, description } of logPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line, commandContext } of matches) {
-          if (match[0].includes("/dev/null") && isBenignLoggingProbe(commandContext)) {
-            continue;
-          }
-
-          const evidence = match[0].trim();
-          const dedupeKey = `${line}:${evidence}:${description}`;
-          if (seenFindings.has(dedupeKey)) {
-            continue;
-          }
-          seenFindings.add(dedupeKey);
-
-          findings.push({
-            id: `hooks-logging-disabled-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook disables logging: ${evidence}`,
-            description: `${description}. Disabling logging or clearing audit trails in hooks is a defense evasion technique that makes it harder to detect and investigate compromises.`,
-            file: file.path,
-            line,
-            evidence,
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-ssh-key-operations",
-    name: "Hook Manipulates SSH Keys",
-    description: "Checks for hooks that generate, copy, or modify SSH keys — enables lateral movement",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const sshKeyPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bssh-keygen\b/g,
-          description: "Generates SSH keys — could create unauthorized keys for persistent access",
-        },
-        {
-          pattern: /\bssh-copy-id\b/g,
-          description: "Copies SSH keys to remote hosts — enables passwordless lateral movement",
-        },
-        {
-          pattern: />>?\s*~\/\.ssh\/authorized_keys/g,
-          description: "Appends to authorized_keys — installs backdoor SSH access",
-        },
-      ];
-
-      for (const { pattern, description } of sshKeyPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-ssh-key-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook manipulates SSH keys: ${match[0].trim()}`,
-            description: `${description}. Hooks should not create or distribute SSH keys as this enables unauthorized remote access.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-background-process",
-    name: "Hook Runs Background Process",
-    description: "Checks for hooks that start persistent background processes that outlive the session",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const bgPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bnohup\b/g,
-          description: "Runs process immune to hangup signals — survives session end",
-        },
-        {
-          pattern: /\bdisown\b/g,
-          description: "Detaches process from shell — survives session end",
-        },
-        {
-          pattern: /\bscreen\s+-[dD]m/g,
-          description: "Starts detached screen session — hidden persistent process",
-        },
-        {
-          pattern: /\btmux\s+new-session\s+-d/g,
-          description: "Starts detached tmux session — hidden persistent process",
-        },
-      ];
-
-      for (const { pattern, description } of bgPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-bg-process-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook starts background process: ${match[0].trim()}`,
-            description: `${description}. Hooks that start persistent background processes can maintain execution even after the agent session ends — a common persistence technique.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-dns-exfiltration",
-    name: "Hook Uses DNS for Data Exfiltration",
-    description: "Checks for hooks that use DNS queries with variable interpolation to exfiltrate data",
-    severity: "critical",
-    category: "exfiltration",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const dnsPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bdig\s+.*\$\{?\w+/g,
-          description: "Uses dig with variable interpolation — DNS exfiltration encodes data in DNS queries",
-        },
-        {
-          pattern: /\bnslookup\s+.*\$\{?\w+/g,
-          description: "Uses nslookup with variable interpolation — DNS exfiltration vector",
-        },
-        {
-          pattern: /\bhost\s+.*\$\{?\w+/g,
-          description: "Uses host command with variable interpolation — DNS exfiltration vector",
-        },
-      ];
-
-      for (const { pattern, description } of dnsPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-dns-exfil-${match.index}`,
-            severity: "critical",
-            category: "exfiltration",
-            title: `Hook uses DNS for exfiltration: ${match[0].trim().substring(0, 60)}`,
-            description: `${description}. DNS queries bypass most firewalls and proxy filters, making this a common out-of-band exfiltration technique.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-firewall-modification",
-    name: "Hook Modifies Firewall Rules",
-    description: "Checks for hooks that modify iptables, ufw, or firewall rules",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const fwPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\biptables\b/g,
-          description: "Modifies iptables firewall rules — can open ports or disable filtering",
-        },
-        {
-          pattern: /\bufw\s+(?:allow|delete|disable)/g,
-          description: "Modifies UFW firewall — can open ports or disable the firewall entirely",
-        },
-        {
-          pattern: /\bfirewall-cmd\b/g,
-          description: "Modifies firewalld rules — can change network access policies",
-        },
-      ];
-
-      for (const { pattern, description } of fwPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-fw-modify-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook modifies firewall: ${match[0].trim()}`,
-            description: `${description}. Hooks should not modify firewall rules — this could expose the system to network attacks.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-global-package-install",
-    name: "Hook Installs Global Packages",
-    description: "Checks for hooks that install packages globally, which can modify system-wide binaries",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const installPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bnpm\s+install\s+-g\b|\bnpm\s+i\s+-g\b/g,
-          description: "Installs npm package globally — modifies system-wide PATH binaries",
-        },
-        {
-          pattern: /\bpip\s+install\s+(?:--user\s+)?(?!-r\b)/g,
-          description: "Installs Python package — may modify system Python packages",
-        },
-        {
-          pattern: /\bgem\s+install\b/g,
-          description: "Installs Ruby gem — modifies system Ruby packages",
-        },
-        {
-          pattern: /\bcargo\s+install\b/g,
-          description: "Installs Rust package globally via cargo",
-        },
-      ];
-
-      for (const { pattern, description } of installPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-global-install-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook installs packages: ${match[0].trim()}`,
-            description: `${description}. Hooks that install packages can introduce supply chain risks and modify the system's behavior for all future commands.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-container-escape",
-    name: "Hook Uses Container Escape Techniques",
-    description: "Checks for hooks that use Docker flags that enable container escape",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const containerEscapePatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /--privileged/g,
-          description: "Docker --privileged flag — container has full host access",
-        },
-        {
-          pattern: /--pid=host/g,
-          description: "Docker --pid=host — container can see/signal all host processes",
-        },
-        {
-          pattern: /--network=host/g,
-          description: "Docker --network=host — container shares host network stack",
-        },
-        {
-          pattern: /-v\s+\/:/g,
-          description: "Mounts host root filesystem into container — full filesystem access",
-        },
-      ];
-
-      for (const { pattern, description } of containerEscapePatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-container-escape-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook uses container escape technique: ${match[0].trim()}`,
-            description: `${description}. These Docker flags break container isolation and allow full host access from within the container.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-credential-access",
-    name: "Hook Accesses Credential Stores",
-    description: "Checks for hooks that read password files, keychains, or credential managers",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const credPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bsecurity\s+find-generic-password\b/g,
-          description: "Reads macOS Keychain passwords via security command",
-        },
-        {
-          pattern: /\bsecurity\s+find-internet-password\b/g,
-          description: "Reads macOS Keychain internet passwords",
-        },
-        {
-          pattern: /\bsecret-tool\s+lookup\b/g,
-          description: "Reads GNOME Keyring / Linux secret store",
-        },
-        {
-          pattern: /\bkeyctl\s+read\b/g,
-          description: "Reads Linux kernel keyring",
-        },
-        {
-          pattern: /\/etc\/shadow/g,
-          description: "Accesses /etc/shadow — contains password hashes",
-        },
-      ];
-
-      for (const { pattern, description } of credPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-cred-access-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook accesses credential store: ${match[0].trim()}`,
-            description: `${description}. Hooks should never access credential stores — this enables credential theft for lateral movement.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-reverse-shell",
-    name: "Hook Opens Reverse Shell",
-    description: "Checks for hooks that establish reverse shell connections back to an attacker",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const reverseShellPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bbash\s+-i\s+[>&]+.*\/dev\/tcp\//g,
-          description: "Bash reverse shell via /dev/tcp — connects back to attacker",
-        },
-        {
-          pattern: /\/dev\/tcp\/[0-9.]+\/\d+/g,
-          description: "Uses /dev/tcp for network connection — common reverse shell technique",
-        },
-        {
-          pattern: /\bpython3?\s+.*-c\s+.*socket.*connect/g,
-          description: "Python reverse shell via socket.connect",
-        },
-        {
-          pattern: /\bperl\s+.*-e\s+.*socket.*INET/g,
-          description: "Perl reverse shell via Socket::INET",
-        },
-        {
-          pattern: /\bmkfifo\b.*\bnc\b/g,
-          description: "Named pipe reverse shell using mkfifo and netcat",
-        },
-      ];
-
-      for (const { pattern, description } of reverseShellPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-reverse-shell-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook establishes reverse shell: ${match[0].trim().substring(0, 60)}`,
-            description: `${description}. Reverse shells give attackers interactive command execution on the target system.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim().substring(0, 80),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-clipboard-access",
-    name: "Hook Accesses System Clipboard",
-    description: "Checks for hooks that read or write the system clipboard, which can be used for data exfiltration",
-    severity: "high",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const clipboardPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bpbcopy\b/g,
-          description: "Uses macOS pbcopy to write to clipboard — can silently exfiltrate data",
-        },
-        {
-          pattern: /\bpbpaste\b/g,
-          description: "Uses macOS pbpaste to read clipboard — may capture sensitive copied content",
-        },
-        {
-          pattern: /\bxclip\b/g,
-          description: "Uses xclip to access X11 clipboard — can read or write clipboard data",
-        },
-        {
-          pattern: /\bxsel\b/g,
-          description: "Uses xsel to access X11 selection — can read or write clipboard data",
-        },
-        {
-          pattern: /\bwl-copy\b/g,
-          description: "Uses wl-copy to write to Wayland clipboard",
-        },
-        {
-          pattern: /\bwl-paste\b/g,
-          description: "Uses wl-paste to read from Wayland clipboard",
-        },
-      ];
-
-      for (const { pattern, description } of clipboardPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-clipboard-${match.index}`,
-            severity: "high",
-            category: "hooks",
-            title: `Hook accesses clipboard: ${match[0].trim()}`,
-            description: `${description}. Clipboard access in hooks can be used to steal passwords, tokens, and other sensitive data that users copy.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
-  {
-    id: "hooks-log-tampering",
-    name: "Hook Tampers with System Logs",
-    description: "Checks for hooks that delete, truncate, or modify system log files to cover tracks",
-    severity: "critical",
-    category: "hooks",
-    check(file: ConfigFile): ReadonlyArray<Finding> {
-      if (file.type !== "settings-json" && file.type !== "hook-script") return [];
-
-      const findings: Finding[] = [];
-
-      const logTamperPatterns: ReadonlyArray<{
-        readonly pattern: RegExp;
-        readonly description: string;
-      }> = [
-        {
-          pattern: /\bjournalctl\s+--vacuum/g,
-          description: "Purges systemd journal logs — destroys audit trail",
-        },
-        {
-          pattern: /\brm\s+(?:-[rf]+\s+)?\/var\/log\b/g,
-          description: "Deletes system log files — destroys audit evidence",
-        },
-        {
-          pattern: /\btruncate\s+.*\/var\/log\b/g,
-          description: "Truncates system log files — erases log contents",
-        },
-        {
-          pattern: />\s*\/var\/log\/(?:syslog|auth\.log|messages|secure)/g,
-          description: "Overwrites system log file with redirection — clears log contents",
-        },
-        {
-          pattern: /\bhistory\s+-c\b/g,
-          description: "Clears shell command history — covers tracks of executed commands",
-        },
-        {
-          pattern: /\bunset\s+HISTFILE\b/g,
-          description: "Disables shell history recording — prevents command audit trail",
-        },
-      ];
-
-      for (const { pattern, description } of logTamperPatterns) {
-        const matches = findAllHookMatches(file, pattern);
-        for (const { match, line } of matches) {
-          findings.push({
-            id: `hooks-log-tamper-${match.index}`,
-            severity: "critical",
-            category: "hooks",
-            title: `Hook tampers with logs: ${match[0].trim()}`,
-            description: `${description}. Log tampering is a strong indicator of malicious intent — attackers erase evidence of their actions.`,
-            file: file.path,
-            line,
-            evidence: match[0].trim(),
-          });
-        }
-      }
-
-      return findings;
-    },
-  },
+	{
+		id: "hooks-ai-tool-persistence-ioc",
+		name: "AI Tool Persistence IOC",
+		description:
+			"Checks hook and editor automation configs for known AI developer-tool supply-chain persistence indicators",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (
+				file.type !== "settings-json" &&
+				file.type !== "hook-script" &&
+				file.type !== "hook-code"
+			) {
+				return [];
+			}
+
+			const findings: Finding[] = [];
+			const defensiveDenyRanges = getPermissionDenyStringRanges(file);
+			const searchTargets = [
+				{ content: file.content, source: "content" },
+				{ content: normalizeConfigPath(file.path), source: "path" },
+			] as const;
+
+			for (const ioc of AI_TOOL_PERSISTENCE_IOCS) {
+				for (const target of searchTargets) {
+					for (const match of findAllMatches(target.content, ioc.pattern)) {
+						const index = match.index ?? 0;
+						if (
+							target.source === "content" &&
+							isCommentOnlyAutomationMatch(file, target.content, index)
+						) {
+							continue;
+						}
+						if (
+							target.source === "content" &&
+							isIndexInRanges(index, defensiveDenyRanges)
+						) {
+							continue;
+						}
+
+						findings.push({
+							id: `hooks-ai-tool-persistence-ioc-${ioc.name}-${target.source}-${index}`,
+							severity: "critical",
+							category: "hooks",
+							title: "Known AI tool supply-chain persistence indicator",
+							description: `${ioc.description} Treat this host or repository as potentially compromised until the hook/editor automation chain is removed and credentials are rotated.`,
+							file: file.path,
+							line:
+								target.source === "content"
+									? findLineNumber(target.content, index)
+									: undefined,
+							evidence: match[0],
+						});
+					}
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-hook-code-context-output",
+		name: "Hook Code Context Output",
+		description:
+			"Checks non-shell hook implementations for explicit output back into Claude context",
+		severity: "info",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			const match = findHookCodeLineMatch(file, [
+				HOOK_CODE_CONTEXT_OUTPUT_PATTERN,
+			]);
+			if (!match) return [];
+			return [
+				{
+					id: `hooks-code-context-output-${match.line}`,
+					severity: "info",
+					category: "hooks",
+					title: "Hook code injects content into Claude context",
+					description:
+						"This non-shell hook implementation calls an output helper that writes content back into Claude context. That is often legitimate, but it should be reviewed because untrusted summaries or derived data can become prompt-injection surface.",
+					file: file.path,
+					line: match.line,
+					evidence: match.content,
+				},
+			];
+		},
+	},
+	{
+		id: "hooks-hook-code-transcript-access",
+		name: "Hook Code Transcript Access",
+		description:
+			"Checks non-shell hook implementations for direct access to Claude transcript input",
+		severity: "info",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			const match = findHookCodeLineMatch(
+				file,
+				HOOK_CODE_TRANSCRIPT_ACCESS_PATTERNS,
+			);
+			if (!match) return [];
+
+			return [
+				{
+					id: `hooks-code-transcript-access-${match.line}`,
+					severity: "info",
+					category: "hooks",
+					title: "Hook code reads Claude transcript input",
+					description:
+						"This non-shell hook implementation reads transcript-derived input (`transcript_path` or `CLAUDE_TRANSCRIPT_PATH`). That is common for Stop and SessionEnd hooks, but it should be reviewed because downstream logic can process sensitive prompt and tool history.",
+					file: file.path,
+					line: match.line,
+					evidence: match.content,
+				},
+			];
+		},
+	},
+	{
+		id: "hooks-hook-code-remote-shell-payload",
+		name: "Hook Code Remote Shell Payload",
+		description:
+			"Checks non-shell hook implementations for child-process execution that downloads and pipes remote shell payloads",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			const match = findHookCodeContentMatch(
+				file,
+				HOOK_CODE_REMOTE_SHELL_PAYLOAD_PATTERNS,
+			);
+			if (!match) return [];
+
+			return [
+				{
+					id: `hooks-code-remote-shell-payload-${match.line}`,
+					severity: "high",
+					category: "hooks",
+					title: "Hook code executes remote shell payload via child process",
+					description:
+						"This non-shell hook implementation shells out to a command interpreter and pipes a remote download into `bash`/`sh`. That hides dangerous shell behavior behind a wrapper language and can reintroduce prompt-injection, supply-chain, or remote-code-execution risk.",
+					file: file.path,
+					line: match.line,
+					evidence: match.content,
+				},
+			];
+		},
+	},
+	{
+		id: "hooks-injection",
+		name: "Hook Command Injection",
+		description:
+			"Checks hooks for command injection vulnerabilities via variable interpolation",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			for (const injPattern of INJECTION_PATTERNS) {
+				const matches = findAllHookMatches(file, injPattern.pattern);
+
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-injection-${match.index}`,
+						severity: "critical",
+						category: "injection",
+						title: "Potential command injection in hook",
+						description: injPattern.description,
+						file: file.path,
+						line,
+						evidence: match[0],
+						fix: {
+							description:
+								"Sanitize inputs before interpolation, or use a whitelist approach instead of shell interpolation",
+							before: match[0],
+							after: "# Use validated, sanitized input only",
+							auto: false,
+						},
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-exfiltration",
+		name: "Hook Data Exfiltration",
+		description:
+			"Checks hooks for patterns that could exfiltrate data to external services",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			for (const exfilPattern of EXFILTRATION_PATTERNS) {
+				const matches = findAllHookMatches(file, exfilPattern.pattern);
+
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-exfiltration-${match.index}`,
+						severity: "high",
+						category: "exposure",
+						title: "Hook sends data to external service",
+						description: `${exfilPattern.description}. If a hook is compromised or misconfigured, it could exfiltrate code, secrets, or session data.`,
+						file: file.path,
+						line,
+						evidence: match[0],
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-no-error-handling",
+		name: "Hook Missing Error Handling",
+		description: "Checks if hooks suppress errors silently",
+		severity: "medium",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+			if (isPluginHookManifest(file)) return [];
+
+			const findings: Finding[] = [];
+
+			const silentFailPatterns = [
+				{ pattern: /2>\/dev\/null/g, desc: "stderr silenced" },
+				{ pattern: /\|\|\s*true\b/g, desc: "errors suppressed with || true" },
+				{
+					pattern: /\|\|\s*:\s*(?:$|[)"'])/gm,
+					desc: "errors suppressed with || :",
+				},
+			];
+
+			for (const { pattern, desc } of silentFailPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-silent-fail-${match.index}`,
+						severity: "medium",
+						category: "hooks",
+						title: `Hook silently suppresses errors: ${desc}`,
+						description: `Hook uses "${match[0]}" which suppresses errors. A failing security hook that silently passes could miss real vulnerabilities.`,
+						file: file.path,
+						line,
+						evidence: match[0],
+						fix: {
+							description: "Remove error suppression to surface failures",
+							before: match[0],
+							after: "# [REMOVED: error suppression]",
+							auto: true,
+						},
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-missing-pretooluse",
+		name: "No PreToolUse Security Hooks",
+		description: "Checks if there are PreToolUse hooks for security validation",
+		severity: "medium",
+		category: "misconfiguration",
+		check(
+			file: ConfigFile,
+			allFiles?: ReadonlyArray<ConfigFile>,
+		): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+			if (isPluginHookManifest(file)) return [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const preHooks = config?.hooks?.PreToolUse ?? [];
+
+				if (preHooks.length === 0) {
+					if (hasCompanionManifestPreToolUseHooks(file, allFiles)) {
+						return [];
+					}
+
+					const severity =
+						isProjectLocalSettingsFile(file) &&
+						hasExactLocalOnlyAllowlist(file.content)
+							? "low"
+							: "medium";
+					const description =
+						severity === "low"
+							? "No PreToolUse hooks are defined. This config is project-local and narrowly scoped to exact local commands, so the missing hook is still worth noting but is less urgent than broader runtime configs."
+							: "No PreToolUse hooks are defined. These hooks can catch dangerous operations before they run, providing an essential security layer.";
+
+					return [
+						{
+							id: "hooks-no-pretooluse",
+							severity,
+							category: "misconfiguration",
+							title: "No PreToolUse security hooks configured",
+							description,
+							file: file.path,
+							fix: {
+								description:
+									"Add PreToolUse hooks for security-sensitive operations",
+								before: '"hooks": {}',
+								after:
+									'"hooks": { "PreToolUse": [{ "matcher": "Bash && command matches \'rm -rf\'", "hook": "echo \'Blocked\' >&2 && exit 1" }] }',
+								auto: false,
+							},
+						},
+					];
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return [];
+		},
+	},
+	{
+		id: "hooks-unthrottled-network",
+		name: "Hook Unthrottled Network Requests",
+		description:
+			"Checks for PostToolUse hooks making HTTP requests on frequent tool calls without throttling",
+		severity: "medium",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+
+			const findings: Finding[] = [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const postHooks = config?.hooks?.PostToolUse ?? [];
+
+				const broadMatchers = ["Edit", "Write", "Read", "Bash", ""];
+				const networkPatterns = /\b(curl|wget|fetch|http|nc|netcat)\b/i;
+
+				for (const hook of postHooks) {
+					const hookConfig = hook as { matcher?: string };
+					const matcher = hookConfig.matcher ?? "";
+					const isBroadMatcher =
+						matcher === "" ||
+						broadMatchers.some((m) => m !== "" && matcher === m);
+
+					for (const command of extractHookCommands(hook)) {
+						if (isBroadMatcher && networkPatterns.test(command)) {
+							findings.push({
+								id: `hooks-unthrottled-network-${findings.length}`,
+								severity: "medium",
+								category: "hooks",
+								title: `PostToolUse hook makes network request on broad matcher "${matcher || "*"}"`,
+								description: `A PostToolUse hook fires on "${matcher || "every tool call"}" and runs a network command (${command.substring(0, 60)}...). Without throttling, this fires on every matching tool call — potentially hundreds per session — causing performance degradation and potential data exposure.`,
+								file: file.path,
+								evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
+								fix: {
+									description: "Add rate limiting or narrow the matcher",
+									before: `"matcher": "${matcher}"`,
+									after: `"matcher": "Bash(npm publish)" or add throttle logic`,
+									auto: false,
+								},
+							});
+						}
+					}
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-sensitive-file-access",
+		name: "Hook Accesses Sensitive Files",
+		description:
+			"Checks for hooks that read or write to sensitive system files",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const sensitivePathPatterns = [
+				{
+					pattern: /\/etc\/(?:passwd|shadow|sudoers|hosts)/g,
+					desc: "system authentication/configuration file",
+				},
+				{
+					pattern: /~\/\.ssh\/|\/\.ssh\//g,
+					desc: "SSH directory (may contain private keys)",
+				},
+				{
+					pattern: /~\/\.aws\/|\/\.aws\//g,
+					desc: "AWS credentials directory",
+				},
+				{
+					pattern: /~\/\.gnupg\/|\/\.gnupg\//g,
+					desc: "GPG keyring directory",
+				},
+				{
+					pattern: /~\/\.env|\/\.env\b/g,
+					desc: "environment file (likely contains secrets)",
+				},
+				{
+					pattern: /\/etc\/ssl\/|\/etc\/pki\//g,
+					desc: "SSL/TLS certificate directory",
+				},
+			];
+
+			for (const { pattern, desc } of sensitivePathPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-sensitive-file-${match.index}`,
+						severity: "high",
+						category: "exposure",
+						title: `Hook accesses sensitive path: ${match[0]}`,
+						description: `A hook references "${match[0]}" — ${desc}. Hooks should not access sensitive system files. This could expose credentials, keys, or system configuration.`,
+						file: file.path,
+						line,
+						evidence: match[0],
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-no-stop-hooks",
+		name: "No Stop Hooks for Session Verification",
+		description:
+			"Checks if there are Stop hooks for end-of-session verification",
+		severity: "low",
+		category: "misconfiguration",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const hooks = config?.hooks ?? {};
+
+				// Only flag if hooks object exists but no Stop hooks
+				if (Object.keys(hooks).length > 0 && !hooks.Stop?.length) {
+					return [
+						{
+							id: "hooks-no-stop-hooks",
+							severity: "low",
+							category: "misconfiguration",
+							title: "No Stop hooks for session-end verification",
+							description:
+								"Hooks are configured but no Stop hooks exist. Stop hooks run when a session ends and are useful for final verification — checking for uncommitted secrets, ensuring console.log statements were removed, or auditing file changes.",
+							file: file.path,
+							fix: {
+								description: "Add a Stop hook for session-end checks",
+								before: '"hooks": { ... }',
+								after:
+									'"hooks": { ..., "Stop": [{ "hook": "check-for-secrets.sh" }] }',
+								auto: false,
+							},
+						},
+					];
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return [];
+		},
+	},
+	{
+		id: "hooks-session-start-download",
+		name: "Hook SessionStart Downloads Remote Content",
+		description:
+			"Checks for SessionStart hooks that download or execute remote scripts",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+
+			const findings: Finding[] = [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const sessionHooks = config?.hooks?.SessionStart ?? [];
+
+				const remoteExecutionPatterns = [
+					{
+						pattern: /\b(curl|wget)\b.*\|\s*(sh|bash|zsh|node|python)/i,
+						desc: "Downloads and pipes to shell — classic remote code execution vector",
+						severity: "critical" as const,
+					},
+					{
+						pattern: /\b(curl|wget)\b.*https?:\/\//i,
+						desc: "Downloads remote content on every session start",
+						severity: "high" as const,
+					},
+					{
+						pattern: /\bgit\s+clone\b/i,
+						desc: "Clones a repository on session start — could pull malicious code",
+						severity: "medium" as const,
+					},
+				];
+
+				for (const hook of sessionHooks) {
+					for (const command of extractHookCommands(hook)) {
+						for (const { pattern, desc, severity } of remoteExecutionPatterns) {
+							if (pattern.test(command)) {
+								findings.push({
+									id: `hooks-session-start-download-${findings.length}`,
+									severity,
+									category: "hooks",
+									title: `SessionStart hook downloads remote content`,
+									description: `A SessionStart hook runs "${command.substring(0, 80)}". ${desc}. SessionStart hooks run automatically at the beginning of every session without user confirmation.`,
+									file: file.path,
+									evidence: command.substring(0, 100),
+									fix: {
+										description:
+											"Remove remote downloads from SessionStart or use a local script",
+										before: command.substring(0, 60),
+										after: "# Use pre-installed local tools instead",
+										auto: false,
+									},
+								});
+								break;
+							}
+						}
+					}
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-background-process",
+		name: "Hook Spawns Background Process",
+		description:
+			"Checks for hooks that spawn background processes which persist beyond the hook's execution",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const bgPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bnohup\b/g,
+					description:
+						"nohup keeps a process running after the hook exits — potential persistence mechanism",
+				},
+				{
+					pattern: /\bdisown\b/g,
+					description:
+						"disown detaches a process from the shell — hides background activity",
+				},
+				{
+					pattern: /&\s*(?:$|[;)]|&&)/gm,
+					description:
+						"Background process via & — may run indefinitely after hook completes",
+				},
+				{
+					pattern: /\bscreen\s+-[dS]/g,
+					description:
+						"screen session — creates persistent hidden shell sessions",
+				},
+				{
+					pattern: /\btmux\s+(?:new|send)/g,
+					description:
+						"tmux session — creates persistent hidden shell sessions",
+				},
+			];
+
+			for (const { pattern, description } of bgPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-bg-process-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook spawns background process: ${match[0].trim()}`,
+						description: `${description}. Background processes in hooks can be used for persistent backdoors or data exfiltration that outlives the session.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-env-exfiltration",
+		name: "Hook Env Var Exfiltration",
+		description:
+			"Checks for hooks that access environment variables and send them to external services",
+		severity: "critical",
+		category: "exposure",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const envAccessPatterns =
+				/\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|PASS|CRED|AUTH)\w*\}?/gi;
+			const envAccessRegex = new RegExp(
+				envAccessPatterns.source,
+				envAccessPatterns.flags,
+			);
+			const networkCheck = /\b(curl|wget|nc|netcat|sendmail|mail\s+-s)\b/i;
+
+			for (const { match, line, content } of findAllHookMatches(
+				file,
+				envAccessRegex,
+			)) {
+				// Check if there's a network command in the same hook command line.
+				const lineStart = content.lastIndexOf("\n", match.index ?? 0) + 1;
+				const lineEnd = content.indexOf(
+					"\n",
+					(match.index ?? 0) + match[0].length,
+				);
+				const evidenceLine = content.substring(
+					lineStart,
+					lineEnd === -1 ? undefined : lineEnd,
+				);
+
+				if (networkCheck.test(evidenceLine)) {
+					findings.push({
+						id: `hooks-env-exfil-${match.index}`,
+						severity: "critical",
+						category: "exposure",
+						title: `Hook combines env var access with network call`,
+						description: `A hook accesses an environment variable (${match[0]}) and sends data over the network in the same command. This pattern can exfiltrate secrets from the environment to external services.`,
+						file: file.path,
+						line,
+						evidence: evidenceLine.trim().substring(0, 100),
+					});
+					break; // One finding per file for this pattern
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-chained-commands",
+		name: "Hook Chained Shell Commands",
+		description:
+			"Checks for hooks that chain multiple commands, which may execute beyond the matcher's intended scope",
+		severity: "medium",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+			if (isPluginHookManifest(file)) return [];
+
+			const findings: Finding[] = [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const allHooks = [
+					...(config?.hooks?.PreToolUse ?? []),
+					...(config?.hooks?.PostToolUse ?? []),
+					...(config?.hooks?.SessionStart ?? []),
+					...(config?.hooks?.Stop ?? []),
+				];
+
+				const chainPatterns = [
+					{ pattern: /&&/, desc: "AND chain (&&)" },
+					{ pattern: /;\s*[a-zA-Z]/, desc: "semicolon chain" },
+					{ pattern: /\|\s*[a-zA-Z]/, desc: "pipe chain" },
+				];
+
+				for (const hook of allHooks) {
+					for (const command of extractHookCommands(hook)) {
+						// Exempt blocking guard commands (if ... grep ... exit 2; fi)
+						// These are defensive PreToolUse hooks that use chaining to
+						// test-and-reject dangerous operations.
+						if (isBlockingGuardCommand(command)) {
+							continue;
+						}
+
+						// Only flag if there are 3+ chained commands (2 is common/normal)
+						let chainCount = 0;
+						for (const { pattern } of chainPatterns) {
+							const matches = [
+								...command.matchAll(new RegExp(pattern.source, "g")),
+							];
+							chainCount += matches.length;
+						}
+
+						if (chainCount >= 3) {
+							findings.push({
+								id: `hooks-chained-commands-${findings.length}`,
+								severity: "medium",
+								category: "hooks",
+								title: `Hook has ${chainCount + 1} chained commands`,
+								description: `A hook chains ${chainCount + 1} commands together: "${command.substring(0, 80)}...". Complex chained commands in hooks are harder to audit and may perform operations beyond the hook's stated purpose. Consider breaking into a dedicated script file.`,
+								file: file.path,
+								evidence: command.substring(0, 100),
+								fix: {
+									description: "Move complex logic to a script file",
+									before: command.substring(0, 50),
+									after: '"hook": "./scripts/hook-check.sh"',
+									auto: false,
+								},
+							});
+						}
+					}
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-expensive-unscoped",
+		name: "Hook Expensive Unscoped Command",
+		description:
+			"Checks for PostToolUse hooks running expensive build/lint commands with broad matchers",
+		severity: "low",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json") return [];
+
+			const findings: Finding[] = [];
+
+			try {
+				const config = JSON.parse(file.content);
+				const postHooks = config?.hooks?.PostToolUse ?? [];
+
+				const expensiveCommands =
+					/\b(tsc|eslint|prettier|webpack|jest|vitest|mocha|esbuild|rollup|turbo)\b/;
+				const broadMatchers = ["Edit", "Write", ""];
+
+				for (const hook of postHooks) {
+					const hookConfig = hook as { matcher?: string };
+					const matcher = hookConfig.matcher ?? "";
+					const isBroadMatcher =
+						matcher === "" ||
+						broadMatchers.some((m) => m !== "" && matcher === m);
+
+					for (const command of extractHookCommands(hook)) {
+						const expensiveMatch = command.match(expensiveCommands);
+						if (isBroadMatcher && expensiveMatch) {
+							findings.push({
+								id: `hooks-expensive-unscoped-${findings.length}`,
+								severity: "low",
+								category: "hooks",
+								title: `PostToolUse runs "${expensiveMatch[0]}" on broad matcher "${matcher || "*"}"`,
+								description: `A PostToolUse hook runs "${expensiveMatch[0]}" on every "${matcher || "tool call"}" event. Build tools and linters can take seconds to run — firing on every edit wastes resources and slows down the agent. Scope the matcher to specific file types or add conditional checks.`,
+								file: file.path,
+								evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
+								fix: {
+									description: "Scope the matcher to reduce unnecessary runs",
+									before: `"matcher": "${matcher}"`,
+									after: `"matcher": "Edit(*.ts)" or add file-extension check in the hook script`,
+									auto: false,
+								},
+							});
+						}
+					}
+				}
+			} catch {
+				// JSON parse errors handled elsewhere
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-output-to-world-readable",
+		name: "Hook Writes to World-Readable Path",
+		description:
+			"Checks for hooks that redirect output to world-readable directories like /tmp",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const worldReadablePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: />\s*\/tmp\//g,
+					description:
+						"Redirects output to /tmp — readable by all users on the system",
+				},
+				{
+					pattern: /\btee\s+\/tmp\//g,
+					description:
+						"Uses tee to write to /tmp — creates world-readable file",
+				},
+				{
+					pattern: />\s*\/var\/tmp\//g,
+					description:
+						"Redirects output to /var/tmp — persistent and world-readable",
+				},
+				{
+					pattern: /\bmktemp\b/g,
+					description:
+						"Creates temporary file — ensure secure permissions (mktemp is generally safe but verify cleanup)",
+				},
+			];
+
+			for (const { pattern, description } of worldReadablePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					// mktemp is generally safe — only flag if combined with risky patterns
+					if (pattern.source.includes("mktemp")) continue;
+
+					findings.push({
+						id: `hooks-world-readable-${match.index}`,
+						severity: "high",
+						category: "exposure",
+						title: `Hook writes to world-readable path: ${match[0].trim()}`,
+						description: `${description}. Other users or processes on the system can read the output, which may contain secrets, code, or session data.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-source-from-env",
+		name: "Hook Sources Script from Environment Path",
+		description:
+			"Checks for hooks that source scripts from environment variable paths",
+		severity: "high",
+		category: "injection",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const sourcePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bsource\s+\$\{?\w+\}?\//g,
+					description: "Sources a script from an environment variable path",
+				},
+				{
+					pattern: /\.\s+\$\{?\w+\}?\//g,
+					description: "Dot-sources a script from an environment variable path",
+				},
+				{
+					pattern: /\beval\s+\$\{?\w+/g,
+					description: "Evaluates content from an environment variable",
+				},
+			];
+
+			for (const { pattern, description } of sourcePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-source-env-${match.index}`,
+						severity: "high",
+						category: "injection",
+						title: `Hook sources script from environment path: ${match[0].trim()}`,
+						description: `${description}. If the environment variable is attacker-controlled, this enables arbitrary code execution through the sourced script.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-file-deletion",
+		name: "Hook Deletes Files",
+		description:
+			"Checks for hooks that delete files, which could destroy work or cover tracks",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const deletePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f?\b/g,
+					description:
+						"Recursive file deletion (rm -rf) — can destroy entire directories",
+				},
+				{
+					pattern: /\brm\s+-[a-zA-Z]*f\b/g,
+					description:
+						"Force file deletion (rm -f) — deletes without confirmation",
+				},
+				{
+					pattern: /\bshred\b/g,
+					description:
+						"Secure file erasure (shred) — irrecoverable deletion used to cover tracks",
+				},
+				{
+					pattern: /\bunlink\b/g,
+					description: "File deletion via unlink",
+				},
+			];
+
+			for (const { pattern, description } of deletePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-file-delete-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook deletes files: ${match[0].trim()}`,
+						description: `${description}. A hook that deletes files could destroy source code, logs, or evidence of compromise.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-cron-persistence",
+		name: "Hook Installs Cron Job",
+		description:
+			"Checks for hooks that install cron jobs for persistent access",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const cronPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bcrontab\b/g,
+					description: "Modifies crontab — installs persistent scheduled tasks",
+				},
+				{
+					pattern: /\/etc\/cron/g,
+					description:
+						"Writes to system cron directory — installs persistent scheduled tasks",
+				},
+				{
+					pattern: /\bat\s+-[a-z]/g,
+					description: "Schedules deferred command execution via at",
+				},
+				{
+					pattern: /\bsystemctl\s+(?:enable|start)/g,
+					description:
+						"Enables/starts a systemd service — potential persistence mechanism",
+				},
+				{
+					pattern: /\blaunchctl\s+load/g,
+					description:
+						"Loads a macOS launch agent — persistent background process",
+				},
+			];
+
+			for (const { pattern, description } of cronPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-cron-persist-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook installs persistence mechanism: ${match[0].trim()}`,
+						description: `${description}. Hooks should not install persistence mechanisms. This could allow a compromised hook to maintain access even after the session ends.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-env-mutation",
+		name: "Hook Mutates Environment Variables",
+		description:
+			"Checks for hooks that set or export environment variables, which can alter subsequent command behavior",
+		severity: "medium",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const envMutationPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+				readonly severity: "high" | "medium";
+			}> = [
+				{
+					pattern: /\bexport\s+PATH=/g,
+					description:
+						"Modifies PATH — can redirect which binaries are executed",
+					severity: "high",
+				},
+				{
+					pattern: /\bexport\s+(?:LD_PRELOAD|LD_LIBRARY_PATH|DYLD_)=/gi,
+					description:
+						"Modifies dynamic linker variables — can inject shared libraries",
+					severity: "high",
+				},
+				{
+					pattern: /\bexport\s+(?:NODE_OPTIONS|PYTHONPATH|RUBYLIB)=/gi,
+					description:
+						"Modifies runtime import paths — can load malicious modules",
+					severity: "high",
+				},
+				{
+					pattern:
+						/\bexport\s+(?:http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY)=/gi,
+					description:
+						"Sets proxy variables — can redirect all network traffic through attacker-controlled proxy",
+					severity: "high",
+				},
+			];
+
+			for (const { pattern, description, severity } of envMutationPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-env-mutation-${match.index}`,
+						severity,
+						category: "hooks",
+						title: `Hook mutates environment: ${match[0].trim()}`,
+						description: `${description}. Hooks that modify environment variables can silently alter the behavior of all subsequent commands in the session.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-git-config-modification",
+		name: "Hook Modifies Git Configuration",
+		description:
+			"Checks for hooks that modify git config, which can alter commit authorship, disable signing, or change hooks",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const gitConfigPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bgit\s+config\s+--global/g,
+					description:
+						"Modifies global git config — affects all repositories on the system",
+				},
+				{
+					pattern: /\bgit\s+config\s+(?:--system)/g,
+					description: "Modifies system-level git config — affects all users",
+				},
+				{
+					pattern: /\bgit\s+config\s+(?:.*\s+)?(?:user\.email|user\.name)/g,
+					description:
+						"Changes git commit author identity — could attribute commits to someone else",
+				},
+				{
+					pattern:
+						/\bgit\s+config\s+(?:.*\s+)?(?:commit\.gpgsign|tag\.gpgsign)\s+false/g,
+					description:
+						"Disables GPG commit signing — weakens commit verification",
+				},
+				{
+					pattern: /\bgit\s+config\s+(?:.*\s+)?core\.hooksPath/g,
+					description:
+						"Changes git hooks directory — could redirect to malicious hooks",
+				},
+			];
+
+			for (const { pattern, description } of gitConfigPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-git-config-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook modifies git config: ${match[0].trim()}`,
+						description: `${description}. Hooks should not modify git configuration as this can undermine version control integrity.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-user-account-modification",
+		name: "Hook Creates or Modifies User Accounts",
+		description:
+			"Checks for hooks that create, modify, or delete user accounts",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const userModPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\buseradd\b/g,
+					description: "Creates a new user account (useradd)",
+				},
+				{
+					pattern: /\badduser\b/g,
+					description: "Creates a new user account (adduser)",
+				},
+				{
+					pattern: /\busermod\b/g,
+					description: "Modifies an existing user account (usermod)",
+				},
+				{
+					pattern: /\buserdel\b/g,
+					description: "Deletes a user account (userdel)",
+				},
+				{
+					pattern: /\bpasswd\b/g,
+					description: "Changes a user password (passwd)",
+				},
+			];
+
+			for (const { pattern, description } of userModPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line, content } of matches) {
+					if (isRegexLikeAlternationLiteral(content, match.index ?? 0)) {
+						continue;
+					}
+
+					findings.push({
+						id: `hooks-user-mod-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook modifies user accounts: ${match[0].trim()}`,
+						description: `${description}. Hooks should never create, modify, or delete user accounts. A compromised hook with this capability can create backdoor accounts for persistent access.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-privilege-escalation",
+		name: "Hook Uses Privilege Escalation",
+		description:
+			"Checks for hooks that use sudo, su, or other privilege escalation commands",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const privEscPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bsudo\b/g,
+					description: "Runs commands as root via sudo",
+				},
+				{
+					pattern: /\bsu\s+-?\s*\w/g,
+					description: "Switches to another user via su",
+				},
+				{
+					pattern: /\bdoas\b/g,
+					description:
+						"Runs commands as another user via doas (OpenBSD sudo alternative)",
+				},
+				{
+					pattern: /\bpkexec\b/g,
+					description: "Runs commands as another user via polkit (pkexec)",
+				},
+				{
+					pattern: /\brunas\b/gi,
+					description: "Runs commands as another user via runas (Windows)",
+				},
+			];
+
+			for (const { pattern, description } of privEscPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-priv-esc-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook uses privilege escalation: ${match[0].trim()}`,
+						description: `${description}. Hooks should never escalate privileges. A compromised hook with root access can take over the entire system.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-network-listener",
+		name: "Hook Opens Network Listener",
+		description:
+			"Checks for hooks that bind to network ports, which could create reverse shells or backdoors",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const listenerPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bnc\s+.*-l/g,
+					description: "Opens a netcat listener — classic reverse shell vector",
+				},
+				{
+					pattern: /\bsocat\b/g,
+					description:
+						"Uses socat for bidirectional data transfer — can create tunnels and reverse shells",
+				},
+				{
+					pattern: /\bpython3?\s+.*-m\s+http\.server/g,
+					description:
+						"Starts a Python HTTP server — exposes local files over the network",
+				},
+				{
+					pattern: /\bpython3?\s+.*SimpleHTTPServer/g,
+					description:
+						"Starts a Python 2 HTTP server — exposes local files over the network",
+				},
+				{
+					pattern: /\bphp\s+-S\b/g,
+					description:
+						"Starts a PHP built-in server — serves files and executes PHP code",
+				},
+			];
+
+			for (const { pattern, description } of listenerPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-network-listener-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook opens network listener: ${match[0].trim()}`,
+						description: `${description}. Hooks should not open network listeners. This could create a backdoor accessible from the network.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-disk-wipe",
+		name: "Hook Uses Disk Wiping Commands",
+		description: "Checks for hooks that use destructive disk operations",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const wipePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bdd\s+if=\/dev\/(?:zero|urandom)/g,
+					description: "Overwrites disk with zeros/random data via dd",
+				},
+				{
+					pattern: /\bmkfs\b/g,
+					description:
+						"Formats a filesystem — destroys all data on the target device",
+				},
+				{
+					pattern: /\bwipefs\b/g,
+					description: "Wipes filesystem signatures — makes data unrecoverable",
+				},
+			];
+
+			for (const { pattern, description } of wipePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-disk-wipe-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook uses disk wiping command: ${match[0].trim()}`,
+						description: `${description}. Hooks should never perform destructive disk operations. This could permanently destroy data.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-shell-profile-modification",
+		name: "Hook Modifies Shell Profile",
+		description:
+			"Checks for hooks that modify shell init files (.bashrc, .zshrc, .profile) for persistence",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const profilePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\.bashrc/g,
+					description:
+						"Modifies .bashrc — commands here run on every new bash shell",
+				},
+				{
+					pattern: /\.zshrc/g,
+					description:
+						"Modifies .zshrc — commands here run on every new zsh shell",
+				},
+				{
+					pattern: /\.bash_profile/g,
+					description:
+						"Modifies .bash_profile — commands here run on every login shell",
+				},
+				{
+					pattern: /\.profile/g,
+					description:
+						"Modifies .profile — commands here run on every login shell",
+				},
+				{
+					pattern: /\/etc\/environment/g,
+					description:
+						"Modifies /etc/environment — affects all users on the system",
+				},
+			];
+
+			for (const { pattern, description } of profilePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line, content } of matches) {
+					// Check if the context suggests writing/appending (not just reading)
+					const idx = match.index ?? 0;
+					const contextStart = Math.max(0, idx - 50);
+					const context = content.substring(
+						contextStart,
+						idx + match[0].length + 50,
+					);
+					const isWrite = />>|>|tee|echo\s+.*>|sed\s+-i|append/.test(context);
+
+					if (isWrite) {
+						findings.push({
+							id: `hooks-shell-profile-${match.index}`,
+							severity: "critical",
+							category: "hooks",
+							title: `Hook modifies shell profile: ${match[0].trim()}`,
+							description: `${description}. Writing to shell profile files is a classic persistence technique — malicious code injected here survives across reboots and terminal sessions.`,
+							file: file.path,
+							line,
+							evidence: context.trim().substring(0, 80),
+						});
+					}
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-logging-disabled",
+		name: "Hook Disables Logging or Audit Trail",
+		description: "Checks for hooks that clear logs or disable audit mechanisms",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+			const seenFindings = new Set<string>();
+
+			const logPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: />\s*\/dev\/null\s+2>&1|&>\s*\/dev\/null/g,
+					description:
+						"Redirects all output to /dev/null — hides both stdout and stderr",
+				},
+				{
+					pattern: /\bhistory\s+-[cwd]/g,
+					description: "Clears or disables shell history — covers tracks",
+				},
+				{
+					pattern: /\bunset\s+HISTFILE/g,
+					description:
+						"Unsets HISTFILE — prevents command history from being saved",
+				},
+				{
+					pattern: /\btruncate\s+.*\/var\/log/g,
+					description: "Truncates system log files — destroys audit trail",
+				},
+			];
+
+			for (const { pattern, description } of logPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line, commandContext } of matches) {
+					if (
+						match[0].includes("/dev/null") &&
+						isBenignLoggingProbe(commandContext)
+					) {
+						continue;
+					}
+
+					const evidence = match[0].trim();
+					const dedupeKey = `${line}:${evidence}:${description}`;
+					if (seenFindings.has(dedupeKey)) {
+						continue;
+					}
+					seenFindings.add(dedupeKey);
+
+					findings.push({
+						id: `hooks-logging-disabled-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook disables logging: ${evidence}`,
+						description: `${description}. Disabling logging or clearing audit trails in hooks is a defense evasion technique that makes it harder to detect and investigate compromises.`,
+						file: file.path,
+						line,
+						evidence,
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-ssh-key-operations",
+		name: "Hook Manipulates SSH Keys",
+		description:
+			"Checks for hooks that generate, copy, or modify SSH keys — enables lateral movement",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const sshKeyPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bssh-keygen\b/g,
+					description:
+						"Generates SSH keys — could create unauthorized keys for persistent access",
+				},
+				{
+					pattern: /\bssh-copy-id\b/g,
+					description:
+						"Copies SSH keys to remote hosts — enables passwordless lateral movement",
+				},
+				{
+					pattern: />>?\s*~\/\.ssh\/authorized_keys/g,
+					description:
+						"Appends to authorized_keys — installs backdoor SSH access",
+				},
+			];
+
+			for (const { pattern, description } of sshKeyPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-ssh-key-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook manipulates SSH keys: ${match[0].trim()}`,
+						description: `${description}. Hooks should not create or distribute SSH keys as this enables unauthorized remote access.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-background-process",
+		name: "Hook Runs Background Process",
+		description:
+			"Checks for hooks that start persistent background processes that outlive the session",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const bgPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bnohup\b/g,
+					description:
+						"Runs process immune to hangup signals — survives session end",
+				},
+				{
+					pattern: /\bdisown\b/g,
+					description: "Detaches process from shell — survives session end",
+				},
+				{
+					pattern: /\bscreen\s+-[dD]m/g,
+					description:
+						"Starts detached screen session — hidden persistent process",
+				},
+				{
+					pattern: /\btmux\s+new-session\s+-d/g,
+					description:
+						"Starts detached tmux session — hidden persistent process",
+				},
+			];
+
+			for (const { pattern, description } of bgPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-bg-process-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook starts background process: ${match[0].trim()}`,
+						description: `${description}. Hooks that start persistent background processes can maintain execution even after the agent session ends — a common persistence technique.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-dns-exfiltration",
+		name: "Hook Uses DNS for Data Exfiltration",
+		description:
+			"Checks for hooks that use DNS queries with variable interpolation to exfiltrate data",
+		severity: "critical",
+		category: "exfiltration",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const dnsPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bdig\s+.*\$\{?\w+/g,
+					description:
+						"Uses dig with variable interpolation — DNS exfiltration encodes data in DNS queries",
+				},
+				{
+					pattern: /\bnslookup\s+.*\$\{?\w+/g,
+					description:
+						"Uses nslookup with variable interpolation — DNS exfiltration vector",
+				},
+				{
+					pattern: /\bhost\s+.*\$\{?\w+/g,
+					description:
+						"Uses host command with variable interpolation — DNS exfiltration vector",
+				},
+			];
+
+			for (const { pattern, description } of dnsPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-dns-exfil-${match.index}`,
+						severity: "critical",
+						category: "exfiltration",
+						title: `Hook uses DNS for exfiltration: ${match[0].trim().substring(0, 60)}`,
+						description: `${description}. DNS queries bypass most firewalls and proxy filters, making this a common out-of-band exfiltration technique.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-firewall-modification",
+		name: "Hook Modifies Firewall Rules",
+		description:
+			"Checks for hooks that modify iptables, ufw, or firewall rules",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const fwPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\biptables\b/g,
+					description:
+						"Modifies iptables firewall rules — can open ports or disable filtering",
+				},
+				{
+					pattern: /\bufw\s+(?:allow|delete|disable)/g,
+					description:
+						"Modifies UFW firewall — can open ports or disable the firewall entirely",
+				},
+				{
+					pattern: /\bfirewall-cmd\b/g,
+					description:
+						"Modifies firewalld rules — can change network access policies",
+				},
+			];
+
+			for (const { pattern, description } of fwPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-fw-modify-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook modifies firewall: ${match[0].trim()}`,
+						description: `${description}. Hooks should not modify firewall rules — this could expose the system to network attacks.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-global-package-install",
+		name: "Hook Installs Global Packages",
+		description:
+			"Checks for hooks that install packages globally, which can modify system-wide binaries",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const installPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bnpm\s+install\s+-g\b|\bnpm\s+i\s+-g\b/g,
+					description:
+						"Installs npm package globally — modifies system-wide PATH binaries",
+				},
+				{
+					pattern: /\bpip\s+install\s+(?:--user\s+)?(?!-r\b)/g,
+					description:
+						"Installs Python package — may modify system Python packages",
+				},
+				{
+					pattern: /\bgem\s+install\b/g,
+					description: "Installs Ruby gem — modifies system Ruby packages",
+				},
+				{
+					pattern: /\bcargo\s+install\b/g,
+					description: "Installs Rust package globally via cargo",
+				},
+			];
+
+			for (const { pattern, description } of installPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-global-install-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook installs packages: ${match[0].trim()}`,
+						description: `${description}. Hooks that install packages can introduce supply chain risks and modify the system's behavior for all future commands.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-container-escape",
+		name: "Hook Uses Container Escape Techniques",
+		description:
+			"Checks for hooks that use Docker flags that enable container escape",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const containerEscapePatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /--privileged/g,
+					description:
+						"Docker --privileged flag — container has full host access",
+				},
+				{
+					pattern: /--pid=host/g,
+					description:
+						"Docker --pid=host — container can see/signal all host processes",
+				},
+				{
+					pattern: /--network=host/g,
+					description:
+						"Docker --network=host — container shares host network stack",
+				},
+				{
+					pattern: /-v\s+\/:/g,
+					description:
+						"Mounts host root filesystem into container — full filesystem access",
+				},
+			];
+
+			for (const { pattern, description } of containerEscapePatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-container-escape-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook uses container escape technique: ${match[0].trim()}`,
+						description: `${description}. These Docker flags break container isolation and allow full host access from within the container.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-credential-access",
+		name: "Hook Accesses Credential Stores",
+		description:
+			"Checks for hooks that read password files, keychains, or credential managers",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const credPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bsecurity\s+find-generic-password\b/g,
+					description: "Reads macOS Keychain passwords via security command",
+				},
+				{
+					pattern: /\bsecurity\s+find-internet-password\b/g,
+					description: "Reads macOS Keychain internet passwords",
+				},
+				{
+					pattern: /\bsecret-tool\s+lookup\b/g,
+					description: "Reads GNOME Keyring / Linux secret store",
+				},
+				{
+					pattern: /\bkeyctl\s+read\b/g,
+					description: "Reads Linux kernel keyring",
+				},
+				{
+					pattern: /\/etc\/shadow/g,
+					description: "Accesses /etc/shadow — contains password hashes",
+				},
+			];
+
+			for (const { pattern, description } of credPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-cred-access-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook accesses credential store: ${match[0].trim()}`,
+						description: `${description}. Hooks should never access credential stores — this enables credential theft for lateral movement.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-reverse-shell",
+		name: "Hook Opens Reverse Shell",
+		description:
+			"Checks for hooks that establish reverse shell connections back to an attacker",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const reverseShellPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bbash\s+-i\s+[>&]+.*\/dev\/tcp\//g,
+					description:
+						"Bash reverse shell via /dev/tcp — connects back to attacker",
+				},
+				{
+					pattern: /\/dev\/tcp\/[0-9.]+\/\d+/g,
+					description:
+						"Uses /dev/tcp for network connection — common reverse shell technique",
+				},
+				{
+					pattern: /\bpython3?\s+.*-c\s+.*socket.*connect/g,
+					description: "Python reverse shell via socket.connect",
+				},
+				{
+					pattern: /\bperl\s+.*-e\s+.*socket.*INET/g,
+					description: "Perl reverse shell via Socket::INET",
+				},
+				{
+					pattern: /\bmkfifo\b.*\bnc\b/g,
+					description: "Named pipe reverse shell using mkfifo and netcat",
+				},
+			];
+
+			for (const { pattern, description } of reverseShellPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-reverse-shell-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook establishes reverse shell: ${match[0].trim().substring(0, 60)}`,
+						description: `${description}. Reverse shells give attackers interactive command execution on the target system.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim().substring(0, 80),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-clipboard-access",
+		name: "Hook Accesses System Clipboard",
+		description:
+			"Checks for hooks that read or write the system clipboard, which can be used for data exfiltration",
+		severity: "high",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const clipboardPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bpbcopy\b/g,
+					description:
+						"Uses macOS pbcopy to write to clipboard — can silently exfiltrate data",
+				},
+				{
+					pattern: /\bpbpaste\b/g,
+					description:
+						"Uses macOS pbpaste to read clipboard — may capture sensitive copied content",
+				},
+				{
+					pattern: /\bxclip\b/g,
+					description:
+						"Uses xclip to access X11 clipboard — can read or write clipboard data",
+				},
+				{
+					pattern: /\bxsel\b/g,
+					description:
+						"Uses xsel to access X11 selection — can read or write clipboard data",
+				},
+				{
+					pattern: /\bwl-copy\b/g,
+					description: "Uses wl-copy to write to Wayland clipboard",
+				},
+				{
+					pattern: /\bwl-paste\b/g,
+					description: "Uses wl-paste to read from Wayland clipboard",
+				},
+			];
+
+			for (const { pattern, description } of clipboardPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-clipboard-${match.index}`,
+						severity: "high",
+						category: "hooks",
+						title: `Hook accesses clipboard: ${match[0].trim()}`,
+						description: `${description}. Clipboard access in hooks can be used to steal passwords, tokens, and other sensitive data that users copy.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
+	{
+		id: "hooks-log-tampering",
+		name: "Hook Tampers with System Logs",
+		description:
+			"Checks for hooks that delete, truncate, or modify system log files to cover tracks",
+		severity: "critical",
+		category: "hooks",
+		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type !== "settings-json" && file.type !== "hook-script")
+				return [];
+
+			const findings: Finding[] = [];
+
+			const logTamperPatterns: ReadonlyArray<{
+				readonly pattern: RegExp;
+				readonly description: string;
+			}> = [
+				{
+					pattern: /\bjournalctl\s+--vacuum/g,
+					description: "Purges systemd journal logs — destroys audit trail",
+				},
+				{
+					pattern: /\brm\s+(?:-[rf]+\s+)?\/var\/log\b/g,
+					description: "Deletes system log files — destroys audit evidence",
+				},
+				{
+					pattern: /\btruncate\s+.*\/var\/log\b/g,
+					description: "Truncates system log files — erases log contents",
+				},
+				{
+					pattern: />\s*\/var\/log\/(?:syslog|auth\.log|messages|secure)/g,
+					description:
+						"Overwrites system log file with redirection — clears log contents",
+				},
+				{
+					pattern: /\bhistory\s+-c\b/g,
+					description:
+						"Clears shell command history — covers tracks of executed commands",
+				},
+				{
+					pattern: /\bunset\s+HISTFILE\b/g,
+					description:
+						"Disables shell history recording — prevents command audit trail",
+				},
+			];
+
+			for (const { pattern, description } of logTamperPatterns) {
+				const matches = findAllHookMatches(file, pattern);
+				for (const { match, line } of matches) {
+					findings.push({
+						id: `hooks-log-tamper-${match.index}`,
+						severity: "critical",
+						category: "hooks",
+						title: `Hook tampers with logs: ${match[0].trim()}`,
+						description: `${description}. Log tampering is a strong indicator of malicious intent — attackers erase evidence of their actions.`,
+						file: file.path,
+						line,
+						evidence: match[0].trim(),
+					});
+				}
+			}
+
+			return findings;
+		},
+	},
 ];

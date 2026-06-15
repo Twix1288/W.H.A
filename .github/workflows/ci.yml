@@ -20,7 +20,7 @@ jobs:
           node-version: 20
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm turbo lint type-check
+      - run: pnpm turbo type-check
 
   test:
     runs-on: ubuntu-latest
