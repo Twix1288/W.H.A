@@ -100,7 +100,7 @@ const INJECTION_RESULT_TOOL = {
 		},
 		required: ["results"],
 	},
-} as const;
+} as Anthropic.Tool;
 
 // ─── System Prompt ────────────────────────────────────────
 

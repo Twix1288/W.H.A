@@ -25,7 +25,7 @@ export class RegistryClient {
 			}
 			throw new Error(`Failed to resolve package: ${res.statusText}`);
 		}
-		const data = await res.json();
+		const data = (await res.json()) as Record<string, any>;
 		return {
 			...data,
 			publishedAt: new Date(data.publishedAt),

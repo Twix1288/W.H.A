@@ -1,6 +1,4 @@
 
-> @wh-agent/cli@1.1.0 type-check /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
+> wh-agent-cli@1.1.0 type-check /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
 > tsc --noEmit
 
-tsconfig.json(12,5): error TS5101: Option 'downlevelIteration' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
- ELIFECYCLE  Command failed with exit code 2.

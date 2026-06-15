@@ -252,16 +252,16 @@ export function analyzeTaint(
 				const name =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
-				if (name && ALL_SOURCES.has(name)) {
-					tainted.set(targetName, {
-						name: targetName,
-						sourceCall: name,
+				if (name && ALL_SOURCES.has(name as string)) {
+					tainted.set(targetName as string, {
+						name: targetName as string,
+						sourceCall: name as string,
 						lineno,
 					});
 					sourceFound = true;
 				} else if (name?.startsWith("process.env")) {
-					tainted.set(targetName, {
-						name: targetName,
+					tainted.set(targetName as string, {
+						name: targetName as string,
 						sourceCall: "process.env",
 						lineno,
 					});
@@ -270,8 +270,8 @@ export function analyzeTaint(
 					// Taint propagation: target = taintedVar
 					const t = tainted.get(n.text);
 					if (t) {
-						tainted.set(targetName, {
-							name: targetName,
+						tainted.set(targetName as string, {
+							name: targetName as string,
 							sourceCall: t.sourceCall,
 							lineno: t.lineno,
 						});
@@ -292,7 +292,7 @@ export function analyzeTaint(
 				const name =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
-				if (name && (ALL_SOURCES.has(name) || name.startsWith("process.env"))) {
+				if (name && (ALL_SOURCES.has(name as string) || name.startsWith("process.env"))) {
 					const srcName = name.startsWith("process.env") ? "process.env" : name;
 					const rule = pickRule(srcName, sinkName, true);
 					const srcCat = classify(srcName, SOURCE_CATEGORIES, "data source");
