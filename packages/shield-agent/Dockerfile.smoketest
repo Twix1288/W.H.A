@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+FROM --platform=linux/amd64 golang:1.22-bookworm AS builder
+
+# Install eBPF dependencies
+RUN apt-get update && apt-get install -y \
+    clang \
+    llvm \
+    libbpf-dev \
+    linux-headers-amd64 \
+    gcc-multilib \
+    && ln -sf /usr/include/x86_64-linux-gnu/asm /usr/include/asm
+
+WORKDIR /app
+COPY go.mod go.sum ./
+
+RUN go mod download github.com/cilium/ebpf
+RUN go mod tidy
+RUN go mod download
+
+COPY . .
+# Compile the C eBPF programs into Go
+RUN go generate ./...
+# Build the Go agent
+RUN go build -o shield-agent main.go network_bpfel.go
+
+# Smoke Test Stage
+FROM --platform=linux/amd64 debian:bookworm-slim
+RUN apt-get update && apt-get install -y curl netcat-openbsd procps
+WORKDIR /app
+COPY --from=builder /app/shield-agent .
+COPY smoketest.sh .
+RUN chmod +x smoketest.sh
+
+CMD ["./smoketest.sh"]

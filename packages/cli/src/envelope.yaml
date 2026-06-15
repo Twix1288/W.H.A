@@ -1,0 +1,37 @@
+# W.H.Agent Secure Container Envelope
+# This defines the strict boundaries for your AI agent container.
+
+version: 1.0
+
+# 1. File System Boundaries
+storage:
+  root_filesystem: read-only
+  allow_host_mounts: false
+  volatile_scratchpad: /tmp
+  # Explicitly allow the agent to read (but not write) its own source code
+  mounts:
+    - path: ./src
+      mode: ro
+
+# 2. Network Boundaries (Default Deny)
+network:
+  default_egress: deny
+  allowed_destinations:
+    - api.openai.com:443
+    - database.internal.corp:5432
+    - huggingface.co:443
+
+# 3. Credential Injection
+# Short-lived tokens are injected directly into tmpfs/memory at runtime.
+# Long-lived .env files on the host disk are ignored.
+credentials:
+  inject_mode: memory_only
+  required_secrets:
+    - OPENAI_API_KEY
+    - DB_PASSWORD
+
+# 4. Telemetry
+telemetry:
+  log_tool_calls: true
+  log_file_access: true
+  log_network_denies: true

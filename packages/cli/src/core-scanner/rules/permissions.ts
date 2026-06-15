@@ -1,0 +1,1026 @@
+import { statSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+import type { ConfigFile, Finding, Rule } from "../types.js";
+
+function isHookManifestConfig(file: ConfigFile, config: unknown): boolean {
+  if (!/(^|\/)hooks\/[^/]+\.json$/i.test(file.path)) return false;
+  if (!config || typeof config !== "object") return false;
+  return "hooks" in config;
+}
+
+/**
+ * Dangerous permission patterns that grant excessive access.
+ * These are only dangerous when they appear in the ALLOW list.
+ */
+const OVERLY_PERMISSIVE: ReadonlyArray<{
+  readonly pattern: RegExp;
+  readonly description: string;
+  readonly severity: "critical" | "high" | "medium";
+  readonly suggestion: string;
+}> = [
+  {
+    pattern: /^Bash\(\*\)$/,
+    description: "Unrestricted Bash access — any command can run",
+    severity: "critical",
+    suggestion: "Bash(git *), Bash(npm *), Bash(node *)",
+  },
+  {
+    pattern: /^Bash\(sudo\s/,
+    description: "Sudo access allowed — agent can escalate privileges",
+    severity: "critical",
+    suggestion: "Remove sudo permissions entirely",
+  },
+  {
+    pattern: /^Write\(\*\)$/,
+    description: "Unrestricted Write access — agent can write to any file",
+    severity: "high",
+    suggestion: "Write(src/*), Write(tests/*)",
+  },
+  {
+    pattern: /^Edit\(\*\)$/,
+    description: "Unrestricted Edit access — agent can edit any file",
+    severity: "high",
+    suggestion: "Edit(src/*), Edit(tests/*)",
+  },
+  {
+    pattern: /^Bash\(rm\s/,
+    description: "Delete operations explicitly allowed in Bash",
+    severity: "high",
+    suggestion: "Move rm commands to deny list instead",
+  },
+  {
+    pattern: /^Bash\(curl\s/,
+    description: "Unrestricted curl access — agent can make arbitrary HTTP requests",
+    severity: "medium",
+    suggestion: "Restrict to specific domains or move to deny list",
+  },
+  {
+    pattern: /^Bash\(wget\s/,
+    description: "Unrestricted wget access — agent can download arbitrary files",
+    severity: "medium",
+    suggestion: "Restrict to specific domains or move to deny list",
+  },
+  {
+    pattern: /^Bash\(chmod\s/,
+    description: "chmod access — agent can change file permissions",
+    severity: "medium",
+    suggestion: "Move chmod to deny list to prevent permission escalation",
+  },
+  {
+    pattern: /^Bash\(chown\s/,
+    description: "chown access — agent can change file ownership",
+    severity: "high",
+    suggestion: "Move chown to deny list to prevent ownership takeover",
+  },
+  {
+    pattern: /^Bash\(ssh\s/,
+    description: "SSH access — agent can connect to remote systems",
+    severity: "high",
+    suggestion: "Remove SSH permissions to prevent lateral movement",
+  },
+  {
+    pattern: /^Bash\(nc\s|^Bash\(netcat\s/,
+    description: "Netcat access — can open network connections for exfiltration or reverse shells",
+    severity: "high",
+    suggestion: "Remove netcat permissions entirely",
+  },
+  {
+    pattern: /^Bash\(python\s|^Bash\(python3\s|^Bash\(node\s/,
+    description: "Interpreter access — agent can run arbitrary code via scripting language",
+    severity: "high",
+    suggestion: "Restrict to specific scripts: Bash(node scripts/build.js)",
+  },
+  {
+    pattern: /^Bash\(docker\s/,
+    description: "Docker access — containers can escape to host, mount filesystems, and access host network",
+    severity: "high",
+    suggestion: "Remove docker permissions or restrict to read-only: Bash(docker ps)",
+  },
+  {
+    pattern: /^Bash\(kill\s|^Bash\(pkill\s|^Bash\(killall\s/,
+    description: "Process killing — agent can terminate system processes",
+    severity: "medium",
+    suggestion: "Move process killing to deny list",
+  },
+  {
+    pattern: /^Bash\(eval\s/,
+    description: "eval access — agent can execute arbitrary code via shell eval",
+    severity: "critical",
+    suggestion: "Remove eval permissions; use explicit commands instead",
+  },
+  {
+    pattern: /^Bash\(exec\s/,
+    description: "exec access — agent can replace the current process with arbitrary commands",
+    severity: "critical",
+    suggestion: "Remove exec permissions; use explicit commands instead",
+  },
+];
+
+/**
+ * Permissions that should be in the deny list but are commonly missing.
+ */
+const MISSING_DENIALS: ReadonlyArray<{
+  readonly pattern: string;
+  readonly description: string;
+}> = [
+  { pattern: "rm -rf", description: "Recursive force delete" },
+  { pattern: "sudo", description: "Privilege escalation" },
+  { pattern: "chmod 777", description: "World-writable permissions" },
+  { pattern: "ssh", description: "SSH connections from agent" },
+  { pattern: "> /dev/", description: "Writing to device files" },
+];
+
+/**
+ * Parse the allow and deny arrays from a settings.json file.
+ * Returns null if the file is not valid JSON or has no permissions.
+ */
+function parsePermissionLists(content: string): {
+  allow: ReadonlyArray<string>;
+  deny: ReadonlyArray<string>;
+} | null {
+  try {
+    const config = JSON.parse(content);
+    return {
+      allow: config?.permissions?.allow ?? [],
+      deny: config?.permissions?.deny ?? [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+interface ConfigPathValue {
+  readonly path: string;
+  readonly value: unknown;
+}
+
+function findConfigKeyValues(
+  value: unknown,
+  keyPattern: RegExp,
+  currentPath = "",
+): ReadonlyArray<ConfigPathValue> {
+  const matches: ConfigPathValue[] = [];
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const childPath = `${currentPath}[${index}]`;
+      matches.push(...findConfigKeyValues(item, keyPattern, childPath));
+    });
+    return matches;
+  }
+
+  if (!value || typeof value !== "object") {
+    return matches;
+  }
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = currentPath ? `${currentPath}.${key}` : key;
+
+    if (keyPattern.test(key)) {
+      matches.push({ path: childPath, value: child });
+    }
+
+    matches.push(...findConfigKeyValues(child, keyPattern, childPath));
+  }
+
+  return matches;
+}
+
+function isExternalUrl(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) return false;
+
+  return !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(value);
+}
+
+function getBashPermissionCommand(entry: string): string | null {
+  const match = entry.match(/^Bash\((.*)\)$/s);
+  return match ? match[1].trim() : null;
+}
+
+function isScopedNetworkAllowEntry(entry: string): boolean {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/\b(?:curl|wget)\b/i.test(command)) return false;
+
+  const hasShellExpansion = /\$\(|\$\{?[A-Za-z_]/.test(command) || /`[^`]+`/.test(command);
+  if (hasShellExpansion) return false;
+  if (command.includes("*")) return false;
+  if (/\|\s*(?:sh|bash|zsh)\b/i.test(command)) return false;
+
+  const segments = command
+    .split(/\s*(?:&&|\|\||;|\n)\s*/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  let sawNetworkSegment = false;
+
+  for (const segment of segments) {
+    if (!/\b(?:curl|wget)\b/i.test(segment)) continue;
+    sawNetworkSegment = true;
+
+    if (!/https?:\/\/[^\s"'`)]+/i.test(segment)) {
+      return false;
+    }
+  }
+
+  return sawNetworkSegment;
+}
+
+function hasDynamicShellBehavior(command: string): boolean {
+  return (
+    /(?:\$\(|\$\{?[A-Za-z_]|`[^`]+`)/.test(command) ||
+    /(?:&&|\|\||;|\||>|<)/.test(command) ||
+    command.includes("*")
+  );
+}
+
+function isScopedInterpreterScriptAllowEntry(entry: string): boolean {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/^(?:python|python3|node)\s+/i.test(command)) return false;
+  if (hasDynamicShellBehavior(command)) return false;
+  if (/\s(?:-c|-e|-i|-m|-p|-r|--eval|--print|--require)\b/.test(command)) return false;
+
+  const scriptMatch = command.match(/^(?:python|python3|node)\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/i);
+  const scriptTarget = scriptMatch?.[1] ?? scriptMatch?.[2] ?? scriptMatch?.[3];
+  if (!scriptTarget) return false;
+  if (scriptTarget.startsWith("-")) return false;
+
+  return (
+    /[\\/]/.test(scriptTarget) ||
+    /\.(?:js|cjs|mjs|ts|cts|mts|py)$/i.test(scriptTarget)
+  );
+}
+
+function isReadOnlyDockerAllowEntry(entry: string): boolean {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/^docker\s+/i.test(command)) return false;
+  if (hasDynamicShellBehavior(command)) return false;
+
+  return /^(?:docker\s+(?:ps|images|version|info)\b|docker\s+(?:image|container|context)\s+ls\b)/i.test(
+    command.trim()
+  );
+}
+
+function isSettingsLocalFile(file: ConfigFile): boolean {
+  return /(^|[\\/])settings\.local\.json$/i.test(file.path);
+}
+
+function isExactAllowEntry(entry: string): boolean {
+  if (!/^[A-Za-z]+\(.+\)$/.test(entry)) return false;
+  if (entry.includes("*")) return false;
+  if (/\$\(|\$\{?[A-Za-z_]/.test(entry) || /`[^`]+`/.test(entry)) return false;
+  return true;
+}
+
+function hasOnlyExactAllowEntries(allowEntries: ReadonlyArray<string>): boolean {
+  return allowEntries.length > 0 && allowEntries.every((entry) => isExactAllowEntry(entry));
+}
+
+/**
+ * Destructive git commands that should never be in the allow list.
+ */
+const DESTRUCTIVE_GIT_PATTERNS: ReadonlyArray<{
+  readonly pattern: RegExp;
+  readonly description: string;
+  readonly suggestion: string;
+}> = [
+  {
+    pattern: /push\s+--force(?!-with-lease)|push\s+-f\b/,
+    description: "Force push can overwrite remote history, destroying teammates' work",
+    suggestion: "Use --force-with-lease instead, or move to deny list",
+  },
+  {
+    pattern: /reset\s+--hard/,
+    description: "Hard reset destroys uncommitted changes without recovery",
+    suggestion: "Move to deny list; use 'git stash' or 'git reset --soft' instead",
+  },
+  {
+    pattern: /clean\s+-[a-z]*f/,
+    description: "Git clean with force flag permanently deletes untracked files",
+    suggestion: "Move to deny list; use 'git clean -n' (dry-run) first",
+  },
+  {
+    pattern: /branch\s+-D\b/,
+    description: "Force-delete branch regardless of merge status can lose work",
+    suggestion: "Use 'branch -d' (lowercase) which checks merge status first",
+  },
+  {
+    pattern: /checkout\s+\.\s*$/,
+    description: "Discards all unstaged changes in working directory",
+    suggestion: "Move to deny list to prevent accidental loss of work",
+  },
+];
+
+export const permissionRules: ReadonlyArray<Rule> = [
+  {
+    id: "permissions-overly-permissive",
+    name: "Overly Permissive Access",
+    description: "Checks the ALLOW list for permission rules that grant excessive access",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      // Only check patterns against the ALLOW list, not the deny list
+      for (const entry of perms.allow) {
+        if (
+          isScopedNetworkAllowEntry(entry) ||
+          isScopedInterpreterScriptAllowEntry(entry) ||
+          isReadOnlyDockerAllowEntry(entry)
+        ) {
+          continue;
+        }
+
+        for (const check of OVERLY_PERMISSIVE) {
+          if (check.pattern.test(entry)) {
+            findings.push({
+              id: `permissions-permissive-${entry}`,
+              severity: check.severity,
+              category: "permissions",
+              title: `Overly permissive allow rule: ${entry}`,
+              description: check.description,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: `Restrict to specific commands: ${check.suggestion}`,
+                before: entry,
+                after: check.suggestion,
+                auto: false,
+              },
+            });
+            break; // One finding per allow entry is enough
+          }
+        }
+      }
+
+      // Bonus: flag deny entries that also appear in allow (contradictions)
+      for (const denyEntry of perms.deny) {
+        for (const allowEntry of perms.allow) {
+          if (allowEntry === denyEntry) {
+            findings.push({
+              id: `permissions-contradiction-${denyEntry}`,
+              severity: "medium",
+              category: "misconfiguration",
+              title: `Contradictory permission: "${denyEntry}" in both allow and deny`,
+              description: `The permission "${denyEntry}" appears in both the allow and deny lists. Deny takes precedence, but this is confusing and should be cleaned up.`,
+              file: file.path,
+              evidence: denyEntry,
+            });
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-no-deny-list",
+    name: "Missing Deny List",
+    description: "Checks if the settings.json has a deny list for dangerous operations",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      if (perms.deny.length === 0 && perms.allow.length > 0) {
+        const isScopedProjectLocalConfig =
+          isSettingsLocalFile(file) && hasOnlyExactAllowEntries(perms.allow);
+
+        findings.push({
+          id: "permissions-no-deny-list",
+          severity: isScopedProjectLocalConfig ? "medium" : "high",
+          category: "permissions",
+          title: isScopedProjectLocalConfig
+            ? "Project-local config has no deny list"
+            : "No deny list configured",
+          description:
+            isScopedProjectLocalConfig
+              ? "settings.local.json has no deny list. The current allow list appears tightly scoped, so this is less risky than a broad runtime config, but explicit denials still improve safety."
+              : "settings.json has no deny list. Without explicit denials, the agent may run dangerous operations if the allow list is too broad.",
+          file: file.path,
+          fix: {
+            description: "Add a deny list for dangerous operations",
+            before: '"permissions": { "allow": [...] }',
+            after:
+              '"permissions": { "allow": [...], "deny": ["Bash(rm -rf *)", "Bash(sudo *)", "Bash(chmod 777 *)"] }',
+            auto: false,
+          },
+        });
+      }
+
+      // Check for specific missing denials
+      for (const denial of MISSING_DENIALS) {
+        const hasDenial = perms.deny.some((d) => d.includes(denial.pattern));
+        if (!hasDenial && perms.deny.length > 0) {
+          findings.push({
+            id: `permissions-missing-deny-${denial.pattern.replace(/\s/g, "-")}`,
+            severity: "medium",
+            category: "permissions",
+            title: `Missing deny rule: ${denial.description}`,
+            description: `The deny list does not block "${denial.pattern}". Consider adding it to prevent ${denial.description.toLowerCase()}.`,
+            file: file.path,
+          });
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-dangerous-skip",
+    name: "Dangerous Permission Bypass",
+    description: "Checks for dangerously-skip-permissions or no-verify flags used affirmatively",
+    severity: "critical",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      const findings: Finding[] = [];
+
+      const dangerousPatterns = [
+        {
+          pattern: /dangerously-?skip-?permissions/gi,
+          desc: "Permission system bypass",
+        },
+        {
+          pattern: /--no-verify/g,
+          desc: "Git hook verification bypass",
+        },
+      ];
+
+      // Negation words that indicate the pattern is being PROHIBITED, not used
+      const negationPatterns = [
+        /\bnever\b/i,
+        /\bdon'?t\b/i,
+        /\bdo\s+not\b/i,
+        /\bnot\b/i,
+        /\bavoid\b/i,
+        /\bprohibit/i,
+        /\bforbid/i,
+        /\bdisable/i,
+        /\bban/i,
+        /\bblock/i,
+      ];
+
+      for (const { pattern, desc } of dangerousPatterns) {
+        const matches = [...file.content.matchAll(
+          new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g")
+        )];
+
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+
+          // Check surrounding context (100 chars before) for negation
+          const contextStart = Math.max(0, idx - 100);
+          const context = file.content.substring(contextStart, idx).toLowerCase();
+
+          const isNegated = negationPatterns.some((neg) => neg.test(context));
+
+          if (isNegated) {
+            // This is a prohibition, not a usage — skip or downgrade to info
+            findings.push({
+              id: `permissions-negated-${idx}`,
+              severity: "info",
+              category: "permissions",
+              title: `Prohibition of ${match[0]} (good practice)`,
+              description: `Found "${match[0]}" in a negated/prohibitive context. This is correct — the config is telling the agent NOT to use this flag.`,
+              file: file.path,
+              line: findLineNumber(file.content, idx),
+              evidence: match[0],
+            });
+            continue;
+          }
+
+          findings.push({
+            id: `permissions-dangerous-${idx}`,
+            severity: "critical",
+            category: "permissions",
+            title: `Dangerous flag: ${match[0]}`,
+            description: `${desc}. The flag "${match[0]}" disables safety mechanisms.`,
+            file: file.path,
+            line: findLineNumber(file.content, idx),
+            evidence: match[0],
+            fix: {
+              description: "Remove dangerous bypass flag",
+              before: match[0],
+              after: "# [REMOVED: dangerous bypass flag]",
+              auto: false,
+            },
+          });
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-all-mutable-tools",
+    name: "All Mutable Tools Allowed",
+    description: "Checks if the allow list grants access to all three mutable tool categories simultaneously",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const allowStr = perms.allow.join(" ");
+
+      const hasBash = perms.allow.some((e) => e.startsWith("Bash"));
+      const hasWrite = perms.allow.some((e) => e.startsWith("Write"));
+      const hasEdit = perms.allow.some((e) => e.startsWith("Edit"));
+
+      if (hasBash && hasWrite && hasEdit) {
+        // Check if individual entries are already flagged as overly permissive
+        // This rule adds value when entries are scoped but the combination is dangerous
+        const allUnrestricted =
+          allowStr.includes("Bash(*)") &&
+          allowStr.includes("Write(*)") &&
+          allowStr.includes("Edit(*)");
+
+        // Only flag the combination if not all three are already wildcards
+        // (wildcards are individually flagged by overly-permissive rule)
+        if (!allUnrestricted) {
+          return [
+            {
+              id: "permissions-all-mutable-tools",
+              severity: "high",
+              category: "permissions",
+              title: "All mutable tool categories allowed simultaneously",
+              description:
+                "The allow list grants Bash, Write, and Edit access. Even with scoped patterns, having all three categories means the agent can run commands, create files, and modify files — effectively unrestricted write access to the system. Consider whether all three are truly needed.",
+              file: file.path,
+              fix: {
+                description:
+                  "Remove one or more mutable tool categories if not needed",
+                before: "Bash(...) + Write(...) + Edit(...)",
+                after: "Consider if the agent really needs all three",
+                auto: false,
+              },
+            },
+          ];
+        }
+      }
+
+      return [];
+    },
+  },
+  {
+    id: "permissions-destructive-git",
+    name: "Destructive Git Commands Allowed",
+    description: "Checks if the allow list permits destructive git operations",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      for (const entry of perms.allow) {
+        for (const gitPattern of DESTRUCTIVE_GIT_PATTERNS) {
+          if (gitPattern.pattern.test(entry)) {
+            findings.push({
+              id: `permissions-destructive-git-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Destructive git command allowed: ${entry}`,
+              description: gitPattern.description,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: gitPattern.suggestion,
+                before: entry,
+                after: `# Move to deny list: ${entry}`,
+                auto: false,
+              },
+            });
+            break;
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-sensitive-path-access",
+    name: "Sensitive Path in Allow List",
+    description: "Checks if the allow list permits tool access to sensitive system directories",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      const sensitivePaths: ReadonlyArray<{
+        readonly pattern: RegExp;
+        readonly description: string;
+      }> = [
+        { pattern: /\/etc\//, description: "system configuration directory" },
+        { pattern: /~\/\.ssh|\/\.ssh/, description: "SSH keys and configuration" },
+        { pattern: /~\/\.aws|\/\.aws/, description: "AWS credentials" },
+        { pattern: /~\/\.gnupg|\/\.gnupg/, description: "GPG keyring" },
+        { pattern: /\/root\//, description: "root user home directory" },
+        { pattern: /\/var\/log/, description: "system log directory" },
+      ];
+
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of sensitivePaths) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-sensitive-path-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants access to ${description}: ${entry}`,
+              description: `The allow entry "${entry}" grants tool access to a sensitive directory (${description}). This could expose credentials, keys, or system configuration.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to project directories only",
+                before: entry,
+                after: entry.replace(/\/etc\/.*|~\/\.ssh.*|\/\.ssh.*|~\/\.aws.*|\/\.aws.*|~\/\.gnupg.*|\/\.gnupg.*|\/root\/.*|\/var\/log.*/, "src/*"),
+                auto: false,
+              },
+            });
+            break;
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-wildcard-root-paths",
+    name: "Wildcard Root Path in Allow List",
+    description: "Checks if the allow list uses wildcards on root-level or home-level directories",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      const broadPathPatterns: ReadonlyArray<{
+        readonly pattern: RegExp;
+        readonly description: string;
+      }> = [
+        { pattern: /\(\/\*\)/, description: "root filesystem wildcard" },
+        { pattern: /\(~\/\*\)/, description: "home directory wildcard" },
+        { pattern: /\(\/home\/\*\)/, description: "all users home directories" },
+        { pattern: /\(\/usr\/\*\)/, description: "system programs directory" },
+        { pattern: /\(\/opt\/\*\)/, description: "optional software directory" },
+      ];
+
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of broadPathPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-wildcard-root-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Broad wildcard path in allow list: ${entry}`,
+              description: `The allow entry "${entry}" uses a ${description}. This grants the agent access to far more files than typically needed. Restrict to project-specific paths.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to project-specific directories",
+                before: entry,
+                after: entry.replace(/\(.*\)/, "(./src/*)"),
+                auto: false,
+              },
+            });
+            break;
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-no-permissions-block",
+    name: "No Permissions Block Configured",
+    description: "Checks if settings.json exists but has no permissions configuration at all",
+    severity: "medium",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      try {
+        const config = JSON.parse(file.content);
+
+        if (isHookManifestConfig(file, config)) {
+          return [];
+        }
+
+        // Only flag if the file has other configuration but no permissions
+        const hasOtherConfig = Object.keys(config).some(
+          (k) => k !== "permissions" && k !== "$schema"
+        );
+
+        if (hasOtherConfig && !config.permissions) {
+          return [
+            {
+              id: "permissions-no-block",
+              severity: "medium",
+              category: "permissions",
+              title: "No permissions block configured",
+              description:
+                "settings.json has configuration but no permissions section. Without explicit allow/deny lists, the agent relies on default permissions which may be too broad. Add a permissions block to restrict tool access.",
+              file: file.path,
+              fix: {
+                description: "Add a permissions block with scoped allow and deny lists",
+                before: "No permissions section",
+                after:
+                  '"permissions": { "allow": ["Read(*)", "Glob(*)", "Grep(*)"], "deny": ["Bash(rm -rf *)", "Bash(sudo *)"] }',
+                auto: false,
+              },
+            },
+          ];
+        }
+      } catch {
+        // Not valid JSON
+      }
+
+      return [];
+    },
+  },
+  {
+    id: "permissions-model-endpoint-override",
+    name: "Model Endpoint Override",
+    description: "Checks for external API base URL overrides that can reroute model traffic through attacker-controlled infrastructure",
+    severity: "critical",
+    category: "misconfiguration",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      try {
+        const config = JSON.parse(file.content);
+        const overrideKeys = findConfigKeyValues(
+          config,
+          /^(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|AZURE_OPENAI_ENDPOINT|MODEL_BASE_URL)$/i,
+        );
+
+        return overrideKeys.flatMap(({ path, value }, index) => {
+          if (typeof value !== "string" || !isExternalUrl(value)) {
+            return [];
+          }
+
+          return [{
+            id: `permissions-model-endpoint-override-${index}`,
+            severity: "critical" as const,
+            category: "misconfiguration" as const,
+            title: "External model endpoint override in config",
+            description:
+              "This configuration overrides the model API base URL with an external host. In a repo-level settings file, that can silently reroute prompts, tool calls, and API keys through attacker-controlled infrastructure before the user notices.",
+            file: file.path,
+            evidence: `${path}: ${value}`,
+            fix: {
+              description: "Remove the repo-level endpoint override or point it to a trusted local endpoint only",
+              before: `"${path}": "${value}"`,
+              after: `# Remove ${path} override`,
+              auto: false,
+            },
+          }];
+        });
+      } catch {
+        return [];
+      }
+    },
+  },
+  {
+    id: "permissions-env-in-allow",
+    name: "Environment Variable Access in Allow List",
+    description: "Checks for allow list entries that grant access to environment variables or env files",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      const envPatterns: ReadonlyArray<{
+        readonly pattern: RegExp;
+        readonly description: string;
+      }> = [
+        {
+          pattern: /\.env\b/,
+          description: "Grants access to .env files which may contain secrets",
+        },
+        {
+          pattern: /\bprintenv\b|\benv\b(?!\()/,
+          description: "Grants access to dump environment variables",
+        },
+        {
+          pattern: /\bexport\s/,
+          description: "Allows setting environment variables",
+        },
+      ];
+
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of envPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-env-access-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants env access: ${entry}`,
+              description: `The allow entry "${entry}" ${description}. Environment variables often contain API keys, tokens, and other secrets.`,
+              file: file.path,
+              evidence: entry,
+            });
+            break;
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-unrestricted-network",
+    name: "Unrestricted Network Tool Access",
+    description: "Checks for allow rules that grant unrestricted access to network tools",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "settings-json") return [];
+
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+
+      const findings: Finding[] = [];
+
+      const networkPatterns: ReadonlyArray<{
+        readonly pattern: RegExp;
+        readonly description: string;
+      }> = [
+        {
+          pattern: /^Bash\(curl\s*\*?\)$/i,
+          description: "Allows unrestricted curl — can exfiltrate data to any URL",
+        },
+        {
+          pattern: /^Bash\(wget\s*\*?\)$/i,
+          description: "Allows unrestricted wget — can download from any URL",
+        },
+        {
+          pattern: /^Bash\(nc\b/i,
+          description: "Allows netcat — can open listeners or connect to remote hosts",
+        },
+        {
+          pattern: /^Bash\(ssh\s*\*?\)$/i,
+          description: "Allows unrestricted SSH — can connect to any remote host",
+        },
+        {
+          pattern: /^Bash\(scp\s*\*?\)$/i,
+          description: "Allows unrestricted scp — can copy files to/from any host",
+        },
+      ];
+
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of networkPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-unrestricted-network-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants unrestricted network access: ${entry}`,
+              description: `The allow entry "${entry}" ${description}. Network tools should be restricted to specific hosts or purposes.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to specific hosts or use explicit URLs",
+                before: entry,
+                after: entry.replace("*", "https://specific-host.com/*"),
+                auto: false,
+              },
+            });
+            break;
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
+    id: "permissions-claude-md-world-writable",
+    name: "CLAUDE.md File Permissions Too Open",
+    description: "Checks if CLAUDE.md files have overly permissive filesystem permissions (world-writable or group-writable)",
+    severity: "high",
+    category: "permissions",
+    check(file: ConfigFile): ReadonlyArray<Finding> {
+      if (file.type !== "claude-md") return [];
+
+      // Only check CLAUDE.md files that are likely to be the user's global
+      // config or project-level config — both are prompt injection surfaces.
+      const normalizedPath = file.path.replace(/\\/g, "/");
+      if (!/CLAUDE\.md$/i.test(normalizedPath)) return [];
+
+      // Resolve the file path to an absolute path for stat
+      const absolutePath = resolveClaudeMdPath(normalizedPath);
+      if (!absolutePath) return [];
+
+      try {
+        const stat = statSync(absolutePath);
+        const mode = stat.mode;
+
+        // Check permission bits:
+        // group-writable:  0o020 (bit 4)
+        // other-writable:  0o002 (bit 1)
+        const isGroupWritable = (mode & 0o020) !== 0;
+        const isOtherWritable = (mode & 0o002) !== 0;
+
+        if (!isGroupWritable && !isOtherWritable) return [];
+
+        const issues: string[] = [];
+        if (isOtherWritable) issues.push("world-writable");
+        if (isGroupWritable) issues.push("group-writable");
+
+        const modeStr = "0o" + (mode & 0o777).toString(8);
+
+        return [{
+          id: "permissions-claude-md-world-writable",
+          severity: isOtherWritable ? "high" : "medium",
+          category: "permissions",
+          title: `CLAUDE.md is ${issues.join(" and ")} (${modeStr})`,
+          description:
+            `The file ${normalizedPath} has permissions ${modeStr}, making it ${issues.join(" and ")}. ` +
+            "CLAUDE.md files are injected into every Claude Code prompt as system instructions. " +
+            "A local attacker or malicious process could modify this file to inject prompt instructions " +
+            "that exfiltrate data, run arbitrary commands, or alter agent behavior. " +
+            "Restrict permissions to owner-only (chmod 600).",
+          file: file.path,
+          evidence: `permissions: ${modeStr}`,
+          fix: {
+            description: "Restrict file permissions to owner-only read/write",
+            before: modeStr,
+            after: "0o600",
+            auto: true,
+          },
+        }];
+      } catch {
+        // File may not exist on disk (e.g. running tests with synthetic files)
+        return [];
+      }
+    },
+  },
+];
+
+/**
+ * Resolve a CLAUDE.md relative path to an absolute path for stat.
+ * Handles paths like `.claude/CLAUDE.md`, `CLAUDE.md`, and
+ * home-relative paths.
+ */
+function resolveClaudeMdPath(relativePath: string): string | null {
+  // If it looks like a home-directory config path
+  if (/^\.claude\/CLAUDE\.md$/i.test(relativePath)) {
+    // Could be under home dir or project dir — try home first
+    const homeClaudeMd = join(homedir(), ".claude", "CLAUDE.md");
+    try {
+      statSync(homeClaudeMd);
+      return homeClaudeMd;
+    } catch {
+      // Not under home, try as relative
+    }
+  }
+
+  // Try as-is (relative to cwd)
+  try {
+    const resolved = resolve(relativePath);
+    statSync(resolved);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+function findLineNumber(content: string, matchIndex: number): number {
+  return content.substring(0, matchIndex).split("\n").length;
+}

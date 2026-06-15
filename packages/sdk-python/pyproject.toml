@@ -1,0 +1,20 @@
+[project]
+name = "wh-agent"
+version = "0.1.0"
+description = "W.H.Agent Runtime Middleware for LangChain"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-core>=0.1.0",
+    "httpx>=0.27.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wh-agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

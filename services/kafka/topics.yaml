@@ -1,0 +1,37 @@
+topics:
+  agent.config.changed:
+    partitions: 12
+    retention_ms: 604800000  # 7 days
+    schema:
+      type: object
+      properties:
+        agentId: { type: string }
+        timestamp: { type: string, format: date-time }
+        configDelta: { type: object }
+        mcpConnectors: { type: array }
+
+  security.telemetry:
+    partitions: 24
+    retention_ms: 604800000
+    schema:
+      type: object
+      properties:
+        eventId: { type: string }
+        agentId: { type: string }
+        sessionId: { type: string }
+        eventType: { type: string }
+        layer: { type: string, enum: [middleware, ebpf, sandbox, registry] }
+        payload: { type: object }
+        timestamp: { type: string, format: date-time }
+
+  ebpf.network.event:
+    partitions: 12
+    retention_ms: 259200000  # 3 days
+
+  red_team.result:
+    partitions: 6
+    retention_ms: 2592000000  # 30 days
+
+  policy.generated:
+    partitions: 6
+    retention_ms: 2592000000
