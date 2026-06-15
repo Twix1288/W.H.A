@@ -1,0 +1,11 @@
+
+> @wh-agent/cli@1.1.0 build /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
+> tsup src/index.ts --format cjs --minify
+
+CLI Building entry: src/index.ts
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Target: esnext
+CJS Build start
+CJS dist/index.js 264.50 KB
+CJS ⚡️ Build success in 73ms

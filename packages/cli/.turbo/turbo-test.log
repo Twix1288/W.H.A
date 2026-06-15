@@ -1,0 +1,24 @@
+
+> @wh-agent/cli@1.1.0 test /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
+> bun test
+
+bun test v1.3.6 (d530ed99)
+
+src/ipc/socket-client.test.ts:
+🏃 Running IPC Socket Client Tests...
+   Test 1: Connecting to bad socket (testing 5s timeout...)
+
+src/ipc/integration.test.ts:
+🏃 Running E2E Integration Test...
+   Building shield-agent image...
+
+src/core-scanner/taint/analyzer.test.ts:
+(pass) AST Intra-Procedural Taint Tracking > Detects direct flows from env var to exec [7.80ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects tainted variable flow from env var to exec [1.99ms]
+(pass) AST Intra-Procedural Taint Tracking > Ignores false positive regex matches in strings/comments [0.86ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects credential to network output (TT3) [0.70ms]
+
+ 4 pass
+ 0 fail
+ 8 expect() calls
+Ran 4 tests across 3 files. [426.00ms]

@@ -1,0 +1,333 @@
+
+> @wh-agent/cli@1.1.0 lint /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
+> biome check src
+
+src/commands/install.ts:1:21 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+  > 1 │ import * as fs from 'fs';
+      │                     ^^^^
+    2 │ import * as path from 'path';
+    3 │ import { checkAgent } from './check';
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1    │ - import·*·as·fs·from·'fs';
+        1 │ + import·*·as·fs·from·'node:fs';
+     2  2 │   import * as path from 'path';
+     3  3 │   import { checkAgent } from './check';
+  
+
+src/commands/install.ts:2:23 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    1 │ import * as fs from 'fs';
+  > 2 │ import * as path from 'path';
+      │                       ^^^^^^
+    3 │ import { checkAgent } from './check';
+    4 │ 
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1  1 │   import * as fs from 'fs';
+     2    │ - import·*·as·path·from·'path';
+        2 │ + import·*·as·path·from·'node:path';
+     3  3 │   import { checkAgent } from './check';
+     4  4 │   
+  
+
+src/commands/setup.ts:2:21 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    1 │ import { getProvider } from '../vm';
+  > 2 │ import * as fs from 'fs';
+      │                     ^^^^
+    3 │ import * as path from 'path';
+    4 │ import * as os from 'os';
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1  1 │   import { getProvider } from '../vm';
+     2    │ - import·*·as·fs·from·'fs';
+        2 │ + import·*·as·fs·from·'node:fs';
+     3  3 │   import * as path from 'path';
+     4  4 │   import * as os from 'os';
+  
+
+src/commands/setup.ts:3:23 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    1 │ import { getProvider } from '../vm';
+    2 │ import * as fs from 'fs';
+  > 3 │ import * as path from 'path';
+      │                       ^^^^^^
+    4 │ import * as os from 'os';
+    5 │ import { execSync } from 'child_process';
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1  1 │   import { getProvider } from '../vm';
+     2  2 │   import * as fs from 'fs';
+     3    │ - import·*·as·path·from·'path';
+        3 │ + import·*·as·path·from·'node:path';
+     4  4 │   import * as os from 'os';
+     5  5 │   import { execSync } from 'child_process';
+  
+
+src/commands/setup.ts:4:21 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    2 │ import * as fs from 'fs';
+    3 │ import * as path from 'path';
+  > 4 │ import * as os from 'os';
+      │                     ^^^^
+    5 │ import { execSync } from 'child_process';
+    6 │ 
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     2  2 │   import * as fs from 'fs';
+     3  3 │   import * as path from 'path';
+     4    │ - import·*·as·os·from·'os';
+        4 │ + import·*·as·os·from·'node:os';
+     5  5 │   import { execSync } from 'child_process';
+     6  6 │   
+  
+
+src/commands/setup.ts:5:26 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    3 │ import * as path from 'path';
+    4 │ import * as os from 'os';
+  > 5 │ import { execSync } from 'child_process';
+      │                          ^^^^^^^^^^^^^^^
+    6 │ 
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     3  3 │   import * as path from 'path';
+     4  4 │   import * as os from 'os';
+     5    │ - import·{·execSync·}·from·'child_process';
+        5 │ + import·{·execSync·}·from·'node:child_process';
+     6  6 │   
+     7  7 │   
+  
+
+src/vm/wsl.ts:1:22 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+  > 1 │ import { exec } from 'child_process';
+      │                      ^^^^^^^^^^^^^^^
+    2 │ import { promisify } from 'util';
+    3 │ import * as path from 'path';
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1    │ - import·{·exec·}·from·'child_process';
+        1 │ + import·{·exec·}·from·'node:child_process';
+     2  2 │   import { promisify } from 'util';
+     3  3 │   import * as path from 'path';
+  
+
+src/vm/wsl.ts:2:27 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    1 │ import { exec } from 'child_process';
+  > 2 │ import { promisify } from 'util';
+      │                           ^^^^^^
+    3 │ import * as path from 'path';
+    4 │ import { VMProvider } from './provider';
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1  1 │   import { exec } from 'child_process';
+     2    │ - import·{·promisify·}·from·'util';
+        2 │ + import·{·promisify·}·from·'node:util';
+     3  3 │   import * as path from 'path';
+     4  4 │   import { VMProvider } from './provider';
+  
+
+src/vm/wsl.ts:3:23 lint/style/useNodejsImportProtocol  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i A Node.js builtin module should be imported with the node: protocol.
+  
+    1 │ import { exec } from 'child_process';
+    2 │ import { promisify } from 'util';
+  > 3 │ import * as path from 'path';
+      │                       ^^^^^^
+    4 │ import { VMProvider } from './provider';
+    5 │ 
+  
+  i Using the node: protocol is more explicit and signals that the imported module belongs to Node.js.
+  
+  i Unsafe fix: Add the node: protocol.
+  
+     1  1 │   import { exec } from 'child_process';
+     2  2 │   import { promisify } from 'util';
+     3    │ - import·*·as·path·from·'path';
+        3 │ + import·*·as·path·from·'node:path';
+     4  4 │   import { VMProvider } from './provider';
+     5  5 │   
+  
+
+src/commands/install.ts:1:13 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This import is unused.
+  
+  > 1 │ import * as fs from 'fs';
+      │             ^^
+    2 │ import * as path from 'path';
+    3 │ import { checkAgent } from './check';
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+    1 │ import·*·as·fs·from·'fs';
+      │ -------------------------
+
+src/commands/install.ts:2:13 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This import is unused.
+  
+    1 │ import * as fs from 'fs';
+  > 2 │ import * as path from 'path';
+      │             ^^^^
+    3 │ import { checkAgent } from './check';
+    4 │ 
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     1  1 │   import * as fs from 'fs';
+     2    │ - import·*·as·path·from·'path';
+     3  2 │   import { checkAgent } from './check';
+     4  3 │   
+  
+
+src/commands/setup.ts:39:17 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+  
+    37 │         console.log(`\n✅ Setup complete! You are ready to use 'shield check' and 'shield run'.`);
+    38 │ 
+  > 39 │     } catch (e: any) {
+       │                 ^^^
+    40 │         console.error(`\n❌ Setup Failed: ${e.message}`);
+    41 │         console.error("Please ensure Docker Desktop or WSL2 is installed.");
+  
+  i any disables many type checking rules. Its use should be avoided.
+  
+
+src/commands/setup.ts:5:8 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This import is unused.
+  
+    3 │ import * as path from 'path';
+    4 │ import * as os from 'os';
+  > 5 │ import { execSync } from 'child_process';
+      │        ^^^^^^^^^^^^
+    6 │ 
+  
+  i Unused imports might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: Remove the unused imports.
+  
+     3  3 │   import * as path from 'path';
+     4  4 │   import * as os from 'os';
+     5    │ - import·{·execSync·}·from·'child_process';
+     6  5 │   
+     7  6 │   
+  
+
+src/commands/status.ts:27:17 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+  
+    25 │         console.log(`Isolation tier: ${tier} — ${description}`);
+    26 │ 
+  > 27 │     } catch (e: any) {
+       │                 ^^^
+    28 │         console.error(`❌ Failed to retrieve system status: ${e.message}`);
+    29 │     }
+  
+  i any disables many type checking rules. Its use should be avoided.
+  
+
+src/vm/wsl.ts:15:21 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+  
+    13 │             const { stdout, stderr } = await execAsync('wsl --status');
+    14 │             return true;
+  > 15 │         } catch (e: any) {
+       │                     ^^^
+    16 │             if (e.message.includes('0x80070005')) {
+    17 │                 console.warn("[WARNING] WSL2 is blocked by Corporate Group Policy (0x80070005). Falling back to Docker Desktop.");
+  
+  i any disables many type checking rules. Its use should be avoided.
+  
+
+src/vm/wsl.ts:4:8 lint/style/useImportType  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! All these imports are only used as types.
+  
+    2 │ import { promisify } from 'util';
+    3 │ import * as path from 'path';
+  > 4 │ import { VMProvider } from './provider';
+      │        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    5 │ 
+    6 │ const execAsync = promisify(exec);
+  
+  i Importing the types with import type ensures that they are removed by the compilers and avoids loading unnecessary modules.
+  
+  i Safe fix: Use import type.
+  
+    4 │ import·type·{·VMProvider·}·from·'./provider';
+      │        +++++                                 
+
+src/vm/wsl.ts:13:21 lint/correctness/noUnusedVariables ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This variable stdout is unused.
+  
+    11 │     public async isAvailable(): Promise<boolean> {
+    12 │         try {
+  > 13 │             const { stdout, stderr } = await execAsync('wsl --status');
+       │                     ^^^^^^
+    14 │             return true;
+    15 │         } catch (e: any) {
+  
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+  
+
+src/vm/wsl.ts:13:29 lint/correctness/noUnusedVariables ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This variable stderr is unused.
+  
+    11 │     public async isAvailable(): Promise<boolean> {
+    12 │        
