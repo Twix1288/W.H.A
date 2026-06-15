@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@wh-agent/cli"><img src="https://img.shields.io/npm/v/@wh-agent/cli" alt="NPM Version" /></a>
+  <a href="https://www.npmjs.com/package/wh-agent-cli"><img src="https://img.shields.io/npm/v/wh-agent-cli" alt="NPM Version" /></a>
   <a href="https://github.com/wh-agent/wh-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-FCL--1.0--ALv2-blue.svg" alt="License" /></a>
   <a href="https://github.com/wh-agent/wh-agent/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build Status" /></a>
 </p>
@@ -48,9 +48,9 @@ Persistent agent memory and hidden MCP profiles are prime targets for attackers.
 Install the CLI globally via npm or bun:
 
 ```bash
-npm install -g @wh-agent/cli
+npm install -g wh-agent-cli
 # or
-bun install -g @wh-agent/cli
+bun install -g wh-agent-cli
 ```
 
 ### Global System Scan
