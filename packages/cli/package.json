@@ -1,5 +1,5 @@
 {
-  "name": "@wh-agent/cli",
+  "name": "wh-agent-cli",
   "version": "1.1.0",
   "description": "W.H.Agent CLI",
   "main": "dist/index.js",
