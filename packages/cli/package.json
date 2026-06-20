@@ -1,6 +1,6 @@
 {
   "name": "wh-agent-cli",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "W.H.Agent CLI",
   "main": "dist/index.js",
   "bin": {
@@ -9,12 +9,16 @@
   },
   "files": [
     "dist",
-    "src/scripts"
+    "src/scripts",
+    "bin/wh-sandbox",
+    "bin/wh-sandbox.exe"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs --minify",
     "dev": "ts-node src/index.ts",
     "lint": "biome check src",
+    "check": "biome check .",
+    "update-popular-packages": "node scripts/update-popular-packages.js",
     "test": "bun test",
     "type-check": "tsc --noEmit"
   },
@@ -23,6 +27,7 @@
     "chalk": "^5.6.2",
     "commander": "^12.0.0",
     "glob": "^13.0.6",
+    "tar": "^7.5.16",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"

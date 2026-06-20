@@ -1,6 +1,17 @@
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import chalk from "chalk";
+
+function hasPython3(): boolean {
+	try {
+		execSync("python3 --version", { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 
 export async function checkAgent(scriptPath: string) {
 	console.log(
@@ -14,13 +25,14 @@ export async function checkAgent(scriptPath: string) {
 	}
 
 	if (!scriptPath.endsWith(".py")) {
-		console.warn(
-			`[WARNING] Static AST analysis currently only supports Python files.`,
-		);
-		console.warn(
-			`👉 Proceeding with caution. Use 'shield run' for safe container execution.\n`,
-		);
+		console.log(chalk.yellow(`⚠️  wh-agent check currently only supports Python files.`));
 		return;
+	}
+
+	if (!hasPython3()) {
+		console.error(chalk.red(`❌ python3 is required for 'wh-agent check' but was not found on your PATH.`));
+		console.error(chalk.red(`   Install Python 3: https://www.python.org/downloads/`));
+		process.exit(1);
 	}
 
 	const checkerPath = path.join(__dirname, "../src/scripts/ast_checker.py");

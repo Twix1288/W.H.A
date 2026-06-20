@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import * as os from "node:os";
 import { checkAgent } from "./commands/check";
 import { installAgent } from "./commands/install";
 import { runAgent } from "./commands/run";
@@ -15,18 +16,19 @@ program
 
 program
 	.command("install")
-	.description("Install an agent package securely")
+	.description("Securely fetch and install an agent via npm (with AST/typosquat checking)")
 	.argument("<package>", "package name to install")
 	.option("--pkg-version <version>", "version to install", "latest")
 	.option("-r, --registry-url <url>", "custom registry URL")
 	.option("-f, --force", "force install despite quarantine warnings", false)
+	.option("--dry-run", "run checks without actually installing", false)
 	.option(
 		"--allow-low-score",
 		"allow install of packages with low conformance score",
 		false,
 	)
-	.action((pkg, _options) => {
-		installAgent(pkg).catch((err) => {
+	.action((pkg, options) => {
+		installAgent(pkg, options).catch((err) => {
 			console.error("Failed to install:", err.message);
 			process.exit(1);
 		});
@@ -46,7 +48,7 @@ program
 
 program
 	.command("check")
-	.description("Statically analyze a script for dangerous patterns")
+	.description("Statically analyze a Python script for dangerous patterns")
 	.argument("<script>", "path to the python script")
 	.action((script) => {
 		checkAgent(script).catch((err) => {
@@ -57,14 +59,26 @@ program
 
 program
 	.command("run")
-	.description("Safely execute an agent in the Secure Container Envelope")
+	.description("[experimental] Safely execute an agent in the Secure Container Envelope")
 	.argument("<script>", "path to the script to execute")
 	.option(
 		"-e, --envelope <path>",
 		"path to envelope.yaml configuration",
 		"envelope.yaml",
 	)
+	.option("--experimental", "acknowledge this command is experimental")
 	.action((script, options) => {
+		if (!options.experimental) {
+			console.log(`⚠️  'run' is experimental and requires the --experimental flag to use.`);
+			return;
+		}
+
+		if (os.platform() !== "darwin") {
+			console.error(`❌ 'run' currently only supports macOS (sandbox binary is macOS-only).`);
+			console.error(`   Linux/Windows support is planned — see issue #42.`);
+			process.exit(1);
+		}
+
 		runAgent(script, options.envelope).catch((err) => {
 			console.error("Run failed:", err.message);
 			process.exit(1);
