@@ -41,6 +41,10 @@ When executing agent skills, heavy Docker containers create unacceptable frictio
 ### 🚨 4. Watchdog Configuration Drift Detection
 Persistent agent memory and hidden MCP profiles are prime targets for attackers. W.H.Agent implements persistent state tracking—hashing your vulnerabilities locally and throwing immediate alerts if a malicious skill is silently installed or your sandbox policy drifts over time.
 
+## 🏗️ Project Architecture
+
+W.H.Agent is a monorepo consisting of high-level TypeScript tooling and high-performance Go OS-native sandboxing. If you are looking to understand where all the code that does the work lives, please read our [Architecture Document](ARCHITECTURE.md).
+
 ## 🚀 Quick Start
 
 ### Command Status
