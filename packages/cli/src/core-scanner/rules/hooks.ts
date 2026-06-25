@@ -630,7 +630,7 @@ function findHookCodeLineMatch(
 	file: ConfigFile,
 	patterns: ReadonlyArray<RegExp>,
 ): HookCodeLineMatch | null {
-	if (file.type !== "hook-code") return null;
+	if (file.type !== "hook-code" && !file.type.endsWith("-md")) return null;
 
 	const lines = file.content.split("\n");
 
@@ -660,7 +660,7 @@ function findHookCodeContentMatch(
 	file: ConfigFile,
 	patterns: ReadonlyArray<RegExp>,
 ): HookCodeContentMatch | null {
-	if (file.type !== "hook-code") return null;
+	if (file.type !== "hook-code" && !file.type.endsWith("-md")) return null;
 
 	for (const pattern of patterns) {
 		const regex = new RegExp(
@@ -782,7 +782,8 @@ export const hookRules: ReadonlyArray<Rule> = [
 			if (
 				file.type !== "settings-json" &&
 				file.type !== "hook-script" &&
-				file.type !== "hook-code"
+				file.type !== "hook-code" &&
+				!file.type.endsWith("-md")
 			) {
 				return [];
 			}
@@ -924,7 +925,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -964,7 +965,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -996,7 +997,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "medium",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 			if (isPluginHookManifest(file)) return [];
 
 			const findings: Finding[] = [];
@@ -1046,7 +1047,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 			file: ConfigFile,
 			allFiles?: ReadonlyArray<ConfigFile>,
 		): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 			if (isPluginHookManifest(file)) return [];
 
 			try {
@@ -1102,7 +1103,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "medium",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 
 			const findings: Finding[] = [];
 
@@ -1155,7 +1156,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1214,7 +1215,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "low",
 		category: "misconfiguration",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 
 			try {
 				const config = JSON.parse(file.content);
@@ -1256,7 +1257,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 
 			const findings: Finding[] = [];
 
@@ -1322,7 +1323,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1385,7 +1386,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "exposure",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1439,7 +1440,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "medium",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 			if (isPluginHookManifest(file)) return [];
 
 			const findings: Finding[] = [];
@@ -1511,7 +1512,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "low",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json") return [];
+			if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
 
 			const findings: Finding[] = [];
 
@@ -1566,7 +1567,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1627,7 +1628,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "injection",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1677,7 +1678,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1734,7 +1735,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1795,7 +1796,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "medium",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1859,7 +1860,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1922,7 +1923,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -1984,7 +1985,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2043,7 +2044,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2104,7 +2105,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2155,7 +2156,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2228,7 +2229,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2299,7 +2300,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2352,7 +2353,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2409,7 +2410,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "exfiltration",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2462,7 +2463,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2515,7 +2516,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2571,7 +2572,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2629,7 +2630,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2687,7 +2688,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2747,7 +2748,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "high",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];
@@ -2813,7 +2814,7 @@ export const hookRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "hooks",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
-			if (file.type !== "settings-json" && file.type !== "hook-script")
+			if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
 				return [];
 
 			const findings: Finding[] = [];

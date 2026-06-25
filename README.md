@@ -29,7 +29,10 @@ W.H.Agent uniquely pairs static configuration analysis with a blazing-fast, OS-n
 Don't just scan an isolated project. `W.H.Agent` acts as a central watchdog for your entire machine, automatically discovering and auditing configurations for the industry's most popular AI platforms across System, User, and Workspace scopes.
 **Supported Integrations:** Cursor, Windsurf, VS Code, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, and Antigravity.
 
-### 🧠 2. AST Intra-Procedural Taint Tracking
+### 🦠 2. Deep Threat-Hunting & Payload Detection
+W.H.Agent doesn't just look for bad code in scripts—it actively hunts for reverse shells, data exfiltration attacks (`curl | bash`), and indicators of compromise (IOCs) hidden deep within `.md` instructions, agent definitions, and `SKILL.md` files. We focus on true, critical malware, cutting through the noise of generic linting.
+
+### 🧠 3. AST Intra-Procedural Taint Tracking
 We abandoned noisy regex engines for precision. W.H.Agent dynamically compiles and parses agent scripts into Abstract Syntax Trees (AST). It tracks the intra-procedural flow of variables to detect data exfiltration and toxic control flows before they ever execute—with zero false positives.
 
 ### ⚙️ 3. Sub-Millisecond OS-Native Sandboxing

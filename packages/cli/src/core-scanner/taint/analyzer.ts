@@ -68,6 +68,13 @@ const ALL_SINKS = new Set([
 	...FILE_WRITE_SINKS,
 ]);
 
+const AI_AGENT_TOOL_WHITELIST = new Set([
+	"run_command",
+	"execute_command",
+	"execute_bash",
+	"python_run",
+]);
+
 // ─── Taint Rules ──────────────────────────────────────────────
 
 function pickRule(
@@ -225,6 +232,13 @@ export function analyzeTaint(
 			// 2. Check for sink calls
 			if (ts.isCallExpression(node)) {
 				const sinkName = getCallName(node);
+				
+				// Skip if the function called is a known AI agent tool
+				if (sinkName && AI_AGENT_TOOL_WHITELIST.has(sinkName)) {
+					ts.forEachChild(node, visit);
+					return;
+				}
+
 				if (sinkName && ALL_SINKS.has(sinkName)) {
 					const lineno =
 						sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;

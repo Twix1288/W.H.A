@@ -290,6 +290,7 @@ export const secretRules: ReadonlyArray<Rule> = [
 		severity: "critical",
 		category: "secrets",
 		check(file: ConfigFile): ReadonlyArray<Finding> {
+			if (file.type === "package-manager-config") return [];
 			const findings: Finding[] = [];
 
 			for (const secretPattern of SECRET_PATTERNS) {

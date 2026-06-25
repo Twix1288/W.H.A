@@ -17,6 +17,8 @@ const IGNORED_DIRS = new Set([
 	"out",
 	"target",
 	"vendor",
+	"brain",
+	"scratch",
 ]);
 
 const CLAUDE_ROOT_MARKERS = new Set([
@@ -456,6 +458,13 @@ function addDiscoveredFile(
 ): void {
 	const relativePath = relative(scanRoot, fullPath);
 	if (seenFiles.has(relativePath)) return;
+
+	// Ignore common cache, node_modules, and transcript files
+	const pathParts = relativePath.split(/[\\/]/);
+	if (pathParts.includes("node_modules") || pathParts.includes(".cache")) return;
+	
+	const lowerName = basename(fullPath).toLowerCase();
+	if (lowerName.endsWith(".jsonl") || lowerName === "transcript.json" || lowerName.endsWith(".log")) return;
 
 	const content = readFileSync(fullPath, "utf-8");
 	files.push({ path: relativePath, type, content });

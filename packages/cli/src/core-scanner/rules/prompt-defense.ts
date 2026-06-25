@@ -167,7 +167,7 @@ export const promptDefenseRules: ReadonlyArray<Rule> = [
 					: "";
 				findings.push({
 					id: `prompt-defense-missing-${defense.id}-${file.path}`,
-					severity: defense.severity,
+					severity: "low",
 					category: "injection",
 					title: `Missing prompt defense: ${defense.name}`,
 					description: `${defense.description}${owaspNote}`,
