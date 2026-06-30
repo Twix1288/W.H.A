@@ -1,4 +1,5 @@
-import type { SyntaxNode, Tree, Parser } from 'tree-sitter';
+import type { SyntaxNode, Tree } from 'tree-sitter';
+import type Parser from 'tree-sitter';
 import { ParseResult } from './parser';
 
 export type FixStrategy = 'param_rewrite' | 'literal_stub';
@@ -166,7 +167,7 @@ export function runRules(parseResult: ParseResult, rules: Rule[]): Finding[] {
               const mainNode = match.captures[match.captures.length - 1].node;
               let targetNode = mainNode;
               if (rule.fixStrategy === 'param_rewrite') {
-                const valCapture = match.captures.find(c => c.name === 'val');
+                const valCapture = match.captures.find((c: any) => c.name === 'val');
                 if (valCapture) targetNode = valCapture.node;
               }
 

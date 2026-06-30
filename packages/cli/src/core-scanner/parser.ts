@@ -19,22 +19,22 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
 
   switch (ext) {
     case '.py':
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as any);
       break;
     case '.js':
-      parser.setLanguage(JavaScript);
+      parser.setLanguage(JavaScript as any);
       break;
     case '.ts':
     case '.tsx':
       // tree-sitter-typescript exports { typescript, tsx }
-      parser.setLanguage((TypeScript as any).typescript || TypeScript);
+      parser.setLanguage(((TypeScript as any).typescript || TypeScript) as any);
       break;
     case '.sh':
     case '.bash':
-      parser.setLanguage(Bash);
+      parser.setLanguage(Bash as any);
       break;
     case '.rs':
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as any);
       break;
     default:
       // unknown extensions fall back to line-based text scanning

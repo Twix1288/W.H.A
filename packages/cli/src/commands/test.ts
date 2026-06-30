@@ -21,7 +21,7 @@ export async function testAgent(scriptPath: string) {
 	// 1. Static Supply Chain Scan
 	console.log(`[1/3] Static Supply Chain Scan...`);
 	// This throws and exits if malicious
-	await checkAgent(scriptPath);
+	await checkAgent([scriptPath], { format: 'text' });
 
 	// 2. VM Provisioning
 	console.log(`\n[2/3] Provisioning Secure Envelope...`);
