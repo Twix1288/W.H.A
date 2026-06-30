@@ -48,10 +48,13 @@ program
 
 program
 	.command("check")
-	.description("Statically analyze a Python script for dangerous patterns")
-	.argument("<script>", "path to the python script")
-	.action((script) => {
-		checkAgent(script).catch((err) => {
+	.description("Statically analyze files for dangerous patterns using universal AST scanner")
+	.argument("[files...]", "paths to the files to analyze (leave empty to scan all supported files in cwd)")
+	.option("--fix", "automatically fix fixable vulnerabilities")
+	.option("--format <format>", "output format (text, json, sarif)", "text")
+	.option("-o, --output <path>", "path to write the output file")
+	.action((files, options) => {
+		checkAgent(files, options).catch((err) => {
 			console.error("Check failed:", err.message);
 			process.exit(1);
 		});

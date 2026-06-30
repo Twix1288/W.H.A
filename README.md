@@ -55,7 +55,7 @@ W.H.Agent is a monorepo consisting of high-level TypeScript tooling and high-per
 | Command | Status |
 |---------|--------|
 | `wh-agent scan` | **Production-ready** — global agent discovery, JSON/SARIF/Markdown export |
-| `wh-agent check` | **Python files only**, requires python3 installed |
+| `wh-agent check` | **Production-ready** — Universal tree-sitter AST scanning (Python, JS, TS, Bash, Rust) with auto-remediation |
 | `wh-agent setup` | **Requires Docker Desktop** |
 | `wh-agent install`| **Secure install** via npm, AST and typosquat checking |
 | `wh-agent run` | **Experimental** — requires `--experimental` flag. **macOS-only binary in this release.** |
@@ -84,12 +84,12 @@ Export deep, verbose findings directly to a JSON or SARIF file for your security
 wh-agent scan --global --format json --output report.json
 ```
 
-### 2. Static Analysis Check (Python Only)
+### 2. Universal Static Analysis Check (AST-level)
 
-Run AST-level static vulnerability checks on Python files:
+Run AST-level static vulnerability checks and threat-hunting on Python, JavaScript, TypeScript, Rust, and Bash files. Includes auto-remediation for dangerous execution and secret exposures!
 
 ```bash
-wh-agent check script.py
+wh-agent check script.py --fix --format sarif
 ```
 
 ### 3. Secure Install
