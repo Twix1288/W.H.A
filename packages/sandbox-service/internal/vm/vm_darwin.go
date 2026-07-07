@@ -48,18 +48,61 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
         return nil, fmt.Errorf("failed to write code: %w", err)
     }
 
-    // 3. Generate Seatbelt profile
-    // This profile denies everything by default, allows reading everywhere (for libraries),
-    // but strictly denies network egress and restricts writing to the temp dir only.
+    // 3. Generate a default-DENY Seatbelt profile (allow-list model).
+    //
+    // Nothing is readable unless explicitly allowed, so the user's home
+    // (~/.ssh, ~/.aws, ~/.config, Documents), /Volumes, /tmp, and every other
+    // host location are denied by *omission* — not by a fragile deny-list.
+    //
+    // We build on Apple's own base profile `bsd.sb` (which imports system.sb ->
+    // dyld-support.sb). That base is what correctly grants the reads/maps a
+    // process needs to launch on THIS macOS version: the dyld shared cache,
+    // /System, /usr/lib, /usr/share, /dev, and the mach services for name
+    // resolution. Reproducing that by hand is why a naive allow-list aborts
+    // every binary at startup — on macOS, mapping a dylib needs the separate
+    // `file-map-executable` permission, not just `file-read*`. Relying on the
+    // platform base also means we track OS changes for free, and if the base
+    // profile is ever missing the sandbox fails *closed* (nothing executes).
+    //
+    // Resolve symlinks so subpath matching runs against the canonical path
+    // (on macOS $TMPDIR is /var/folders -> /private/var/folders).
+    realTmp, symErr := filepath.EvalSymlinks(tmpDir)
+    if symErr != nil {
+        realTmp = tmpDir
+    }
+
     profile := fmt.Sprintf(`(version 1)
 (deny default)
-(allow process-exec)
+(allow syscall*)
+(allow mach-bootstrap)
+(import "bsd.sb")
 (allow process-fork)
-(allow sysctl-read)
-(allow file-read*)
-(allow file-write* (subpath "%s"))
+(allow process-exec*)
+
+; Read + map the interpreter and its libraries. These are OS / software-install
+; roots, never user data. (bsd.sb already covers /System, /usr/lib, /usr/share,
+; the dyld shared cache, /dev, and the mach services needed to launch.)
+(allow file-read* file-map-executable file-test-existence
+       (subpath "/bin")
+       (subpath "/sbin")
+       (subpath "/usr/bin")
+       (subpath "/usr/sbin")
+       (subpath "/Library/Frameworks")   ; python.org & other framework installs
+       (subpath "/Library/Developer")    ; Xcode Command Line Tools interpreters
+       (subpath "/opt")                  ; Homebrew (Apple Silicon), MacPorts
+       (subpath "/usr/local"))           ; Homebrew (Intel), /usr/local installs
+
+; The sandbox scratch dir: the untrusted script itself + anything it writes.
+(allow file-read* file-write* file-map-executable
+       (subpath "%s"))
+
+; Defense in depth over the base profile: it permits passwd/hosts DATA for
+; libinfo, but user/group resolution actually goes through opendirectoryd over
+; mach — so deny the file data (blocks e.g. reading /etc/passwd) while name
+; lookups keep working. And deny all network egress.
+(deny file-read-data (subpath "/private/etc"))
 (deny network*)
-`, tmpDir)
+`, realTmp)
 
     profilePath := filepath.Join(tmpDir, "profile.sb")
     if err := os.WriteFile(profilePath, []byte(profile), 0644); err != nil {
@@ -85,7 +128,12 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
     // Wrap with sandbox-exec
     args := append([]string{"-f", profilePath}, cmdArgs...)
     cmd := exec.CommandContext(execCtx, "sandbox-exec", args...)
-    
+
+    // Run inside the sandbox scratch dir. Otherwise the child inherits our cwd
+    // (which may be under a now-denied location like the user's home), and even
+    // getcwd(3) fails. This keeps the untrusted script confined to its own dir.
+    cmd.Dir = realTmp
+
     // Pass explicitly allowed environment variables
     for k, v := range req.Env {
         cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
