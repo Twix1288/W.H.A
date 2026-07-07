@@ -3,8 +3,7 @@
 </p>
 
 <p align="center">
-  The State-of-the-Art Security Platform for Autonomous AI Agents.<br/>
-  Discover, scan, and securely sandbox agent components, MCP servers, and skills.
+  An antivirus and execution sandbox for your local AI agents.
 </p>
 
 <p align="center">
@@ -15,53 +14,36 @@
 
 ---
 
-## 🛡️ The AI Threat Landscape has Evolved
+## Why this exists
 
-The transition from stateless LLMs to autonomous, stateful AI agents embedded directly in developers' environments has opened up an unprecedented attack surface. Traditional software boundaries no longer apply to agents that dynamically execute code, retrieve sensitive context, and trigger downstream operations via tools like the Model Context Protocol (MCP).
+We keep giving autonomous AI agents full terminal access to our laptops. If an agent hallucinates, or if it falls victim to a prompt injection attack, it can silently read your SSH keys or overwrite your project files. W.H.Agent provides boundaries. It scans agent configurations for vulnerabilities and runs their tools inside a strict, isolated OS sandbox so they cannot access files they shouldn't.
 
-**W.H.Agent** is designed to provide enterprise-grade pre-execution and runtime defenses, directly neutralizing advanced persistent threats like **Prompt Injection**, **Malicious Tool Use**, and **Silent Memory Poisoning**.
+## How it works
 
-## ✨ Key Features
+W.H.Agent protects your machine in two stages: static scanning (finding bad code on disk) and runtime sandboxing (trapping the execution).
 
-W.H.Agent uniquely pairs static configuration analysis with a blazing-fast, OS-native execution sandbox.
+### 1. The Scanners (Production Ready)
+- **Global Agent Auto-Discovery:** It acts as a watchdog. It scans your entire machine and finds configurations for Cursor, Windsurf, VS Code, Claude Desktop, Gemini CLI, and others.
+- **AST Taint Tracking:** Instead of using regex, we parse agent scripts into Abstract Syntax Trees (AST). The scanner analyzes Python, JavaScript, TypeScript, Bash, and Rust. It tracks how variables flow through the code to catch data exfiltration logic before it runs.
+- **Supply Chain Checks:** The `install` command safely downloads npm packages, checking for typosquatting and hardcoded secrets before anything reaches your terminal.
 
-### 🔍 1. Global Agent Auto-Discovery
-Don't just scan an isolated project. `W.H.Agent` acts as a central watchdog for your entire machine, automatically discovering and auditing configurations for the industry's most popular AI platforms across System, User, and Workspace scopes.
-**Supported Integrations:** Cursor, Windsurf, VS Code, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, and Antigravity.
+### 2. The Runtime Sandbox (Experimental)
+When an agent tries to run a tool, W.H.Agent intercepts the command and isolates the subprocess using native OS primitives. We do not use heavy Docker containers; we use the exact primitives built into your operating system.
 
-### 🦠 2. Deep Threat-Hunting & Payload Detection
-W.H.Agent doesn't just look for bad code in scripts—it actively hunts for reverse shells, data exfiltration attacks (`curl | bash`), and indicators of compromise (IOCs) hidden deep within `.md` instructions, agent definitions, and `SKILL.md` files. We focus on true, critical malware, cutting through the noise of generic linting.
+- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`).
+- **Linux:** Swappable backends. You can toggle between native `Landlock` enforcement or full `gVisor` containers using the `WH_SANDBOX_BACKEND` environment variable.
+- **Windows:** Support is currently planned and not yet available.
 
-### 🧠 3. AST Intra-Procedural Taint Tracking
-We abandoned noisy regex engines for precision. W.H.Agent dynamically compiles and parses agent scripts into Abstract Syntax Trees (AST). **It now fully supports and analyzes Python, JavaScript, TypeScript, Bash, and Rust.** It tracks the intra-procedural flow of variables to detect data exfiltration and toxic control flows before they ever execute—with zero false positives.
+**Golden Snapshots:** To prevent an agent from silently overwriting its own tool script on disk *after* the security scan finishes, we compute an AST hash of the tool and freeze it. If the file on disk changes before execution, W.H.Agent blocks the process instantly.
 
-### ⚙️ 4. Sub-Millisecond OS-Native Sandboxing
-When executing agent skills, heavy Docker containers create unacceptable friction. W.H.Agent isolates subprocess trees instantly using the exact native sandboxing primitives built into your operating system:
-- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`) *(Available)*
-- **Linux:** Swappable backends supporting both native `Landlock` enforcement and full `gVisor` containers, toggled instantly via the `WH_SANDBOX_BACKEND` env var. *(Available)*
-- **Windows:** Job Objects and AppContainer (Low Box tokens) *(Planned)*
+## ⚠️ Transparency Note
+We want to be entirely clear about what works today. 
+The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are stable and production-ready. 
+The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files on macOS and Linux. However, it is still experimental. Windows support is pending, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is currently a prototype.
 
-### 🔒 5. Golden Snapshots & Hash Binding
-We compute a deterministic AST hash of your agent tools and freeze them. If an attacker tries to silently rewrite a script on your disk later, the signature check fails and execution gets blocked instantly.
+---
 
-### 🚨 6. Watchdog Configuration Drift Detection
-Persistent agent memory and hidden MCP profiles are prime targets for attackers. W.H.Agent implements persistent state tracking—hashing your vulnerabilities locally and throwing immediate alerts if a malicious skill is silently installed or your sandbox policy drifts over time.
-
-## 🏗️ Project Architecture
-
-W.H.Agent is a monorepo consisting of high-level TypeScript tooling and high-performance Go OS-native sandboxing. If you are looking to understand where all the code that does the work lives, please read our [Architecture Document](ARCHITECTURE.md).
-
-## 🚀 Quick Start
-
-### Command Status
-
-| Command | Status |
-|---------|--------|
-| `wh-agent scan` | **Production-ready** — global agent discovery, JSON/SARIF/Markdown export |
-| `wh-agent check` | **Production-ready** — Universal tree-sitter AST scanning (Python, JS, TS, Bash, Rust) with auto-remediation |
-| `wh-agent setup` | **Requires Docker Desktop** |
-| `wh-agent install`| **Secure install** via npm, AST and typosquat checking |
-| `wh-agent run` | **Experimental** — requires `--experimental` flag. Sandboxing is fully functional on macOS and Linux. |
+## Quick Start
 
 ### Installation
 
@@ -73,69 +55,102 @@ npm install -g wh-agent-cli
 bun install -g wh-agent-cli
 ```
 
-### 1. Global System Scan (Production Ready)
+## Command Reference
 
-Auto-discover and scan every agent installed on your machine. This renders an elegant summary table without polluting your terminal:
+### 1. Global System Scan (`scan`)
+Find and audit every agent installed on your machine. It searches common installation directories for known agent configurations (Cursor, Claude, etc.) and analyzes their permissions and prompts.
 
+**Usage:**
 ```bash
-wh-agent scan --global
+wh-agent scan [options]
 ```
 
-Export deep, verbose findings directly to a JSON or SARIF file for your security pipeline:
+**Options:**
+- `--global`: Run a system-wide scan across all known agent directories instead of just the current workspace.
+- `--format <type>`: Choose the output format. Options are `table` (default), `json`, `markdown`, or `sarif`.
+- `--output <file>`: Write the results to a specific file (e.g., `report.json`).
 
+**Example:**
 ```bash
-wh-agent scan --global --format json --output report.json
+wh-agent scan --global --format sarif --output ci-report.sarif
 ```
 
-### 2. Universal Static Analysis Check (AST-level)
+### 2. Universal Static Analysis Check (`check`)
+Run the AST-level vulnerability check on specific scripts. This is useful for analyzing custom MCP tools or scripts before deploying them.
 
-Run AST-level static vulnerability checks and threat-hunting on Python, JavaScript, TypeScript, Rust, and Bash files. Includes auto-remediation for dangerous execution and secret exposures!
-
+**Usage:**
 ```bash
-wh-agent check script.py --fix --format sarif
+wh-agent check <filepath> [options]
 ```
 
-### 3. Secure Install
+**Arguments:**
+- `<filepath>`: The path to the script you want to analyze (supports `.py`, `.js`, `.ts`, `.sh`, `.rs`).
 
-Install a package safely via npm with built-in typosquatting and supply chain scanning:
+**Options:**
+- `--fix`: Automatically attempt to rewrite the code to remove the vulnerability (e.g., removing hardcoded secrets).
+- `--format <type>`: Choose the output format (`table`, `json`, `markdown`, `sarif`).
 
+**Example:**
 ```bash
-wh-agent install <package>
+wh-agent check ./tools/database_query.py --fix
 ```
 
-### 4. Secure Execution (Experimental)
+### 3. Secure Install (`install`)
+Download a package safely with built-in typosquatting and supply chain scanning.
 
-Wrap an untrusted agent or script execution inside W.H.Agent's OS-native sandbox. Requires the `--experimental` flag. 
-
-⚠️ **Transparency Note:** The runtime sandbox physically intercepts payloads and works robustly on macOS (Seatbelt) and Linux (Landlock/gVisor). Windows support is still pending. While we have tests proving the isolation works and catches tampered files, passing dynamic arguments into a frozen sandbox snapshot (parameterization IPC) is still in the prototyping phase.
-
+**Usage:**
 ```bash
-wh-agent run ./malicious-agent.js --experimental
+wh-agent install <package_name>
+```
+
+**Arguments:**
+- `<package_name>`: The npm or system package you want to install.
+
+**Example:**
+```bash
+wh-agent install mcp-postgres-server
+```
+
+### 4. Secure Execution (`run`)
+Wrap an untrusted script inside the OS sandbox. The sandbox physically intercepts risky system calls based on the active backend.
+
+**Usage:**
+```bash
+WH_SANDBOX_BACKEND=<backend> wh-agent run <executable> [args...] --experimental
+```
+
+**Arguments:**
+- `<executable>`: The script or binary to run.
+- `[args...]`: Any arguments to pass to the script.
+
+**Options & Environment Variables:**
+- `--experimental`: **Required.** Acknowledges that the runtime sandbox is still in prototyping phase.
+- `WH_SANDBOX_BACKEND`: Controls the isolation engine. 
+  - Set to `landlock` (Linux) for unprivileged native restriction.
+  - Set to `gvisor` (Linux) for a full userspace kernel container.
+  - Omit on macOS to default to `sandbox-exec` (Seatbelt).
+
+**Example (Linux):**
+```bash
+WH_SANDBOX_BACKEND=landlock wh-agent run ./malicious-agent.js --experimental
 ```
 
 ---
 
-## 🎯 The Breakout Challenge (Hall of Fame)
+## 🎯 The Breakout Challenge
 
-If you can break out of the AI agent sandbox we just built, we will put your name at the very top of this README.
+We want to prove this holds up against real attacks. If you can break out of the AI agent sandbox, we will permanently add your name and LinkedIn profile to the top of the contributors section of this README.
 
-We want to prove this holds up against real attacks. If you can write an MCP tool or agent script that successfully bypasses the Linux or macOS isolation layer and reads a protected host file, you get the top spot in our Hall of Fame. 
+If you can write an MCP tool or agent script that successfully bypasses the Linux or macOS isolation layer and reads a protected host file, the spot is yours. 
+
 To test it:
 1. Wrap your malicious payload: `WH_SANDBOX_BACKEND=landlock wh-agent run payload.py --experimental`
-2. Open an issue with your bypass method.
+2. Open an issue explaining how you broke it, and submit a PR with the fix. If your fix works, you are in.
 
-## 🛠️ Output Formats
+## Contributing
 
-W.H.Agent supports multiple output formats natively:
-- **Terminal:** Elegant summary tables for human readability.
-- **JSON:** Fully structured data array of all findings and grades.
-- **Markdown:** Clean, readable text format for GitHub issue creation.
-- **SARIF:** Industry-standard format for native GitHub Advanced Security and CI/CD ingestion.
+We welcome contributions. Review [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
-## 🤝 Contributing
+## License
 
-We welcome contributions! Please review our [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
-
-## 📄 License
-
-This project is licensed under the FCL-1.0-ALv2 License. See the [LICENSE](LICENSE) file for details.
+Licensed under the FCL-1.0-ALv2 License. See the [LICENSE](LICENSE) file for details.
