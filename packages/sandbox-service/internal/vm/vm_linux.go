@@ -11,22 +11,22 @@ import (
     "time"
 )
 
-type LinuxSandbox struct {
+type LandlockSandbox struct {
     id string
 }
 
-type LinuxFactory struct{}
+type LandlockFactory struct{}
 
-func (f *LinuxFactory) Create(ctx context.Context) (OSProcessSandbox, error) {
-    id := fmt.Sprintf("sb-linux-%d", time.Now().UnixNano())
-    return &LinuxSandbox{id: id}, nil
+func (f *LandlockFactory) Create(ctx context.Context) (OSProcessSandbox, error) {
+    id := fmt.Sprintf("sb-landlock-%d", time.Now().UnixNano())
+    return &LandlockSandbox{id: id}, nil
 }
 
-func (s *LinuxSandbox) ID() string {
+func (s *LandlockSandbox) ID() string {
     return s.id
 }
 
-func (s *LinuxSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
+func (s *LandlockSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
     start := time.Now()
 
     tmpDir, err := os.MkdirTemp("", "sandbox-*")
@@ -103,10 +103,107 @@ func (s *LinuxSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResul
     }, nil
 }
 
-func (s *LinuxSandbox) Destroy(ctx context.Context) error {
+func (s *LandlockSandbox) Destroy(ctx context.Context) error {
     return nil
 }
 
+// --- gVisor Implementation ---
+
+type GvisorSandbox struct {
+    id string
+}
+
+type GvisorFactory struct{}
+
+func (f *GvisorFactory) Create(ctx context.Context) (OSProcessSandbox, error) {
+    id := fmt.Sprintf("sb-gvisor-%d", time.Now().UnixNano())
+    return &GvisorSandbox{id: id}, nil
+}
+
+func (s *GvisorSandbox) ID() string {
+    return s.id
+}
+
+func (s *GvisorSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
+    start := time.Now()
+
+    tmpDir, err := os.MkdirTemp("", "gvisor-*")
+    if err != nil {
+        return nil, fmt.Errorf("failed to create temp dir: %w", err)
+    }
+    defer os.RemoveAll(tmpDir)
+
+    codePath := filepath.Join(tmpDir, "script")
+    if req.Language == "python" {
+        codePath += ".py"
+    } else {
+        codePath += ".sh"
+    }
+
+    if err := os.WriteFile(codePath, []byte(req.Code), 0755); err != nil {
+        return nil, fmt.Errorf("failed to write code: %w", err)
+    }
+
+    timeout := time.Duration(req.TimeoutMs) * time.Millisecond
+    if timeout == 0 {
+        timeout = 5 * time.Second
+    }
+    
+    execCtx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+
+    var cmdArgs []string
+    if req.Language == "python" {
+        cmdArgs = []string{"runsc", "do", "python3", codePath}
+    } else {
+        cmdArgs = []string{"runsc", "do", "bash", codePath}
+    }
+
+    cmd := exec.CommandContext(execCtx, cmdArgs[0], cmdArgs[1:]...)
+
+    for k, v := range req.Env {
+        cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+    }
+
+    var stdout, stderr bytes.Buffer
+    cmd.Stdout = &stdout
+    cmd.Stderr = &stderr
+
+    err = cmd.Run()
+
+    exitCode := 0
+    killed := false
+    if err != nil {
+        if exitError, ok := err.(*exec.ExitError); ok {
+            exitCode = exitError.ExitCode()
+        } else {
+            exitCode = -1
+        }
+        if execCtx.Err() == context.DeadlineExceeded {
+            killed = true
+        }
+    }
+
+    return &ExecResult{
+        Stdout:      stdout.String(),
+        Stderr:      stderr.String(),
+        ExitCode:    exitCode,
+        ExecutionMs: time.Since(start).Milliseconds(),
+        SandboxID:   s.id,
+        Killed:      killed,
+    }, nil
+}
+
+func (s *GvisorSandbox) Destroy(ctx context.Context) error {
+    return nil
+}
+
+// --- Factory Selection ---
+
 func NewOSFactory() SandboxFactory {
-	return &LinuxFactory{}
+    backend := os.Getenv("WH_SANDBOX_BACKEND")
+    if backend == "gvisor" {
+        return &GvisorFactory{}
+    }
+    return &LandlockFactory{}
 }

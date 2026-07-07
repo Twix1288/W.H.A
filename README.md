@@ -33,15 +33,18 @@ Don't just scan an isolated project. `W.H.Agent` acts as a central watchdog for 
 W.H.Agent doesn't just look for bad code in scripts—it actively hunts for reverse shells, data exfiltration attacks (`curl | bash`), and indicators of compromise (IOCs) hidden deep within `.md` instructions, agent definitions, and `SKILL.md` files. We focus on true, critical malware, cutting through the noise of generic linting.
 
 ### 🧠 3. AST Intra-Procedural Taint Tracking
-We abandoned noisy regex engines for precision. W.H.Agent dynamically compiles and parses agent scripts into Abstract Syntax Trees (AST). It tracks the intra-procedural flow of variables to detect data exfiltration and toxic control flows before they ever execute—with zero false positives.
+We abandoned noisy regex engines for precision. W.H.Agent dynamically compiles and parses agent scripts into Abstract Syntax Trees (AST). **It now fully supports and analyzes Python, JavaScript, TypeScript, Bash, and Rust.** It tracks the intra-procedural flow of variables to detect data exfiltration and toxic control flows before they ever execute—with zero false positives.
 
-### ⚙️ 3. Sub-Millisecond OS-Native Sandboxing
+### ⚙️ 4. Sub-Millisecond OS-Native Sandboxing
 When executing agent skills, heavy Docker containers create unacceptable friction. W.H.Agent isolates subprocess trees instantly using the exact native sandboxing primitives built into your operating system:
-- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`) *(Currently Available)*
-- **Linux:** Unprivileged Landlock enforcement and `seccomp-bpf` *(Planned)*
+- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`) *(Available)*
+- **Linux:** Swappable backends supporting both native `Landlock` enforcement and full `gVisor` containers, toggled instantly via the `WH_SANDBOX_BACKEND` env var. *(Available)*
 - **Windows:** Job Objects and AppContainer (Low Box tokens) *(Planned)*
 
-### 🚨 4. Watchdog Configuration Drift Detection
+### 🔒 5. Golden Snapshots & Hash Binding
+We compute a deterministic AST hash of your agent tools and freeze them. If an attacker tries to silently rewrite a script on your disk later, the signature check fails and execution gets blocked instantly.
+
+### 🚨 6. Watchdog Configuration Drift Detection
 Persistent agent memory and hidden MCP profiles are prime targets for attackers. W.H.Agent implements persistent state tracking—hashing your vulnerabilities locally and throwing immediate alerts if a malicious skill is silently installed or your sandbox policy drifts over time.
 
 ## 🏗️ Project Architecture
@@ -58,7 +61,7 @@ W.H.Agent is a monorepo consisting of high-level TypeScript tooling and high-per
 | `wh-agent check` | **Production-ready** — Universal tree-sitter AST scanning (Python, JS, TS, Bash, Rust) with auto-remediation |
 | `wh-agent setup` | **Requires Docker Desktop** |
 | `wh-agent install`| **Secure install** via npm, AST and typosquat checking |
-| `wh-agent run` | **Experimental** — requires `--experimental` flag. **macOS-only binary in this release.** |
+| `wh-agent run` | **Experimental** — requires `--experimental` flag. Sandboxing is fully functional on macOS and Linux. |
 
 ### Installation
 
@@ -104,13 +107,22 @@ wh-agent install <package>
 
 Wrap an untrusted agent or script execution inside W.H.Agent's OS-native sandbox. Requires the `--experimental` flag. 
 
-⚠️ **Note:** The `wh-sandbox` binary shipped in this release is currently **macOS-only**. Linux and Windows support is planned for a future release (see issue #42).
+⚠️ **Transparency Note:** The runtime sandbox physically intercepts payloads and works robustly on macOS (Seatbelt) and Linux (Landlock/gVisor). Windows support is still pending. While we have tests proving the isolation works and catches tampered files, passing dynamic arguments into a frozen sandbox snapshot (parameterization IPC) is still in the prototyping phase.
 
 ```bash
 wh-agent run ./malicious-agent.js --experimental
 ```
 
 ---
+
+## 🎯 The Breakout Challenge (Hall of Fame)
+
+If you can break out of the AI agent sandbox we just built, we will put your name at the very top of this README.
+
+We want to prove this holds up against real attacks. If you can write an MCP tool or agent script that successfully bypasses the Linux or macOS isolation layer and reads a protected host file, you get the top spot in our Hall of Fame. 
+To test it:
+1. Wrap your malicious payload: `WH_SANDBOX_BACKEND=landlock wh-agent run payload.py --experimental`
+2. Open an issue with your bypass method.
 
 ## 🛠️ Output Formats
 
