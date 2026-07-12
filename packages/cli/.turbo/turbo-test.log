@@ -1,17 +1,32 @@
 
-> wh-agent-cli@1.2.0 test /Users/rishitagnihotri/Current Projects/ai_antivirus/wh-agent/packages/cli
+> wh-agent-cli@1.2.1 test /Users/rishitagnihotri/Current Projects/ai_antivirus/wh-agent/packages/cli
 > bun test
 
 bun test v1.3.6 (d530ed99)
 
+src/e2e-fixes.test.ts:
+(pass) Production Fixes E2E Tests > Linux sandboxing does not instantly block execution based on OS [2132.00ms]
+(pass) Production Fixes E2E Tests > JSON-v2 and SARIF output correctly flag Python files as unsupported for Taint Tracking [1952.24ms]
+🛡️ W.H.Agent: Initializing Native OS Sandbox for /Users/rishitagnihotri/Current Projects/ai_antivirus/wh-agent/packages/cli/src/e2e-scratch/dummy-toctou.py
+[32m[W.H.Agent] Golden Snapshot bound to session sandbox-session-e845265b-1eaa-420a-8ccc-53979c65f910[0m
+[90m> Hash: sha256:5f7b503ab...[0m
+[NETWORK] Default-Deny enforced.
+[STORAGE] Root filesystem restricted.
+[ISOLATION] Sub-millisecond OS-Native isolation active.
+
+🚀 Launching isolated process...
+
+[W.H.Agent] Intercepting execution. Verifying payload signature against Golden Snapshot...
+(pass) Production Fixes E2E Tests > Golden Snapshots block execution if file is tampered with TOCTOU [7.65ms]
+
 src/core-scanner/fingerprint.test.ts:
-(pass) Golden Snapshot Hash Binding > should correctly verify an unmodified tool [2.15ms]
-(pass) Golden Snapshot Hash Binding > should reject a tool if the source code has been tampered with [0.05ms]
+(pass) Golden Snapshot Hash Binding > should correctly verify an unmodified tool
+(pass) Golden Snapshot Hash Binding > should reject a tool if the source code has been tampered with [0.22ms]
 (pass) Golden Snapshot Hash Binding > should reject verification if the snapshot ID mismatches [0.03ms]
 
 src/core-scanner/golden_path.test.ts:
-(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should block execution if tool signature fails verification [0.07ms]
-(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should allow execution and pass to sandbox if verification passes [0.03ms]
+(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should block execution if tool signature fails verification
+(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should allow execution and pass to sandbox if verification passes [0.14ms]
 
 src/ipc/socket-client.test.ts:
 🏃 Running IPC Socket Client Tests...
@@ -22,12 +37,13 @@ src/ipc/integration.test.ts:
    Building shield-agent image...
 
 src/core-scanner/taint/analyzer.test.ts:
-(pass) AST Intra-Procedural Taint Tracking > Detects direct flows from env var to exec [5.87ms]
-(pass) AST Intra-Procedural Taint Tracking > Detects tainted variable flow from env var to exec [1.77ms]
-(pass) AST Intra-Procedural Taint Tracking > Ignores false positive regex matches in strings/comments [0.84ms]
-(pass) AST Intra-Procedural Taint Tracking > Detects credential to network output (TT3) [0.65ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects direct flows from env var to exec [7.79ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects tainted variable flow from env var to exec [1.80ms]
+(pass) AST Intra-Procedural Taint Tracking > Ignores false positive regex matches in strings/comments [1.33ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects credential to network output (TT3) [0.58ms]
+(pass) AST Intra-Procedural Taint Tracking > Parses .tsx files correctly and detects taint [2.81ms]
 
- 9 pass
+ 13 pass
  0 fail
- 13 expect() calls
-Ran 9 tests across 5 files. [314.00ms]
+ 28 expect() calls
+Ran 13 tests across 6 files. [4.42s]
