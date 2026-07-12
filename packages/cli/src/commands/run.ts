@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
+import { hashSourceCode, bindSnapshotSignature, verifySnapshotSignature } from "../core-scanner/fingerprint";
 
 export async function runAgent(scriptPath: string, _envelopePath: string) {
 	console.log(`🛡️ W.H.Agent: Initializing Native OS Sandbox for ${scriptPath}`);
@@ -15,20 +17,38 @@ export async function runAgent(scriptPath: string, _envelopePath: string) {
 	const isPython = absoluteScriptPath.endsWith(".py");
 	const language = isPython ? "python" : "bash";
 
+	const snapshotId = `sandbox-session-${randomUUID()}`;
+	const sourceHash = hashSourceCode(code);
+	const signature = bindSnapshotSignature(sourceHash, snapshotId);
+	console.log(`\x1b[32m[W.H.Agent] Golden Snapshot bound to session ${snapshotId}\x1b[0m`);
+	console.log(`\x1b[90m> Hash: ${sourceHash.substring(0, 16)}...\x1b[0m`);
+
 	console.log(`[NETWORK] Default-Deny enforced.`);
 	console.log(`[STORAGE] Root filesystem restricted.`);
 	console.log(`[ISOLATION] Sub-millisecond OS-Native isolation active.`);
 
+	console.log(`\n🚀 Launching isolated process...\n`);
+
+	console.log(`[W.H.Agent] Intercepting execution. Verifying payload signature against Golden Snapshot...`);
+	const currentCodeOnDisk = fs.readFileSync(absoluteScriptPath, "utf-8");
+	if (!verifySnapshotSignature(currentCodeOnDisk, snapshotId, signature)) {
+		console.error("\x1b[41m\x1b[37m\x1b[1m\n 🚨 SECURITY VIOLATION: Execution Blocked 🚨 \x1b[0m");
+		console.error(`\x1b[91m✗ Payload signature mismatch detected for session ${snapshotId}\x1b[0m`);
+		console.error(`\x1b[91m✗ AST hash of current file on disk differs from the Golden Snapshot.\x1b[0m`);
+		console.error(`\x1b[91m✗ Reason: File was modified after sandbox initialization.\x1b[0m`);
+		process.exit(1);
+	}
+
+	// TOCTOU Fix: Pass the strictly verified code string directly into the payload
+	// instead of letting any downstream process re-read the file from disk.
 	const reqPayload = JSON.stringify({
-		Code: code,
+		Code: currentCodeOnDisk,
 		Language: language,
 		TimeoutMs: 5000,
 		Env: {}, // Can parse envelope.yaml to pass env vars
 		MaxMemMB: 512,
 		MaxCPUPct: 1.0,
 	});
-
-	console.log(`\n🚀 Launching isolated process...\n`);
 
 	const sandboxBinPath = path.resolve(__dirname, "../bin/wh-sandbox");
 	if (!fs.existsSync(sandboxBinPath)) {

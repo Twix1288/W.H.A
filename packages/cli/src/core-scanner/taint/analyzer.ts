@@ -1,5 +1,6 @@
 import * as ts from "typescript";
 import type { Severity, TaintFlow, TaintNode, TaintResult } from "../types.js";
+import { isTaintSupported } from "./index.js";
 
 // ─── Source & Sink Definitions ────────────────────────────────
 
@@ -174,7 +175,7 @@ export function analyzeTaint(
 
 	for (const file of files) {
 		// Only process files we can parse as AST (JS/TS)
-		if (!file.path.endsWith(".js") && !file.path.endsWith(".ts")) {
+		if (!isTaintSupported(file.path)) {
 			continue;
 		}
 

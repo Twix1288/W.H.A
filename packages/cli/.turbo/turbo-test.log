@@ -1,8 +1,17 @@
 
-> @wh-agent/cli@1.1.0 test /Users/rishitagnihotri/ai_antivirus/wh-agent/packages/cli
+> wh-agent-cli@1.2.0 test /Users/rishitagnihotri/Current Projects/ai_antivirus/wh-agent/packages/cli
 > bun test
 
 bun test v1.3.6 (d530ed99)
+
+src/core-scanner/fingerprint.test.ts:
+(pass) Golden Snapshot Hash Binding > should correctly verify an unmodified tool [2.15ms]
+(pass) Golden Snapshot Hash Binding > should reject a tool if the source code has been tampered with [0.05ms]
+(pass) Golden Snapshot Hash Binding > should reject verification if the snapshot ID mismatches [0.03ms]
+
+src/core-scanner/golden_path.test.ts:
+(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should block execution if tool signature fails verification [0.07ms]
+(pass) Full Integration Flow: AST Hash Binding -> Sandbox Execution > should allow execution and pass to sandbox if verification passes [0.03ms]
 
 src/ipc/socket-client.test.ts:
 🏃 Running IPC Socket Client Tests...
@@ -13,12 +22,12 @@ src/ipc/integration.test.ts:
    Building shield-agent image...
 
 src/core-scanner/taint/analyzer.test.ts:
-(pass) AST Intra-Procedural Taint Tracking > Detects direct flows from env var to exec [7.80ms]
-(pass) AST Intra-Procedural Taint Tracking > Detects tainted variable flow from env var to exec [1.99ms]
-(pass) AST Intra-Procedural Taint Tracking > Ignores false positive regex matches in strings/comments [0.86ms]
-(pass) AST Intra-Procedural Taint Tracking > Detects credential to network output (TT3) [0.70ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects direct flows from env var to exec [5.87ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects tainted variable flow from env var to exec [1.77ms]
+(pass) AST Intra-Procedural Taint Tracking > Ignores false positive regex matches in strings/comments [0.84ms]
+(pass) AST Intra-Procedural Taint Tracking > Detects credential to network output (TT3) [0.65ms]
 
- 4 pass
+ 9 pass
  0 fail
- 8 expect() calls
-Ran 4 tests across 3 files. [426.00ms]
+ 13 expect() calls
+Ran 9 tests across 5 files. [314.00ms]

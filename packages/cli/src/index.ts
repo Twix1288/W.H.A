@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import * as os from "node:os";
+
 import { checkAgent } from "./commands/check";
 import { installAgent } from "./commands/install";
 import { runAgent } from "./commands/run";
@@ -74,12 +74,6 @@ program
 		if (!options.experimental) {
 			console.log(`⚠️  'run' is experimental and requires the --experimental flag to use.`);
 			return;
-		}
-
-		if (os.platform() !== "darwin") {
-			console.error(`❌ 'run' currently only supports macOS (sandbox binary is macOS-only).`);
-			console.error(`   Linux/Windows support is planned — see issue #42.`);
-			process.exit(1);
 		}
 
 		runAgent(script, options.envelope).catch((err) => {

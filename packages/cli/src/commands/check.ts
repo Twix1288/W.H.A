@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { parseFile } from '../core-scanner/parser';
 import { RULES, runRules, Finding } from '../core-scanner/rules';
 import { applyRemediations } from '../core-scanner/remediator';
+import { isTaintSupported } from '../core-scanner/taint/index';
 
 export async function checkAgent(
   files: string[],
@@ -36,15 +37,23 @@ export async function checkAgent(
   const allFindings: { file: string; finding: Finding }[] = [];
   let totalFixes = 0;
 
+  const fileStatuses: { file: string; taintSupported: boolean }[] = [];
+
   for (const file of targetFiles) {
     const absolutePath = path.resolve(file);
     try {
       const stat = await fs.stat(absolutePath);
       if (!stat.isFile()) continue;
 
+      const relativePath = path.relative(process.cwd(), absolutePath);
+      
+      fileStatuses.push({
+        file: relativePath,
+        taintSupported: isTaintSupported(absolutePath)
+      });
+
       const parseResult = await parseFile(absolutePath);
       const findings = runRules(parseResult, RULES);
-      const relativePath = path.relative(process.cwd(), absolutePath);
 
       if (options.fix && parseResult.type === 'ast') {
         const fixesApplied = await applyRemediations(absolutePath, findings);
@@ -84,6 +93,32 @@ export async function checkAgent(
     process.exit(exitCode);
   }
 
+  if (format === 'json-v2') {
+    const jsonOutput = {
+      files_status: fileStatuses.map(f => ({
+        file: f.file,
+        status: f.taintSupported ? 'scanned_full' : 'unsupported_taint_tracking'
+      })),
+      findings: allFindings.map(f => ({
+        file: f.file,
+        rule_id: f.finding.ruleId,
+        threat_name: f.finding.name,
+        severity: f.finding.severity,
+        category: f.finding.category,
+        message: f.finding.message,
+        line: f.finding.line,
+        fixable: f.finding.fixable
+      }))
+    };
+    
+    if (options.output) {
+      await fs.writeFile(options.output, JSON.stringify(jsonOutput, null, 2));
+    } else {
+      console.log(JSON.stringify(jsonOutput, null, 2));
+    }
+    process.exit(exitCode);
+  }
+
   if (format === 'sarif') {
     const sarifOutput = {
       version: "2.1.0",
@@ -100,6 +135,12 @@ export async function checkAgent(
             }))
           }
         },
+        artifacts: fileStatuses.map(f => ({
+          location: { uri: f.file },
+          properties: {
+            status: f.taintSupported ? 'scanned_full' : 'unsupported_taint_tracking'
+          }
+        })),
         results: allFindings.map(f => ({
           ruleId: f.finding.ruleId,
           level: f.finding.severity === 'critical' ? 'error' : 'warning',
@@ -123,6 +164,19 @@ export async function checkAgent(
   }
 
   // Default 'text' format
+  
+  const unsupportedFiles = fileStatuses.filter(f => !f.taintSupported);
+  if (unsupportedFiles.length > 0) {
+    console.warn(
+      chalk.yellow(`\nℹ️  AST Universal Vulnerability Check completed. Note: Deep Taint Tracking is currently limited to JS/TS files.`)
+    );
+    console.warn(
+      chalk.gray(`   The following files were scanned for dangerous rules, but skipped for deep taint tracking:`)
+    );
+    unsupportedFiles.slice(0, 5).forEach(f => console.warn(chalk.gray(`     - ${f.file}`)));
+    if (unsupportedFiles.length > 5) console.warn(chalk.gray(`     - ... and ${unsupportedFiles.length - 5} more.`));
+  }
+
   if (allFindings.length > 0) {
     console.warn(
       chalk.redBright(`\n🚨 Check Failed: Found ${allFindings.length} vulnerabilities.`)
