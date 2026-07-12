@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const cliPath = path.resolve(__dirname, "index.ts");
+const cliPath = path.resolve(__dirname, "..", "dist", "index.js");
 const scratchDir = path.resolve(__dirname, "e2e-scratch");
 
 beforeAll(() => {
@@ -25,7 +25,7 @@ describe("Production Fixes E2E Tests", () => {
 		const testFile = path.join(scratchDir, "test.py");
 		fs.writeFileSync(testFile, "print('hello')");
 
-		const result = spawnSync("npx", ["--yes", "tsx", cliPath, "run", testFile, "--experimental"], {
+		const result = spawnSync("node", [cliPath, "run", testFile, "--experimental"], {
 			encoding: "utf-8",
 		});
 
@@ -45,8 +45,8 @@ describe("Production Fixes E2E Tests", () => {
 
 		// Run check using JSON-v2 format
 		const resultJson = spawnSync(
-			"npx",
-			["--yes", "tsx", cliPath, "check", pythonFile, jsFile, "--format", "json-v2", "--output", jsonOutFile],
+			"node",
+			[cliPath, "check", pythonFile, jsFile, "--format", "json-v2", "--output", jsonOutFile],
 			{ encoding: "utf-8" }
 		);
 
@@ -68,8 +68,8 @@ describe("Production Fixes E2E Tests", () => {
 
 		// Run check using SARIF format
 		spawnSync(
-			"npx",
-			["--yes", "tsx", cliPath, "check", pythonFile, jsFile, "--format", "sarif", "--output", sarifOutFile],
+			"node",
+			[cliPath, "check", pythonFile, jsFile, "--format", "sarif", "--output", sarifOutFile],
 			{ encoding: "utf-8" }
 		);
 
