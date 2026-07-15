@@ -73,7 +73,7 @@ program
 	.option("--experimental", "acknowledge this command is experimental")
 	.addHelpText(
 		'after',
-		`\nEnvironment Variables:\n  WH_SANDBOX_BACKEND    Controls the isolation engine on Linux. Options:\n                        - "landlock": unprivileged native restriction\n                        - "gvisor": full userspace kernel container\n                        (Omit on macOS to default to native sandbox-exec)`
+		`\nEnvironment Variables:\n  WH_SANDBOX_BACKEND    Selects the Linux backend. Both currently FAIL CLOSED\n                        (they refuse to run rather than provide fake isolation):\n                        - "landlock": not yet implemented\n                        - "gvisor":   not yet securely isolated (host FS exposed)\n                        macOS always uses native sandbox-exec (this var is ignored);\n                        it is the only backend that isolates untrusted code today.`
 	)
 	.action((script, options) => {
 		if (!options.experimental) {

@@ -17,6 +17,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Reject unknown languages before spawning anything. Otherwise an unexpected
+	// value silently falls through to a shell in every backend.
+	if err := vm.ValidateLanguage(req.Language); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid request: %v\n", err)
+		os.Exit(1)
+	}
+
 	factory := vm.NewOSFactory()
 	engine := executor.NewEngine(1, factory)
 

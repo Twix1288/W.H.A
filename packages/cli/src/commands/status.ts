@@ -15,8 +15,10 @@ export async function status() {
 		console.log(`Middleware:     native (Python, ONNX runtime)`);
 
 		if (tier === "Tier B") {
-			console.log(`Sandboxing:     gVisor/runsc via Docker Desktop`);
-			console.log(`eBPF:           seccomp + gVisor syscall interception`);
+			console.log(`Sandboxing:     gVisor/runsc via Docker Desktop (experimental, unverified)`);
+			console.log(`eBPF:           seccomp + gVisor syscall interception (experimental)`);
+			console.log(`                NOTE: the 'run' Linux backends fail closed; do not`);
+			console.log(`                rely on this path to contain untrusted code.`);
 		} else {
 			console.log(`Sandboxing:     Firecracker microVM`);
 			console.log(`eBPF:           Native kernel tracepoints`);

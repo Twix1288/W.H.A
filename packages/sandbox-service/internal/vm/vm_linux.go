@@ -2,12 +2,9 @@
 package vm
 
 import (
-    "bytes"
     "context"
     "fmt"
     "os"
-    "os/exec"
-    "path/filepath"
     "time"
 )
 
@@ -44,8 +41,9 @@ func (s *LandlockSandbox) ID() string {
 //   - then exec the interpreter.
 func (s *LandlockSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
     return nil, fmt.Errorf(
-        "landlock sandbox backend is not implemented: refusing to execute untrusted code without isolation " +
-            "(set WH_SANDBOX_BACKEND=gvisor with gVisor/runsc installed, or use the macOS backend)")
+        "landlock sandbox backend is not implemented: refusing to execute untrusted code without isolation. " +
+            "No Linux backend currently provides real isolation (the gvisor backend also fails closed); " +
+            "use the macOS backend for now, or wait for the Landlock/namespace implementation")
 }
 
 func (s *LandlockSandbox) Destroy(ctx context.Context) error {
@@ -69,85 +67,20 @@ func (s *GvisorSandbox) ID() string {
     return s.id
 }
 
+// Execute FAILS CLOSED.
+//
+// The previous implementation ran `runsc do <interpreter> <script>`, which
+// intercepts syscalls but by default maps the host filesystem into the sandbox
+// and leaves network egress open — so it restricts syscalls yet does NOT hide
+// host file contents. That is the same false-sense-of-containment problem the
+// Landlock backend refuses to ship. Until the payload runs from a minimal OCI
+// bundle with an isolated rootfs (only the scratch dir bind-mounted) and
+// `--network=none`, we refuse to execute.
 func (s *GvisorSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
-    start := time.Now()
-
-    // Fail closed with a clear message if the gVisor runtime is unavailable,
-    // rather than surfacing a cryptic "executable file not found" from exec.
-    if _, err := exec.LookPath("runsc"); err != nil {
-        return nil, fmt.Errorf("gvisor backend selected but `runsc` was not found on PATH; install gVisor or choose another backend: %w", err)
-    }
-
-    tmpDir, err := os.MkdirTemp("", "gvisor-*")
-    if err != nil {
-        return nil, fmt.Errorf("failed to create temp dir: %w", err)
-    }
-    defer os.RemoveAll(tmpDir)
-
-    codePath := filepath.Join(tmpDir, "script")
-    if req.Language == "python" {
-        codePath += ".py"
-    } else {
-        codePath += ".sh"
-    }
-
-    if err := os.WriteFile(codePath, []byte(req.Code), 0755); err != nil {
-        return nil, fmt.Errorf("failed to write code: %w", err)
-    }
-
-    timeout := time.Duration(req.TimeoutMs) * time.Millisecond
-    if timeout == 0 {
-        timeout = 5 * time.Second
-    }
-
-    execCtx, cancel := context.WithTimeout(ctx, timeout)
-    defer cancel()
-
-    // NOTE: `runsc do` runs under gVisor's syscall interception but, by default,
-    // maps the host filesystem into the sandbox — so it restricts syscalls but
-    // does NOT by itself hide host file *contents*. A hardened deployment should
-    // run the payload from a minimal OCI bundle with an isolated rootfs (only
-    // the scratch dir bind-mounted) and `--network=none`. Tracked as follow-up.
-    var cmdArgs []string
-    if req.Language == "python" {
-        cmdArgs = []string{"runsc", "do", "python3", codePath}
-    } else {
-        cmdArgs = []string{"runsc", "do", "bash", codePath}
-    }
-
-    cmd := exec.CommandContext(execCtx, cmdArgs[0], cmdArgs[1:]...)
-
-    for k, v := range req.Env {
-        cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-    }
-
-    var stdout, stderr bytes.Buffer
-    cmd.Stdout = &stdout
-    cmd.Stderr = &stderr
-
-    err = cmd.Run()
-
-    exitCode := 0
-    killed := false
-    if err != nil {
-        if exitError, ok := err.(*exec.ExitError); ok {
-            exitCode = exitError.ExitCode()
-        } else {
-            exitCode = -1
-        }
-        if execCtx.Err() == context.DeadlineExceeded {
-            killed = true
-        }
-    }
-
-    return &ExecResult{
-        Stdout:      stdout.String(),
-        Stderr:      stderr.String(),
-        ExitCode:    exitCode,
-        ExecutionMs: time.Since(start).Milliseconds(),
-        SandboxID:   s.id,
-        Killed:      killed,
-    }, nil
+    return nil, fmt.Errorf(
+        "gvisor backend does not provide filesystem/network isolation yet " +
+            "(runsc do exposes the host filesystem and leaves network open): " +
+            "refusing to execute untrusted code")
 }
 
 func (s *GvisorSandbox) Destroy(ctx context.Context) error {

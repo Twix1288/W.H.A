@@ -35,11 +35,16 @@ func (s *WindowsSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
     }
     defer os.RemoveAll(tmpDir)
 
+    // Language is validated at ingestion; reject unknown values here too so a bad
+    // value can never fall through to cmd.exe even if a caller bypasses that check.
     codePath := filepath.Join(tmpDir, "script")
-    if req.Language == "python" {
+    switch req.Language {
+    case "python":
         codePath += ".py"
-    } else {
+    case "bash", "":
         codePath += ".bat"
+    default:
+        return nil, fmt.Errorf("unsupported language %q", req.Language)
     }
 
     if err := os.WriteFile(codePath, []byte(req.Code), 0755); err != nil {
@@ -55,9 +60,10 @@ func (s *WindowsSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
     defer cancel()
 
     var cmdArgs []string
-    if req.Language == "python" {
+    switch req.Language {
+    case "python":
         cmdArgs = []string{"python", codePath}
-    } else {
+    default: // "bash" or "" (validated upstream)
         cmdArgs = []string{"cmd.exe", "/C", codePath}
     }
 

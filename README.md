@@ -30,8 +30,8 @@ W.H.Agent protects your machine in two stages: static scanning (finding bad code
 ### 2. The Runtime Sandbox (Experimental)
 When an agent tries to run a tool, W.H.Agent intercepts the command and isolates the subprocess using native OS primitives. We do not use heavy Docker containers; we use the exact primitives built into your operating system.
 
-- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`).
-- **Linux:** Swappable backends. You can toggle between native `Landlock` enforcement or full `gVisor` containers using the `WH_SANDBOX_BACKEND` environment variable.
+- **macOS:** Dynamically generated Seatbelt profiles (`sandbox-exec`). **This is the only backend that provides real isolation today.**
+- **Linux:** Both backends (`Landlock` and `gVisor`, selected via `WH_SANDBOX_BACKEND`) currently **fail closed** — they refuse to execute rather than run untrusted code without genuine isolation. Native Landlock enforcement and an isolated-rootfs gVisor bundle are planned; until they land, use the macOS backend to run untrusted code.
 - **Windows:** Support is currently planned and not yet available.
 
 **Golden Snapshots:** To prevent an agent from silently overwriting its own tool script on disk *after* the security scan finishes, we compute an AST hash of the tool and freeze it. If the file on disk changes before execution, W.H.Agent blocks the process instantly.
@@ -39,7 +39,7 @@ When an agent tries to run a tool, W.H.Agent intercepts the command and isolates
 ## ⚠️ Transparency Note
 We want to be entirely clear about what works today. 
 The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are stable and production-ready. 
-The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files on macOS and Linux. However, it is still experimental. Windows support is pending, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is currently a prototype.
+The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files **on macOS**. However, it is still experimental. On Linux both backends currently fail closed (they refuse to run rather than provide fake isolation) pending a real Landlock/gVisor implementation, Windows support is pending, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is currently a prototype.
 
 ---
 
@@ -125,10 +125,10 @@ WH_SANDBOX_BACKEND=<backend> wh-agent run <executable> [args...] --experimental
 
 **Options & Environment Variables:**
 - `--experimental`: **Required.** Acknowledges that the runtime sandbox is still in prototyping phase.
-- `WH_SANDBOX_BACKEND`: Controls the isolation engine. 
-  - Set to `landlock` (Linux) for unprivileged native restriction.
-  - Set to `gvisor` (Linux) for a full userspace kernel container.
-  - Omit on macOS to default to `sandbox-exec` (Seatbelt).
+- `WH_SANDBOX_BACKEND`: Controls the Linux isolation engine.
+  - `landlock` (Linux): **not yet implemented — fails closed** (refuses to execute).
+  - `gvisor` (Linux): **not yet securely isolated — fails closed** (`runsc do` exposes the host filesystem; blocked until an isolated-rootfs bundle lands).
+  - On macOS the backend is always `sandbox-exec` (Seatbelt) and this variable is ignored.
 
 **Example (Linux):**
 ```bash

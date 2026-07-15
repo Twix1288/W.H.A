@@ -34,14 +34,25 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
     if err != nil {
         return nil, fmt.Errorf("failed to create temp dir: %w", err)
     }
-    defer os.RemoveAll(tmpDir)
+    defer func() {
+        // Don't drop cleanup failures: this dir holds the untrusted script and
+        // anything it wrote, so a silent leave-behind is an info-disclosure gap.
+        if rerr := os.RemoveAll(tmpDir); rerr != nil {
+            fmt.Fprintf(os.Stderr, "failed to clean up sandbox scratch dir %s: %v\n", tmpDir, rerr)
+        }
+    }()
 
-    // 2. Write the code to a file
+    // 2. Write the code to a file. Language is validated at ingestion, but treat
+    // an unknown value as a hard error here too so a bad value can never reach a
+    // shell even if a future caller bypasses that check.
     codePath := filepath.Join(tmpDir, "script")
-    if req.Language == "python" {
+    switch req.Language {
+    case "python":
         codePath += ".py"
-    } else {
+    case "bash", "":
         codePath += ".sh"
+    default:
+        return nil, fmt.Errorf("unsupported language %q", req.Language)
     }
 
     if err := os.WriteFile(codePath, []byte(req.Code), 0755); err != nil {
@@ -66,18 +77,38 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
     //
     // Resolve symlinks so subpath matching runs against the canonical path
     // (on macOS $TMPDIR is /var/folders -> /private/var/folders).
+    // Confinement correctness depends on the canonical path, so fail closed
+    // rather than silently downgrading to an unresolved path if resolution fails.
     realTmp, symErr := filepath.EvalSymlinks(tmpDir)
     if symErr != nil {
-        realTmp = tmpDir
+        return nil, fmt.Errorf("resolve sandbox scratch dir for confinement: %w", symErr)
     }
 
     profile := fmt.Sprintf(`(version 1)
 (deny default)
-(allow syscall*)
-(allow mach-bootstrap)
 (import "bsd.sb")
 (allow process-fork)
-(allow process-exec*)
+
+; No blanket "(allow syscall*)" or "(allow mach-bootstrap)": bsd.sb already
+; grants the syscalls and mach name-resolution services the interpreter needs to
+; launch. Verified empirically that python3 launch, name resolution, and scratch
+; I/O all work without them, so the syscall/mach surface stays at default-deny
+; instead of being widened wholesale.
+
+; Execute only from OS / software-install roots — NEVER from the scratch dir.
+; The scratch subpath (below) is the sole writable location, so omitting it here
+; is what closes the write-then-exec vector: a payload can drop a binary in
+; scratch but cannot run it. These trees aren't writable under this profile, so a
+; subpath allow here can't be satisfied by a written-then-renamed file either.
+(allow process-exec*
+       (subpath "/bin")
+       (subpath "/sbin")
+       (subpath "/usr/bin")
+       (subpath "/usr/sbin")
+       (subpath "/Library/Frameworks")
+       (subpath "/Library/Developer")
+       (subpath "/opt")
+       (subpath "/usr/local"))
 
 ; Read + map the interpreter and its libraries. These are OS / software-install
 ; roots, never user data. (bsd.sb already covers /System, /usr/lib, /usr/share,
@@ -93,7 +124,11 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
        (subpath "/usr/local"))           ; Homebrew (Intel), /usr/local installs
 
 ; The sandbox scratch dir: the untrusted script itself + anything it writes.
-(allow file-read* file-write* file-map-executable
+; Deliberately NO file-map-executable here, and this path is absent from the
+; process-exec* rule above — scripts are interpreted (passed as an arg to
+; python3/bash), never mapped or exec'd, so a file written here can be read and
+; written but never loaded as code.
+(allow file-read* file-write*
        (subpath "%s"))
 
 ; Defense in depth over the base profile: it permits passwd/hosts DATA for
@@ -119,9 +154,10 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
     defer cancel()
 
     var cmdArgs []string
-    if req.Language == "python" {
+    switch req.Language {
+    case "python":
         cmdArgs = []string{"python3", codePath}
-    } else {
+    default: // "bash" or "" (validated upstream)
         cmdArgs = []string{"bash", codePath}
     }
 

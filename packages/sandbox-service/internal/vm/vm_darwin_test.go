@@ -24,7 +24,7 @@ func runInSandbox(t *testing.T, code string) *ExecResult {
     if err != nil {
         t.Fatalf("create sandbox: %v", err)
     }
-    defer s.Destroy(context.Background())
+    defer func() { _ = s.Destroy(context.Background()) }()
     res, err := s.Execute(context.Background(), ExecRequest{
         Code:      code,
         Language:  "python",
@@ -95,6 +95,46 @@ print('WORK_OK', os.path.exists('out.txt'), open('out.txt').read())
 `)
     if !strings.Contains(res.Stdout, "WORK_OK True ok") {
         t.Fatalf("benign scratch I/O failed under sandbox.\nstdout=%q\nstderr=%q", res.Stdout, res.Stderr)
+    }
+}
+
+// Write-then-exec must be closed: a payload can WRITE into its scratch dir, but
+// it must not be able to EXECUTE what it wrote. The scratch dir is the only
+// writable location and is deliberately absent from the profile's process-exec*
+// rule (and carries no file-map-executable), so dropping a binary and running it
+// must fail — the classic /tmp write-then-run malware pattern.
+func TestDarwinSandboxDeniesExecFromScratch(t *testing.T) {
+    requirePython(t)
+    res := runInSandbox(t, `
+import os, subprocess
+# copy a real binary into the writable scratch dir, mark it executable...
+data = open('/bin/echo', 'rb').read()
+open('dropped', 'wb').write(data)
+os.chmod('dropped', 0o755)
+# ...and try to run it from scratch — must be denied.
+try:
+    subprocess.run([os.path.join(os.getcwd(), 'dropped'), 'pwned'], check=True)
+    print('EXEC_OK')
+except Exception:
+    print('EXEC_BLOCKED')
+`)
+    if strings.Contains(res.Stdout, "EXEC_OK") || !strings.Contains(res.Stdout, "EXEC_BLOCKED") {
+        t.Fatalf("write-then-exec was NOT blocked: a scratch-written binary ran.\nstdout=%q\nstderr=%q", res.Stdout, res.Stderr)
+    }
+}
+
+// The scoped process-exec* rule must not over-tighten: a legitimate subprocess of
+// a binary living in an allowed system dir (/bin/echo) must still run, so the
+// sandbox remains usable for real tools that shell out.
+func TestDarwinSandboxAllowsSystemSubprocess(t *testing.T) {
+    requirePython(t)
+    res := runInSandbox(t, `
+import subprocess
+out = subprocess.run(['/bin/echo', 'hi'], capture_output=True, text=True)
+print('SUBPROC', out.stdout.strip())
+`)
+    if !strings.Contains(res.Stdout, "SUBPROC hi") {
+        t.Fatalf("benign system subprocess was blocked by over-tight process-exec.\nstdout=%q\nstderr=%q", res.Stdout, res.Stderr)
     }
 }
 

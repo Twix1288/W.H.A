@@ -3,7 +3,6 @@ package vm
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 )
@@ -31,45 +30,50 @@ def heavy_io():
 heavy_io()
 `
 
+	// Both Linux backends now fail closed (no real isolation implemented yet), so
+	// this benchmark measures the fail-closed path. Env is set with b.Setenv so it
+	// is restored afterwards and does not leak into other tests in this process.
 	b.Run("Landlock", func(b *testing.B) {
-		os.Setenv("WH_SANDBOX_BACKEND", "landlock")
+		b.Setenv("WH_SANDBOX_BACKEND", "landlock")
 		factory := NewOSFactory()
-		
+
 		for i := 0; i < b.N; i++ {
 			sandbox, err := factory.Create(context.Background())
 			if err != nil {
 				b.Fatalf("Failed to create Landlock sandbox: %v", err)
 			}
-			
-			_, err = sandbox.Execute(context.Background(), ExecRequest{
+
+			// Fails closed — an error is the expected, correct outcome.
+			if _, err := sandbox.Execute(context.Background(), ExecRequest{
 				Code:      code,
 				Language:  "python",
 				TimeoutMs: 5000,
 				Env:       map[string]string{},
-			})
-			if err != nil {
-				b.Fatalf("Landlock execute failed: %v", err)
+			}); err == nil {
+				b.Fatalf("Landlock backend executed instead of failing closed")
 			}
 		}
 	})
 
 	b.Run("gVisor", func(b *testing.B) {
-		os.Setenv("WH_SANDBOX_BACKEND", "gvisor")
+		b.Setenv("WH_SANDBOX_BACKEND", "gvisor")
 		factory := NewOSFactory()
-		
+
 		for i := 0; i < b.N; i++ {
 			sandbox, err := factory.Create(context.Background())
 			if err != nil {
 				b.Fatalf("Failed to create gVisor sandbox: %v", err)
 			}
-			
-			// This will fail locally unless runsc is installed, but the test structure is fully complete for production.
-			_, _ = sandbox.Execute(context.Background(), ExecRequest{
+
+			// gVisor also fails closed until an isolated OCI rootfs lands.
+			if _, err := sandbox.Execute(context.Background(), ExecRequest{
 				Code:      code,
 				Language:  "python",
 				TimeoutMs: 5000,
 				Env:       map[string]string{},
-			})
+			}); err == nil {
+				b.Fatalf("gVisor backend executed instead of failing closed")
+			}
 		}
 	})
 }
@@ -90,6 +94,27 @@ func TestLandlockFailsClosed(t *testing.T) {
         t.Fatalf("landlock backend executed the payload instead of failing closed (result=%+v)", res)
     }
     if !strings.Contains(err.Error(), "not implemented") {
+        t.Fatalf("unexpected error message: %v", err)
+    }
+}
+
+// The gVisor backend must also FAIL CLOSED. `runsc do` intercepts syscalls but
+// maps the host filesystem into the sandbox and leaves network egress open, so it
+// does not actually confine untrusted code. Until an isolated OCI rootfs +
+// --network=none lands, Execute must refuse rather than run with fake isolation.
+func TestGvisorFailsClosed(t *testing.T) {
+    s, err := (&GvisorFactory{}).Create(context.Background())
+    if err != nil {
+        t.Fatalf("create: %v", err)
+    }
+    res, err := s.Execute(context.Background(), ExecRequest{
+        Code:     "open('/etc/shadow').read()",
+        Language: "python",
+    })
+    if err == nil {
+        t.Fatalf("gvisor backend executed the payload instead of failing closed (result=%+v)", res)
+    }
+    if !strings.Contains(err.Error(), "isolation") {
         t.Fatalf("unexpected error message: %v", err)
     }
 }
