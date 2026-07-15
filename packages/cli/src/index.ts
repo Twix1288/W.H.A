@@ -69,14 +69,19 @@ program
 		"path to envelope.yaml configuration",
 		"envelope.yaml",
 	)
+	.option("--ast-hash <hash>", "expected AST hash from golden snapshot to prevent TOCTOU bypasses")
 	.option("--experimental", "acknowledge this command is experimental")
+	.addHelpText(
+		'after',
+		`\nEnvironment Variables:\n  WH_SANDBOX_BACKEND    Controls the isolation engine on Linux. Options:\n                        - "landlock": unprivileged native restriction\n                        - "gvisor": full userspace kernel container\n                        (Omit on macOS to default to native sandbox-exec)`
+	)
 	.action((script, options) => {
 		if (!options.experimental) {
 			console.log(`⚠️  'run' is experimental and requires the --experimental flag to use.`);
 			return;
 		}
 
-		runAgent(script, options.envelope).catch((err) => {
+		runAgent(script, options.envelope, options.astHash).catch((err) => {
 			console.error("Run failed:", err.message);
 			process.exit(1);
 		});
