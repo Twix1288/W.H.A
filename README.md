@@ -147,6 +147,11 @@ To test it:
 1. Wrap your malicious payload: `WH_SANDBOX_BACKEND=landlock wh-agent run payload.py --experimental`
 2. Open an issue explaining how you broke it, and submit a PR with the fix. If your fix works, you are in.
 
+## Contributors
+
+🏆 **Breakout Challenge Winners:**
+- [AbhinavGGarg](https://github.com/AbhinavGGarg)
+
 ## Contributing
 
 We welcome contributions. Review [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
