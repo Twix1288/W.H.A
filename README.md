@@ -24,8 +24,8 @@ W.H.Agent protects your machine in two stages: static scanning (finding bad code
 
 ### 1. The Scanners (Production Ready)
 - **Global Agent Auto-Discovery:** It acts as a watchdog. It scans your entire machine and finds configurations for Cursor, Windsurf, VS Code, Claude Desktop, Gemini CLI, and others.
-- **AST Taint Tracking:** Instead of using regex, we parse agent scripts into Abstract Syntax Trees (AST). The scanner analyzes Python, JavaScript, TypeScript, Bash, and Rust. It tracks how variables flow through the code to catch data exfiltration logic before it runs.
-- **Supply Chain Checks:** The `install` command safely downloads npm packages, checking for typosquatting and hardcoded secrets before anything reaches your terminal.
+- **AST Taint Tracking:** Instead of using regex, we parse agent scripts into Abstract Syntax Trees (AST). The scanner analyzes Python, JavaScript, TypeScript, Bash, and Rust, and tracks how variables flow through the code — from sources (env/secret/file reads, user input) to sinks (network calls, `exec`/subprocess) — to catch data-exfiltration and injection logic before it runs. All five languages get real source→sink dataflow (JS/TS via the TypeScript compiler, Python/Bash/Rust via tree-sitter).
+- **Supply Chain Checks:** The `install` command scans an npm package (typosquatting, hardcoded secrets, native binaries, lifecycle scripts) *before* installing, and then runs `npm install --ignore-scripts` so a malicious `preinstall`/`postinstall` can't execute arbitrary code on your machine during installation.
 
 ### 2. The Runtime Sandbox (Experimental)
 When an agent tries to run a tool, W.H.Agent intercepts the command and isolates the subprocess using native OS primitives. We do not use heavy Docker containers; we use the exact primitives built into your operating system.
@@ -34,12 +34,19 @@ When an agent tries to run a tool, W.H.Agent intercepts the command and isolates
 - **Linux:** Both backends (`Landlock` and `gVisor`, selected via `WH_SANDBOX_BACKEND`) currently **fail closed** — they refuse to execute rather than run untrusted code without genuine isolation. Native Landlock enforcement and an isolated-rootfs gVisor bundle are planned; until they land, use the macOS backend to run untrusted code.
 - **Windows:** Support is currently planned and not yet available.
 
-**Golden Snapshots:** To prevent an agent from silently overwriting its own tool script on disk *after* the security scan finishes, we compute an AST hash of the tool and freeze it. If the file on disk changes before execution, W.H.Agent blocks the process instantly.
+**Golden Snapshots:** To prevent an agent from silently overwriting its own tool script on disk *after* the security scan finishes, we compute a real **AST fingerprint** of the tool (structure + identifiers/literals, insensitive to comments and formatting). `wh-agent check` prints it; pass it to `wh-agent run --ast-hash <hash>` and execution is blocked instantly if the file's AST no longer matches — i.e. the code changed after it was scanned. The bytes that are hashed are the exact bytes handed to the sandbox (read once), so there is no check-vs-execute gap.
 
 ## ⚠️ Transparency Note
-We want to be entirely clear about what works today. 
-The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are stable and production-ready. 
-The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files **on macOS**. However, it is still experimental. On Linux both backends currently fail closed (they refuse to run rather than provide fake isolation) pending a real Landlock/gVisor implementation, Windows support is pending, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is currently a prototype.
+We want to be entirely clear about what works today.
+The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are stable and production-ready; AST taint tracking covers all five languages, and `install` disables install-time lifecycle scripts by default.
+The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files **on macOS** (verified against host-file-read, write-then-exec, network-egress, subprocess-timeout and env-leak escapes). It is still experimental: on Linux both backends **fail closed** (they refuse to run rather than provide fake isolation) pending a real Landlock/gVisor implementation, Windows also **fails closed** pending Job Object confinement, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is a prototype.
+
+## 🆕 What's new in v1.3.0
+- **Real AST hash for Golden Snapshots** — replaces the previous raw-text hash; comment/format-insensitive, semantics-sensitive, wired through `check` → `run --ast-hash`.
+- **Taint tracking for all five languages** — Python, Bash, and Rust now get real source→sink dataflow on the tree-sitter AST, at parity with JS/TS (previously JS/TS only).
+- **Sandbox hardening (macOS)** — fixed an output-file symlink exfiltration escape; the timeout now kills the whole process tree (a spawned subprocess can no longer outlive it); a strict env allow-list blocks interpreter/linker hijacking (`DYLD_*`, `LD_PRELOAD`, `PYTHONPATH`, …) and never inherits host secrets; output is size-capped.
+- **Safer `install`** — `--ignore-scripts` by default, no-shell invocation (removes a command-injection surface), and typosquatting data is now bundled so the check actually runs in the published CLI.
+- **Fail-closed everywhere untrusted code can't be contained** — Linux (Landlock + gVisor) and Windows backends refuse to execute rather than pretend to isolate.
 
 ---
 
