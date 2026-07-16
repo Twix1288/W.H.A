@@ -19,7 +19,8 @@
     "lint": "biome check src",
     "check": "biome check .",
     "update-popular-packages": "node scripts/update-popular-packages.js",
-    "test": "bun test",
+    "test": "bun test && pnpm run test:ast",
+    "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -44,7 +45,8 @@
     "@types/bun": "latest",
     "@types/node": "^25.9.1",
     "ts-node": "^10.9.2",
-    "tsup": "^8.5.1"
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.1"
   },
   "license": "FCL-1.0-ALv2"
 }

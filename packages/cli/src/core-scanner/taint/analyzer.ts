@@ -1,6 +1,13 @@
 import * as ts from "typescript";
 import type { Severity, TaintFlow, TaintNode, TaintResult } from "../types.js";
-import { isTaintSupported } from "./index.js";
+
+// Kept intentionally free of any tree-sitter import: this module is the JS/TS
+// analyzer (TypeScript compiler). Python/Bash/Rust dispatch lives in index.ts so
+// that importing this file never pulls in tree-sitter's native bindings.
+function isJsTs(filePath: string): boolean {
+	const lower = filePath.toLowerCase();
+	return [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].some((e) => lower.endsWith(e));
+}
 
 // ─── Source & Sink Definitions ────────────────────────────────
 
@@ -174,8 +181,9 @@ export function analyzeTaint(
 	const allFlows: TaintFlow[] = [];
 
 	for (const file of files) {
-		// Only process files we can parse as AST (JS/TS)
-		if (!isTaintSupported(file.path)) {
+		// Only JS/TS here; Python/Bash/Rust are handled by the polyglot dispatch
+		// in index.ts (kept separate so this file never imports tree-sitter).
+		if (!isJsTs(file.path)) {
 			continue;
 		}
 

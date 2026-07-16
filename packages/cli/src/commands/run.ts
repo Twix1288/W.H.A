@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
-import { hashSourceCode, bindSnapshotSignature, verifySnapshotSignature } from "../core-scanner/fingerprint";
+import { astFingerprint } from "../core-scanner/parser";
 
-export async function runAgent(scriptPath: string, _envelopePath: string, expectedAstHash?: string) {
+export async function runAgent(
+	scriptPath: string,
+	_envelopePath: string,
+	expectedAstHash?: string,
+) {
 	console.log(`🛡️ W.H.Agent: Initializing Native OS Sandbox for ${scriptPath}`);
 
 	const absoluteScriptPath = path.resolve(scriptPath);
@@ -13,25 +16,44 @@ export async function runAgent(scriptPath: string, _envelopePath: string, expect
 		process.exit(1);
 	}
 
+	// Read the file EXACTLY ONCE. The same in-memory bytes are what we fingerprint
+	// AND what we hand to the sandbox, so there is no time-of-check/time-of-use gap
+	// between verification and execution (an earlier version re-read the file after
+	// hashing, reopening that window).
 	const code = fs.readFileSync(absoluteScriptPath, "utf-8");
 	const isPython = absoluteScriptPath.endsWith(".py");
 	const language = isPython ? "python" : "bash";
 
-	const snapshotId = `sandbox-session-${randomUUID()}`;
-	const sourceHash = hashSourceCode(code);
-	
-	if (expectedAstHash && sourceHash !== expectedAstHash) {
-		console.error("\x1b[41m\x1b[37m\x1b[1m\n 🚨 SECURITY VIOLATION: Execution Blocked 🚨 \x1b[0m");
-		console.error(`\x1b[91m✗ AST hash of current file on disk differs from the Golden Snapshot.\x1b[0m`);
+	// Golden Snapshot: a real AST fingerprint (structure + identifiers/literals,
+	// insensitive to comments/formatting) of the exact bytes we are about to run.
+	const astHash = astFingerprint(code, path.extname(absoluteScriptPath));
+
+	// TOCTOU protection: if the caller pinned the AST hash from a prior
+	// `wh-agent check`, refuse to run anything whose AST no longer matches — i.e.
+	// the tool's code changed after it was scanned.
+	if (expectedAstHash && astHash !== expectedAstHash) {
+		console.error(
+			"\x1b[41m\x1b[37m\x1b[1m\n 🚨 SECURITY VIOLATION: Execution Blocked 🚨 \x1b[0m",
+		);
+		console.error(
+			`\x1b[91m✗ AST fingerprint differs from the pinned Golden Snapshot.\x1b[0m`,
+		);
 		console.error(`\x1b[91m✗ Expected: ${expectedAstHash}\x1b[0m`);
-		console.error(`\x1b[91m✗ Actual:   ${sourceHash}\x1b[0m`);
-		console.error(`\x1b[91m✗ Reason: File was modified after sandbox initialization.\x1b[0m`);
+		console.error(`\x1b[91m✗ Actual:   ${astHash}\x1b[0m`);
+		console.error(
+			`\x1b[91m✗ Reason: the tool's code changed after it was scanned.\x1b[0m`,
+		);
 		process.exit(1);
 	}
 
-	const signature = bindSnapshotSignature(sourceHash, snapshotId);
-	console.log(`\x1b[32m[W.H.Agent] Golden Snapshot bound to session ${snapshotId}\x1b[0m`);
-	console.log(`\x1b[90m> Hash: ${sourceHash.substring(0, 16)}...\x1b[0m`);
+	console.log(
+		`\x1b[32m[W.H.Agent] Golden Snapshot AST fingerprint: ${astHash}\x1b[0m`,
+	);
+	if (!expectedAstHash) {
+		console.log(
+			`\x1b[90m> Pin it with --ast-hash ${astHash} to block execution if the file changes.\x1b[0m`,
+		);
+	}
 
 	console.log(`[NETWORK] Default-Deny enforced.`);
 	console.log(`[STORAGE] Root filesystem restricted.`);
@@ -39,25 +61,15 @@ export async function runAgent(scriptPath: string, _envelopePath: string, expect
 
 	console.log(`\n🚀 Launching isolated process...\n`);
 
-	console.log(`[W.H.Agent] Intercepting execution. Verifying payload signature against Golden Snapshot...`);
-	const currentCodeOnDisk = fs.readFileSync(absoluteScriptPath, "utf-8");
-	if (!verifySnapshotSignature(currentCodeOnDisk, snapshotId, signature)) {
-		console.error("\x1b[41m\x1b[37m\x1b[1m\n 🚨 SECURITY VIOLATION: Execution Blocked 🚨 \x1b[0m");
-		console.error(`\x1b[91m✗ Payload signature mismatch detected for session ${snapshotId}\x1b[0m`);
-		console.error(`\x1b[91m✗ AST hash of current file on disk differs from the Golden Snapshot.\x1b[0m`);
-		console.error(`\x1b[91m✗ Reason: File was modified during execution preparation.\x1b[0m`);
-		process.exit(1);
-	}
-
-	// TOCTOU Fix: Pass the strictly verified code string directly into the payload
-	// instead of letting any downstream process re-read the file from disk.
+	// Pass the exact bytes we fingerprinted straight into the payload (no re-read).
+	// MaxMemMB / MaxCPUPct are intentionally omitted — no backend enforces hard
+	// memory/CPU limits yet; the real bounds are the wall-clock timeout and the
+	// sandbox's output cap.
 	const reqPayload = JSON.stringify({
-		Code: currentCodeOnDisk,
+		Code: code,
 		Language: language,
 		TimeoutMs: 5000,
 		Env: {}, // Can parse envelope.yaml to pass env vars
-		MaxMemMB: 512,
-		MaxCPUPct: 1.0,
 	});
 
 	const sandboxBinPath = path.resolve(__dirname, "../bin/wh-sandbox");

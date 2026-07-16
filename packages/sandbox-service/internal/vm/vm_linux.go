@@ -1,26 +1,27 @@
 //go:build linux
+
 package vm
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "time"
+	"context"
+	"fmt"
+	"os"
+	"time"
 )
 
 type LandlockSandbox struct {
-    id string
+	id string
 }
 
 type LandlockFactory struct{}
 
 func (f *LandlockFactory) Create(ctx context.Context) (OSProcessSandbox, error) {
-    id := fmt.Sprintf("sb-landlock-%d", time.Now().UnixNano())
-    return &LandlockSandbox{id: id}, nil
+	id := fmt.Sprintf("sb-landlock-%d", time.Now().UnixNano())
+	return &LandlockSandbox{id: id}, nil
 }
 
 func (s *LandlockSandbox) ID() string {
-    return s.id
+	return s.id
 }
 
 // Execute FAILS CLOSED.
@@ -36,35 +37,35 @@ func (s *LandlockSandbox) ID() string {
 //     restricting the process to the scratch directory only;
 //   - drop into user + network + mount namespaces via
 //     cmd.SysProcAttr = &syscall.SysProcAttr{
-//         Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
+//     Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
 //     };
 //   - then exec the interpreter.
 func (s *LandlockSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
-    return nil, fmt.Errorf(
-        "landlock sandbox backend is not implemented: refusing to execute untrusted code without isolation. " +
-            "No Linux backend currently provides real isolation (the gvisor backend also fails closed); " +
-            "use the macOS backend for now, or wait for the Landlock/namespace implementation")
+	return nil, fmt.Errorf(
+		"landlock sandbox backend is not implemented: refusing to execute untrusted code without isolation. " +
+			"No Linux backend currently provides real isolation (the gvisor backend also fails closed); " +
+			"use the macOS backend for now, or wait for the Landlock/namespace implementation")
 }
 
 func (s *LandlockSandbox) Destroy(ctx context.Context) error {
-    return nil
+	return nil
 }
 
 // --- gVisor Implementation ---
 
 type GvisorSandbox struct {
-    id string
+	id string
 }
 
 type GvisorFactory struct{}
 
 func (f *GvisorFactory) Create(ctx context.Context) (OSProcessSandbox, error) {
-    id := fmt.Sprintf("sb-gvisor-%d", time.Now().UnixNano())
-    return &GvisorSandbox{id: id}, nil
+	id := fmt.Sprintf("sb-gvisor-%d", time.Now().UnixNano())
+	return &GvisorSandbox{id: id}, nil
 }
 
 func (s *GvisorSandbox) ID() string {
-    return s.id
+	return s.id
 }
 
 // Execute FAILS CLOSED.
@@ -77,14 +78,14 @@ func (s *GvisorSandbox) ID() string {
 // bundle with an isolated rootfs (only the scratch dir bind-mounted) and
 // `--network=none`, we refuse to execute.
 func (s *GvisorSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResult, error) {
-    return nil, fmt.Errorf(
-        "gvisor backend does not provide filesystem/network isolation yet " +
-            "(runsc do exposes the host filesystem and leaves network open): " +
-            "refusing to execute untrusted code")
+	return nil, fmt.Errorf(
+		"gvisor backend does not provide filesystem/network isolation yet " +
+			"(runsc do exposes the host filesystem and leaves network open): " +
+			"refusing to execute untrusted code")
 }
 
 func (s *GvisorSandbox) Destroy(ctx context.Context) error {
-    return nil
+	return nil
 }
 
 // --- Factory Selection ---
@@ -93,9 +94,9 @@ func (s *GvisorSandbox) Destroy(ctx context.Context) error {
 // Landlock backend is implemented — a secure default is to refuse to run
 // untrusted code rather than run it with no isolation.
 func NewOSFactory() SandboxFactory {
-    backend := os.Getenv("WH_SANDBOX_BACKEND")
-    if backend == "gvisor" {
-        return &GvisorFactory{}
-    }
-    return &LandlockFactory{}
+	backend := os.Getenv("WH_SANDBOX_BACKEND")
+	if backend == "gvisor" {
+		return &GvisorFactory{}
+	}
+	return &LandlockFactory{}
 }

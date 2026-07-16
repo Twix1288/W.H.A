@@ -1,10 +1,14 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import * as tar from "tar";
+// Import the data statically so the bundler includes it in dist/. A runtime
+// require("./popular-packages.json") silently fails in the published CLI (the
+// JSON is not copied next to the bundle), which disabled typosquat detection.
+import popularPackages from "./popular-packages.json";
 
 interface InstallOptions {
 	force: boolean;
@@ -76,15 +80,7 @@ function fetchPackageMetadata(
 }
 
 function checkTyposquat(packageName: string) {
-	let popularPackages: string[] = [];
-	try {
-		popularPackages = require("./popular-packages.json");
-	} catch (err) {
-		// silently ignore if the static list is missing
-		return { risky: false, similarTo: [] };
-	}
-
-	const close = popularPackages.filter((p) => {
+	const close = (popularPackages as string[]).filter((p) => {
 		if (p === packageName) return false;
 		const dist = levenshtein(p, packageName);
 		return (
@@ -194,7 +190,7 @@ const SECRET_PATTERNS = [
 	{ name: "Private Key", re: /-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----/ },
 	{
 		name: "Generic API Key assignment",
-		re: /api[_-]?key\s*[:=]\s*['"]([a-zA-Z0-9_\-]{20,})['"]/i,
+		re: /api[_-]?key\s*[:=]\s*['"]([a-zA-Z0-9_-]{20,})['"]/i,
 	},
 	{
 		name: "eval of remote content",
@@ -240,7 +236,10 @@ async function scanTarball(packageName: string, manifest: any) {
 	} catch (err) {
 		console.log(chalk.red(`⚠️  Failed to extract tarball safely: ${err}`));
 		fs.rmSync(tmpDir, { recursive: true, force: true });
-		return { findings: [{ file: "tarball", pattern: "Extraction failure" }], binaries: [] };
+		return {
+			findings: [{ file: "tarball", pattern: "Extraction failure" }],
+			binaries: [],
+		};
 	}
 
 	const findings: { file: string; pattern: string; redacted: string }[] = [];
@@ -255,7 +254,7 @@ async function scanTarball(packageName: string, manifest: any) {
 				walk(full);
 				continue;
 			}
-			
+
 			const relativePath = full.replace(tmpDir + path.sep, "");
 
 			// Flag native binaries
@@ -266,7 +265,9 @@ async function scanTarball(packageName: string, manifest: any) {
 
 			// Also flag unusually large files that might be blobs (e.g. > 10MB)
 			if (stat.size > 10 * 1024 * 1024 && !/\.(js|ts|json|md|txt)$/i.test(f)) {
-				binaries.push(`${relativePath} (Large blob: ${Math.round(stat.size/1024/1024)}MB)`);
+				binaries.push(
+					`${relativePath} (Large blob: ${Math.round(stat.size / 1024 / 1024)}MB)`,
+				);
 				continue;
 			}
 
@@ -278,7 +279,8 @@ async function scanTarball(packageName: string, manifest: any) {
 				if (match) {
 					// match[1] is the captured group if any, otherwise match[0]
 					const secret = match[1] || match[0];
-					const redacted = secret.length > 8 ? secret.slice(0, 4) + "***" : "***";
+					const redacted =
+						secret.length > 8 ? secret.slice(0, 4) + "***" : "***";
 					findings.push({ file: relativePath, pattern: name, redacted });
 				}
 			}
@@ -299,7 +301,9 @@ async function scanTarball(packageName: string, manifest: any) {
 			console.log(chalk.red(`   ${f.file}: ${f.pattern} (${f.redacted})`)),
 		);
 	} else {
-		console.log(chalk.green(`✅ No known suspicious patterns found in source.`));
+		console.log(
+			chalk.green(`✅ No known suspicious patterns found in source.`),
+		);
 	}
 
 	if (binaries.length > 0) {
@@ -325,14 +329,19 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 
 	let manifest;
 	try {
-		manifest = await fetchPackageMetadata(pkgName, options.pkgVersion || "latest");
+		manifest = await fetchPackageMetadata(
+			pkgName,
+			options.pkgVersion || "latest",
+		);
 	} catch (err: any) {
 		if (err.message === "PACKAGE_NOT_FOUND") {
 			console.error(chalk.red(`❌ Package '${pkgName}' not found on npm.`));
 		} else if (err.message === "TIMEOUT") {
 			console.error(chalk.red(`❌ Registry request timed out.`));
 		} else {
-			console.error(chalk.red(`❌ Failed to fetch package metadata: ${err.message}`));
+			console.error(
+				chalk.red(`❌ Failed to fetch package metadata: ${err.message}`),
+			);
 		}
 		process.exit(1);
 	}
@@ -358,10 +367,20 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 
 	if (hasBlocker) {
 		if (options.force) {
-			console.log(chalk.yellow(`🚨 Hard blockers bypassed due to --force. Proceeding with installation...`));
+			console.log(
+				chalk.yellow(
+					`🚨 Hard blockers bypassed due to --force. Proceeding with installation...`,
+				),
+			);
 		} else {
-			console.log(chalk.red(`🛑 Installation aborted due to critical security findings.`));
-			console.log(chalk.gray(`   Use --force to install anyway if you have verified this package.`));
+			console.log(
+				chalk.red(`🛑 Installation aborted due to critical security findings.`),
+			);
+			console.log(
+				chalk.gray(
+					`   Use --force to install anyway if you have verified this package.`,
+				),
+			);
 			process.exit(2);
 		}
 	} else if (options.dryRun) {
@@ -369,10 +388,37 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 		process.exit(hasInfo ? 1 : 0);
 	}
 
-	console.log(chalk.blue(`🔧 Executing npm install...`));
+	console.log(
+		chalk.blue(`🔧 Executing npm install (lifecycle scripts disabled)...`),
+	);
 	try {
-		execSync(`npm install ${pkgName}${options.pkgVersion && options.pkgVersion !== 'latest' ? `@${options.pkgVersion}` : ''}`, { stdio: "inherit" });
-		console.log(chalk.green(`\n🎉 Installation safe and complete.`));
+		// SECURITY:
+		//  - execFileSync with an argv array, never a shell string: pkgName/version
+		//    are passed as arguments, so shell metacharacters can't inject commands.
+		//  - --ignore-scripts: `npm install` otherwise runs the package's (and every
+		//    dependency's) preinstall/postinstall hooks = arbitrary code execution
+		//    BEFORE the user ever runs the tool. That directly contradicts the
+		//    "checked before anything reaches your terminal" guarantee, so we
+		//    neutralize install-time code execution by default.
+		const target =
+			options.pkgVersion && options.pkgVersion !== "latest"
+				? `${pkgName}@${options.pkgVersion}`
+				: pkgName;
+		execFileSync("npm", ["install", "--ignore-scripts", target], {
+			stdio: "inherit",
+		});
+		console.log(
+			chalk.green(
+				`\n🎉 Installation complete (install-time scripts were skipped).`,
+			),
+		);
+		if (lifecycleResult.hasScripts) {
+			console.log(
+				chalk.yellow(
+					`   ⚠️  ${pkgName} declares lifecycle scripts (${lifecycleResult.scripts.join(", ")}) that were NOT run. If you trust this package and it needs them, re-run with plain npm.`,
+				),
+			);
+		}
 		console.log(`👉 Run 'shield run <script>' to safely execute the agent.`);
 		process.exit(hasInfo ? 1 : 0);
 	} catch (err: any) {
