@@ -173,6 +173,75 @@ const DESCRIPTION_POISONING_PATTERNS: ReadonlyArray<{
 	},
 ];
 
+// ─── Reusable analyzer for LIVE MCP tools ────────────────
+//
+// The rules below run statically on mcp.json configs. The same poisoning
+// patterns must also run on the tools a server exposes at runtime (name +
+// description + input schema), which is where poisoning most often hides and
+// which static config usually doesn't contain. `inspect-mcp --live` enumerates
+// those via the MCP Inspector and calls this to reuse the exact same detection.
+
+export interface McpToolPoisonHit {
+	readonly severity: "critical" | "high";
+	readonly title: string;
+	readonly description: string;
+	readonly evidence: string;
+}
+
+/**
+ * Scan a single live MCP tool's name + description (and optionally a serialized
+ * input schema) for the same poisoning/injection patterns the static rules use.
+ */
+export function analyzeMcpToolText(
+	toolName: string,
+	description: string,
+	schemaText = "",
+): McpToolPoisonHit[] {
+	const hits: McpToolPoisonHit[] = [];
+	const name = toolName ?? "";
+	const desc = description ?? "";
+	const haystack = `${desc}\n${schemaText}`;
+
+	for (const re of INJECTION_NAME_PATTERNS) {
+		if (re.test(name)) {
+			hits.push({
+				severity: "high",
+				title: `MCP tool name contains an injection pattern: "${name}"`,
+				description:
+					"The tool name contains instruction-like text, a URL, or a prompt-injection pattern that can manipulate the agent when the tool list is shown to it.",
+				evidence: name.slice(0, 200),
+			});
+			break;
+		}
+	}
+
+	for (const { pattern, description: why } of DESCRIPTION_POISONING_PATTERNS) {
+		const m = haystack.match(pattern);
+		if (m) {
+			hits.push({
+				severity: "critical",
+				title: `MCP tool "${name}" description contains a poisoning instruction`,
+				description: why,
+				evidence: m[0].slice(0, 200),
+			});
+		}
+	}
+
+	for (const { pattern, description: why } of EXFILTRATION_URL_PATTERNS) {
+		const m = haystack.match(pattern);
+		if (m) {
+			hits.push({
+				severity: "high",
+				title: `MCP tool "${name}" references a suspicious exfiltration endpoint`,
+				description: why,
+				evidence: m[0].slice(0, 200),
+			});
+		}
+	}
+
+	return hits;
+}
+
 // ─── Rules ───────────────────────────────────────────────
 
 const rawToolPoisoningRules: ReadonlyArray<Rule> = [

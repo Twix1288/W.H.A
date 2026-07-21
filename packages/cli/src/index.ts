@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 
 import { checkAgent } from "./commands/check";
+import { inspectMcp } from "./commands/inspect-mcp";
 import { installAgent } from "./commands/install";
 import { runAgent } from "./commands/run";
 import { scanConfig } from "./commands/scan";
@@ -118,6 +119,34 @@ program
 	.action((targetPath, options) => {
 		scanConfig(targetPath, options).catch((err) => {
 			console.error("Scan failed:", err.message);
+			process.exit(1);
+		});
+	});
+
+program
+	.command("inspect-mcp")
+	.description(
+		"Inspect an MCP server for security issues (supply chain, tool poisoning, prompt injection)",
+	)
+	.argument(
+		"[target]",
+		"MCP server name (from your config), a command, or a URL",
+	)
+	.option("--config <path>", "path to an MCP config file (used with --server)")
+	.option("--server <name>", "server name inside --config")
+	.option(
+		"--live",
+		"execute the server and enumerate its live tools (runs untrusted code — opt-in)",
+		false,
+	)
+	.option("--ui", "launch the official MCP Inspector web UI (interactive)", false)
+	.option("--transport <type>", "transport for remote URLs (sse or http)")
+	.option("--timeout <seconds>", "timeout for --live enumeration", "45")
+	.option("-f, --format <type>", "output format (terminal, json, sarif)", "terminal")
+	.option("-o, --output <file>", "file to write the report to")
+	.action((target, options) => {
+		inspectMcp(target, options).catch((err) => {
+			console.error("Inspect failed:", err.message);
 			process.exit(1);
 		});
 	});

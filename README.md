@@ -18,6 +18,18 @@
 
 We keep giving autonomous AI agents full terminal access to our laptops. If an agent hallucinates, or if it falls victim to a prompt injection attack, it can silently read your SSH keys or overwrite your project files. W.H.Agent provides boundaries. It scans agent configurations for vulnerabilities and runs their tools inside a strict, isolated OS sandbox so they cannot access files they shouldn't.
 
+## What you can do
+
+| Command | What it does | Example |
+|---|---|---|
+| `wh-agent scan [path]` | Audit an agent's **config** (permissions, secrets, MCP servers, hooks, skills). Recurses into `skills/`/`agents/`. Defaults to the current dir; `--global` scans every agent on the machine. | `wh-agent scan ~/.claude` |
+| `wh-agent check [files...]` | Deep-scan **source/scripts** with AST rules **+ taint dataflow** (exfiltration/injection). No args = every supported file in the current dir, including `.claude` bundled scripts. | `wh-agent check ./tool.py` |
+| `wh-agent inspect-mcp <name>` | Inspect an **MCP server** for supply-chain risk, tool poisoning, and prompt injection. Static by default; `--live` enumerates the server's real tools via the MCP Inspector. | `wh-agent inspect-mcp github` |
+| `wh-agent run <script> --experimental` | Execute an untrusted script inside the **OS sandbox** (macOS). Pin `--ast-hash` to block tampered files. | `wh-agent run ./agent.py --experimental` |
+| `wh-agent install <pkg>` | Vet an npm package (typosquat, secrets, lifecycle scripts) **before** installing, then install with `--ignore-scripts`. | `wh-agent install mcp-postgres-server` |
+
+> ⏱️ **Performance:** the deep taint pass (`check`) and `scan --global` on a large config can take from a second to a couple of minutes — they read and analyze every file. Single-file `check` and a scoped `scan <path>` are typically sub-second. `inspect-mcp --live` also spends a few seconds downloading/starting the Inspector and the server.
+
 ## How it works
 
 W.H.Agent protects your machine in two stages: static scanning (finding bad code on disk) and runtime sandboxing (trapping the execution).
@@ -26,6 +38,7 @@ W.H.Agent protects your machine in two stages: static scanning (finding bad code
 - **Agent Config Auto-Discovery (`scan`):** Point it at a directory (or use `--global` to search the well-known agent locations for Cursor, Claude, VS Code, etc.). It discovers the `.claude/`-style structure — `settings.json`, `mcp.json`, `CLAUDE.md`, and the `agents/`, `skills/`, `hooks/`, `commands/`, `rules/` folders — and **recurses into subfolders**, so the standard `skills/<name>/SKILL.md` layout and any scripts bundled inside a skill are found, not just top-level files. It audits permissions, secrets, MCP servers, hooks, and skill health. It does **not** run code-level taint on source (that's `check`).
 - **AST Taint Tracking (`check`):** Instead of using regex, `wh-agent check` parses scripts into Abstract Syntax Trees. It analyzes Python, JavaScript, TypeScript, Bash, and Rust, and tracks how variables flow — from sources (env/secret/file reads, user input) to sinks (network calls, `exec`/subprocess) — to catch data-exfiltration and injection logic before it runs. All five languages get real source→sink dataflow (JS/TS via the TypeScript compiler; Python/Bash/Rust via tree-sitter). This is the command to run on a specific tool/script (or a bundled skill script) to find malicious code.
 - **Supply Chain Checks (`install`):** The `install` command scans an npm package (typosquatting, hardcoded secrets, native binaries, lifecycle scripts) *before* installing, and then runs `npm install --ignore-scripts` so a malicious `preinstall`/`postinstall` can't execute arbitrary code on your machine during installation.
+- **MCP Inspection (`inspect-mcp`):** Point it at an MCP server (by name from your config, a command, or a URL) to check it for supply-chain risk (npx/git commands, known-malicious packages), tool-poisoning and prompt-injection patterns, over-broad file access, and exfiltration endpoints. Static by default (no execution); with `--live` it enumerates the server's actual tools via the official Anthropic MCP Inspector and scans their descriptions/schemas for poisoning.
 
 > **`scan` vs `check`:** `scan` audits agent *configuration* directories (and discovers nested skills/agents/bundled files); `check` runs the AST rules + taint dataflow on the *source files* you point it at. Use `scan` to inventory and vet an agent install; use `check` to deep-scan a specific script for exfiltration/injection.
 
@@ -44,6 +57,7 @@ The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are 
 The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files **on macOS** (verified against host-file-read, write-then-exec, network-egress, subprocess-timeout and env-leak escapes). It is still experimental: on Linux both backends **fail closed** (they refuse to run rather than provide fake isolation) pending a real Landlock/gVisor implementation, Windows also **fails closed** pending Job Object confinement, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is a prototype.
 
 ## 🆕 What's new in v1.3.0
+- **MCP inspection (`inspect-mcp`)** — inspect an MCP server by name/command/URL for supply-chain risk, tool poisoning, and prompt injection. Static by default; `--live` enumerates the server's real tools via the official Anthropic MCP Inspector and scans them.
 - **Real AST hash for Golden Snapshots** — replaces the previous raw-text hash; comment/format-insensitive, semantics-sensitive, wired through `check` → `run --ast-hash`.
 - **Taint tracking for all five languages** — Python, Bash, and Rust now get real source→sink dataflow on the tree-sitter AST, at parity with JS/TS (previously JS/TS only).
 - **Sandbox hardening (macOS)** — fixed an output-file symlink exfiltration escape; the timeout now kills the whole process tree (a spawned subprocess can no longer outlive it); a strict env allow-list blocks interpreter/linker hijacking (`DYLD_*`, `LD_PRELOAD`, `PYTHONPATH`, …) and never inherits host secrets; output is size-capped.
@@ -128,7 +142,33 @@ wh-agent install <package_name>
 wh-agent install mcp-postgres-server
 ```
 
-### 4. Secure Execution (`run`)
+### 4. MCP Inspection (`inspect-mcp`)
+Inspect a Model Context Protocol server for security issues before you trust it. Resolves a server by name from your MCP configs (`mcp.json`, `.claude.json`, `claude_desktop_config.json`, project or global), or takes a raw command or URL.
+
+**Usage:**
+```bash
+wh-agent inspect-mcp <name|command|url> [options]
+```
+
+**Options:**
+- `--config <path> --server <name>`: point at a specific config file + server (mirrors the MCP Inspector's own flags).
+- `--live`: **executes the server** and enumerates its real tools/resources via the official Anthropic MCP Inspector, then scans their descriptions and schemas for poisoning. Opt-in because running an untrusted server is arbitrary code execution.
+- `--ui`: launch the official MCP Inspector **web UI** for interactive exploration.
+- `--transport <sse|http>`: transport for remote URLs.
+- `--timeout <seconds>`: timeout for `--live` enumeration (default 45).
+- `-f, --format <type>`: `terminal` (default), `json`, or `sarif`.
+
+**Examples:**
+```bash
+wh-agent inspect-mcp github                              # static scan of a configured server
+wh-agent inspect-mcp --config ./mcp.json --server github
+wh-agent inspect-mcp "npx -y @modelcontextprotocol/server-github"
+wh-agent inspect-mcp github --live                      # also enumerate & scan its live tools
+```
+
+> `--live` requires `npx` (it fetches the MCP Inspector on first use) and will run the server, so only use it on servers you're willing to execute. Static inspection never runs the server.
+
+### 5. Secure Execution (`run`)
 Wrap an untrusted script inside the OS sandbox. The sandbox physically intercepts risky system calls based on the active backend.
 
 **Usage:**
