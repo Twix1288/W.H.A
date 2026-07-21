@@ -161,6 +161,7 @@ export async function scanConfig(
 	const reports: { agent: string; path: string; report: SecurityReport }[] = [];
 	let totalCritical = 0;
 	let totalFindings = 0;
+	let totalFilesScanned = 0;
 
 	for (const target of targets) {
 		try {
@@ -170,6 +171,7 @@ export async function scanConfig(
 
 			totalCritical += report.summary.critical;
 			totalFindings += report.summary.totalFindings;
+			totalFilesScanned += report.summary.filesScanned;
 		} catch (err) {
 			console.error(
 				chalk.red(`❌ Failed to scan ${target.agent} (${target.path}): ${err}`),
@@ -216,6 +218,26 @@ export async function scanConfig(
 			console.log(outputStr);
 		}
 		process.exit(totalCritical > 0 ? 2 : 0);
+	}
+
+	// Honest empty-result guard: if nothing was actually scanned, say so plainly
+	// instead of rendering a "Grade A / no issues" report — a 0-file scan is NOT
+	// an all-clear. Most commonly this means scan was pointed at a leaf folder
+	// (e.g. a single skill dir) rather than an agent config root.
+	if (totalFilesScanned === 0) {
+		const where = isGlobal ? "the discovered agent environments" : (targetPath ? path.resolve(targetPath) : process.cwd());
+		console.log(
+			chalk.yellow(
+				`\n⚠️  No agent configuration files were found in ${where}.`,
+			),
+		);
+		console.log(
+			chalk.gray(
+				`   Nothing was scanned — this is NOT an all-clear. Point scan at a project root or a .claude directory\n` +
+				`   (e.g. 'wh-agent scan ~/.claude'), or use --global. To deep-scan a single script for malicious code, use 'wh-agent check <file>'.`,
+			),
+		);
+		process.exit(0);
 	}
 
 	// Terminal Reporting
