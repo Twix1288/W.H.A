@@ -23,9 +23,11 @@ We keep giving autonomous AI agents full terminal access to our laptops. If an a
 W.H.Agent protects your machine in two stages: static scanning (finding bad code on disk) and runtime sandboxing (trapping the execution).
 
 ### 1. The Scanners (Production Ready)
-- **Global Agent Auto-Discovery:** It acts as a watchdog. It scans your entire machine and finds configurations for Cursor, Windsurf, VS Code, Claude Desktop, Gemini CLI, and others.
-- **AST Taint Tracking:** Instead of using regex, we parse agent scripts into Abstract Syntax Trees (AST). The scanner analyzes Python, JavaScript, TypeScript, Bash, and Rust, and tracks how variables flow through the code — from sources (env/secret/file reads, user input) to sinks (network calls, `exec`/subprocess) — to catch data-exfiltration and injection logic before it runs. All five languages get real source→sink dataflow (JS/TS via the TypeScript compiler, Python/Bash/Rust via tree-sitter).
-- **Supply Chain Checks:** The `install` command scans an npm package (typosquatting, hardcoded secrets, native binaries, lifecycle scripts) *before* installing, and then runs `npm install --ignore-scripts` so a malicious `preinstall`/`postinstall` can't execute arbitrary code on your machine during installation.
+- **Agent Config Auto-Discovery (`scan`):** Point it at a directory (or use `--global` to search the well-known agent locations for Cursor, Claude, VS Code, etc.). It discovers the `.claude/`-style structure — `settings.json`, `mcp.json`, `CLAUDE.md`, and the `agents/`, `skills/`, `hooks/`, `commands/`, `rules/` folders — and **recurses into subfolders**, so the standard `skills/<name>/SKILL.md` layout and any scripts bundled inside a skill are found, not just top-level files. It audits permissions, secrets, MCP servers, hooks, and skill health. It does **not** run code-level taint on source (that's `check`).
+- **AST Taint Tracking (`check`):** Instead of using regex, `wh-agent check` parses scripts into Abstract Syntax Trees. It analyzes Python, JavaScript, TypeScript, Bash, and Rust, and tracks how variables flow — from sources (env/secret/file reads, user input) to sinks (network calls, `exec`/subprocess) — to catch data-exfiltration and injection logic before it runs. All five languages get real source→sink dataflow (JS/TS via the TypeScript compiler; Python/Bash/Rust via tree-sitter). This is the command to run on a specific tool/script (or a bundled skill script) to find malicious code.
+- **Supply Chain Checks (`install`):** The `install` command scans an npm package (typosquatting, hardcoded secrets, native binaries, lifecycle scripts) *before* installing, and then runs `npm install --ignore-scripts` so a malicious `preinstall`/`postinstall` can't execute arbitrary code on your machine during installation.
+
+> **`scan` vs `check`:** `scan` audits agent *configuration* directories (and discovers nested skills/agents/bundled files); `check` runs the AST rules + taint dataflow on the *source files* you point it at. Use `scan` to inventory and vet an agent install; use `check` to deep-scan a specific script for exfiltration/injection.
 
 ### 2. The Runtime Sandbox (Experimental)
 When an agent tries to run a tool, W.H.Agent intercepts the command and isolates the subprocess using native OS primitives. We do not use heavy Docker containers; we use the exact primitives built into your operating system.
@@ -45,8 +47,11 @@ The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctl
 - **Real AST hash for Golden Snapshots** — replaces the previous raw-text hash; comment/format-insensitive, semantics-sensitive, wired through `check` → `run --ast-hash`.
 - **Taint tracking for all five languages** — Python, Bash, and Rust now get real source→sink dataflow on the tree-sitter AST, at parity with JS/TS (previously JS/TS only).
 - **Sandbox hardening (macOS)** — fixed an output-file symlink exfiltration escape; the timeout now kills the whole process tree (a spawned subprocess can no longer outlive it); a strict env allow-list blocks interpreter/linker hijacking (`DYLD_*`, `LD_PRELOAD`, `PYTHONPATH`, …) and never inherits host secrets; output is size-capped.
-- **Safer `install`** — `--ignore-scripts` by default, no-shell invocation (removes a command-injection surface), and typosquatting data is now bundled so the check actually runs in the published CLI.
+- **Safer `install`** — `--ignore-scripts` by default, no-shell invocation (removes a command-injection surface). Typosquat detection now actually works: the reference list was corrupt (contained no real top packages) and wasn't bundled into the published CLI — both fixed with a curated list of the most-typosquatted packages.
+- **Taint now runs in `check`** — previously the data-flow analyzer was never invoked by `check`, so an exfiltration script reported "no vulnerabilities". `check` now runs taint on every supported file and reports source→sink flows.
+- **`scan` recurses into skill/agent subfolders** — the standard `skills/<name>/SKILL.md` layout and scripts bundled inside a skill were being skipped; they're now discovered and analyzed.
 - **Fail-closed everywhere untrusted code can't be contained** — Linux (Landlock + gVisor) and Windows backends refuse to execute rather than pretend to isolate.
+- **Correct `--version`** — was hardcoded to `1.0.0`; now reports the real package version.
 
 ---
 
@@ -72,34 +77,39 @@ Find and audit every agent installed on your machine. It searches common install
 wh-agent scan [options]
 ```
 
+**Arguments:**
+- `[path]`: Optional path to an agent config directory (e.g., `.claude`). Defaults to the current directory; discovery recurses into `skills/`, `agents/`, `hooks/`, etc.
+
 **Options:**
-- `--global`: Run a system-wide scan across all known agent directories instead of just the current workspace.
-- `--format <type>`: Choose the output format. Options are `table` (default), `json`, `markdown`, or `sarif`.
+- `-g, --global`: Search all known agent directories on the machine instead of just the given/current path.
+- `-f, --format <type>`: Output format — `terminal` (default), `json`, `markdown`, or `sarif`.
 - `--output <file>`: Write the results to a specific file (e.g., `report.json`).
 
 **Example:**
 ```bash
-wh-agent scan --global --format sarif --output ci-report.sarif
+wh-agent scan ./my-agent/.claude --format sarif --output ci-report.sarif
 ```
 
 ### 2. Universal Static Analysis Check (`check`)
-Run the AST-level vulnerability check on specific scripts. This is useful for analyzing custom MCP tools or scripts before deploying them.
+Run the AST-level vulnerability check (rules **+ taint dataflow**) on specific scripts. This is the command for analyzing custom MCP tools, agent scripts, or bundled skill scripts before deploying them. It also prints a Golden Snapshot AST fingerprint you can pin with `run --ast-hash`.
 
 **Usage:**
 ```bash
-wh-agent check <filepath> [options]
+wh-agent check [files...] [options]
 ```
 
 **Arguments:**
-- `<filepath>`: The path to the script you want to analyze (supports `.py`, `.js`, `.ts`, `.sh`, `.rs`).
+- `[files...]`: One or more files to analyze (supports `.py`, `.js`, `.ts`/`.tsx`, `.sh`/`.bash`, `.rs`). If omitted, every supported file in the current directory is checked.
 
 **Options:**
-- `--fix`: Automatically attempt to rewrite the code to remove the vulnerability (e.g., removing hardcoded secrets).
-- `--format <type>`: Choose the output format (`table`, `json`, `markdown`, `sarif`).
+- `--fix`: Automatically attempt to rewrite the code to remove a vulnerability (e.g., removing hardcoded secrets). Applies to rule-based, fixable findings only.
+- `--format <type>`: Output format — `text` (default), `json`, `json-v2`, or `sarif`.
 
 **Example:**
 ```bash
 wh-agent check ./tools/database_query.py --fix
+# deep-scan a skill's bundled script for exfiltration:
+wh-agent check ~/.claude/skills/my-skill/scripts/helper.py
 ```
 
 ### 3. Secure Install (`install`)
