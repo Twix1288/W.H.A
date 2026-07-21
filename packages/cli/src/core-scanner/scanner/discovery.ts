@@ -232,23 +232,73 @@ function scanClaudeRoot(
 	for (const [subdir, type] of subdirs) {
 		const dirPath = join(claudeRoot, subdir);
 		if (existsSync(dirPath) && statSync(dirPath).isDirectory()) {
-			const entries = readdirSync(dirPath);
-			for (const entry of entries) {
-				const entryPath = join(dirPath, entry);
-				if (statSync(entryPath).isFile()) {
-					addDiscoveredFile(
-						scanRoot,
-						entryPath,
-						inferType(entry, type),
-						files,
-						seenFiles,
-					);
-				}
-			}
+			// Recurse: skills and agents are normally organized as
+			// `skills/<name>/SKILL.md` (a folder per skill) with bundled scripts
+			// alongside — a single-level readdir would miss both the SKILL.md and
+			// any hidden payload scripts, which is exactly where a malicious skill
+			// hides code.
+			collectFilesRecursively(scanRoot, dirPath, type, files, seenFiles, 0);
 		}
 	}
 
 	discoverReferencedHookScripts(scanRoot, claudeRoot, files, seenFiles);
+}
+
+// Extensions that are never source/config we can meaningfully scan as text.
+const BINARY_EXTENSIONS = new Set([
+	".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svg",
+	".pdf", ".zip", ".gz", ".tar", ".tgz", ".bz2", ".7z", ".rar",
+	".wasm", ".node", ".exe", ".dll", ".so", ".dylib", ".bin",
+	".woff", ".woff2", ".ttf", ".otf", ".eot",
+	".mp3", ".mp4", ".mov", ".avi", ".wav", ".ogg", ".webm",
+]);
+const MAX_DISCOVERED_FILE_BYTES = 1024 * 1024; // 1MB
+const MAX_DISCOVERY_DEPTH = 10;
+
+function collectFilesRecursively(
+	scanRoot: string,
+	dirPath: string,
+	defaultType: ConfigFileType,
+	files: ConfigFile[],
+	seenFiles: Set<string>,
+	depth: number,
+): void {
+	if (depth > MAX_DISCOVERY_DEPTH) return;
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = readdirSync(dirPath, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		const entryPath = join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			if (IGNORED_DIRS.has(entry.name)) continue;
+			collectFilesRecursively(
+				scanRoot,
+				entryPath,
+				defaultType,
+				files,
+				seenFiles,
+				depth + 1,
+			);
+			continue;
+		}
+		if (!entry.isFile()) continue;
+		if (BINARY_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
+		try {
+			if (statSync(entryPath).size > MAX_DISCOVERED_FILE_BYTES) continue;
+		} catch {
+			continue;
+		}
+		addDiscoveredFile(
+			scanRoot,
+			entryPath,
+			inferType(entry.name, defaultType),
+			files,
+			seenFiles,
+		);
+	}
 }
 
 function inferType(

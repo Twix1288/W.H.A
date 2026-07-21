@@ -190,6 +190,47 @@ function sourceKind(callee: string, spec: LangSpec): SourceKind | null {
 	return null;
 }
 
+// Attribute/member sources used WITHOUT a call, e.g. `data=os.environ` or
+// `sys.argv` — a very common exfiltration shape that pure call-matching misses.
+// Restricted to DOTTED patterns (os.environ, sys.argv, request.args) so bare
+// method names like "read"/"open" can't false-positive on ordinary attributes.
+function attrSourceKind(text: string, spec: LangSpec): SourceKind | null {
+	const dotted = (p: string) => p.includes(".") || p.includes("::");
+	const match = (patterns: string[]) =>
+		patterns
+			.filter(dotted)
+			.some((p) => text === p || text.endsWith(`.${p}`) || text.endsWith(`::${p}`));
+	if (match(spec.sensitiveSources)) return "sensitive";
+	if (match(spec.inputSources)) return "input";
+	return null;
+}
+
+// Strongest source kind anywhere in a subtree, considering both source CALLS
+// (os.getenv(...)) and source ATTRIBUTE accesses (os.environ). "sensitive" wins.
+function subtreeSourceKind(
+	node: Parser.SyntaxNode,
+	spec: LangSpec,
+): SourceKind | null {
+	let kind: SourceKind | null = null;
+	const consider = (k: SourceKind | null) => {
+		if (k === "sensitive") kind = "sensitive";
+		else if (k && kind !== "sensitive") kind = "input";
+	};
+	walk(node, (n) => {
+		if (spec.callTypes.includes(n.type)) {
+			consider(sourceKind(calleeName(n), spec));
+		} else if (
+			(n.type === "attribute" ||
+				n.type === "field_expression" ||
+				n.type === "scoped_identifier") &&
+			n.text.includes(".")
+		) {
+			consider(attrSourceKind(n.text, spec));
+		}
+	});
+	return kind;
+}
+
 function assignParts(
 	node: Parser.SyntaxNode,
 ): { targets: string[]; value: Parser.SyntaxNode } | null {
@@ -251,17 +292,10 @@ export function analyzePolyglotTaint(
 	for (let pass = 0; pass < 5; pass++) {
 		let changed = false;
 		for (const a of assignments) {
-			// A target is tainted if its value calls a source, or references an
-			// already-tainted variable. "sensitive" dominates "input".
-			let kind: SourceKind | null = null;
-			for (const c of collectCallees(a.value, spec)) {
-				const k = sourceKind(c.name, spec);
-				if (k === "sensitive") {
-					kind = "sensitive";
-					break;
-				}
-				if (k) kind = "input";
-			}
+			// A target is tainted if its value calls a source, reads a source
+			// attribute (os.environ), or references an already-tainted variable.
+			// "sensitive" dominates "input".
+			let kind: SourceKind | null = subtreeSourceKind(a.value, spec);
 			if (kind !== "sensitive") {
 				for (const id of collectIdentifiers(a.value, spec)) {
 					const k = tainted.get(id);
@@ -292,11 +326,9 @@ export function analyzePolyglotTaint(
 
 		const argsNode = call.node.childForFieldName("arguments") || call.node;
 		const kinds = new Set<SourceKind>();
-		for (const c of collectCallees(argsNode, spec)) {
-			// a source called directly inside the sink's arguments
-			const k = sourceKind(c.name, spec);
-			if (k && c.node !== call.node) kinds.add(k);
-		}
+		// A source (call OR attribute like os.environ) used directly in the args.
+		const direct = subtreeSourceKind(argsNode, spec);
+		if (direct) kinds.add(direct);
 		for (const id of collectIdentifiers(argsNode, spec)) {
 			const k = tainted.get(id);
 			if (k) kinds.add(k);
