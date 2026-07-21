@@ -22,8 +22,22 @@ export async function checkAgent(
 	let targetFiles = files;
 
 	if (!targetFiles || targetFiles.length === 0) {
+		// dot: true so scripts bundled inside dot-directories — most importantly
+		// `.claude/skills/<name>/scripts/*.py` and `.claude/agents/*` — are checked
+		// by default. Without it, a malicious bundled skill/agent script would be
+		// silently skipped when a user just runs `wh-agent check` in their project.
 		targetFiles = await glob("**/*.{py,js,ts,tsx,sh,bash,rs}", {
-			ignore: ["node_modules/**", "dist/**", "build/**", ".git/**"],
+			dot: true,
+			ignore: [
+				"**/node_modules/**",
+				"**/dist/**",
+				"**/build/**",
+				"**/.git/**",
+				"**/.venv/**",
+				"**/venv/**",
+				"**/.cache/**",
+				"**/coverage/**",
+			],
 		});
 	}
 
