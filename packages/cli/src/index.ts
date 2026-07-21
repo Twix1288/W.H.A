@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Command } from "commander";
 
 import { checkAgent } from "./commands/check";
@@ -7,12 +9,24 @@ import { runAgent } from "./commands/run";
 import { scanConfig } from "./commands/scan";
 import { setup } from "./commands/setup";
 
+// Read the real version from package.json (dist/ sits next to it once built and
+// once published), so `--version` never drifts from the shipped release.
+function resolveVersion(): string {
+	try {
+		return JSON.parse(
+			readFileSync(join(__dirname, "..", "package.json"), "utf-8"),
+		).version;
+	} catch {
+		return "0.0.0";
+	}
+}
+
 const program = new Command();
 
 program
 	.name("shield")
 	.description("W.H.Agent CLI - Security platform for AI agents")
-	.version("1.0.0");
+	.version(resolveVersion());
 
 program
 	.command("install")

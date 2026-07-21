@@ -5,7 +5,7 @@ import { glob } from "glob";
 import { astFingerprint, parseFile } from "../core-scanner/parser";
 import { applyRemediations } from "../core-scanner/remediator";
 import { type Finding, RULES, runRules } from "../core-scanner/rules";
-import { isTaintSupported } from "../core-scanner/taint/index";
+import { analyzeTaint, isTaintSupported } from "../core-scanner/taint/index";
 
 export async function checkAgent(
 	files: string[],
@@ -72,6 +72,30 @@ export async function checkAgent(
 
 			for (const finding of findings) {
 				allFindings.push({ file: relativePath, finding });
+			}
+
+			// Data-flow (taint) analysis: catch source→sink exfiltration/injection
+			// that pattern rules miss. This is the flagship "tracks how variables
+			// flow through the code" capability, surfaced on the files the user is
+			// actually checking.
+			if (isTaintSupported(absolutePath)) {
+				const taint = analyzeTaint([
+					{ path: relativePath, content: parseResult.source },
+				]);
+				for (const flow of taint.flows) {
+					allFindings.push({
+						file: relativePath,
+						finding: {
+							ruleId: "taint-dataflow",
+							name: "Tainted data flow",
+							severity: flow.severity,
+							category: "data-flow",
+							message: flow.description,
+							line: flow.source.line ?? 0,
+							fixable: false,
+						},
+					});
+				}
 			}
 		} catch (err: any) {
 			if (format === "text") {
