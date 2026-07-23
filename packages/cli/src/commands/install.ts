@@ -115,7 +115,9 @@ function checkLifecycleScripts(packageName: string, manifest: any) {
 				`ℹ️  ${packageName} runs code automatically on install via: ${found.join(", ")}`,
 			),
 		);
-		found.forEach((s) => console.log(chalk.gray(`   ${s}: ${scripts[s]}`)));
+		for (const s of found) {
+			console.log(chalk.gray(`   ${s}: ${scripts[s]}`));
+		}
 		return { hasScripts: true, scripts: found };
 	}
 	console.log(chalk.green(`✅ No install-time lifecycle scripts found.`));
@@ -297,9 +299,9 @@ async function scanTarball(packageName: string, manifest: any) {
 
 	if (findings.length > 0) {
 		console.log(chalk.red(`⚠️  Suspicious patterns found in package source:`));
-		findings.forEach((f) =>
-			console.log(chalk.red(`   ${f.file}: ${f.pattern} (${f.redacted})`)),
-		);
+		for (const f of findings) {
+			console.log(chalk.red(`   ${f.file}: ${f.pattern} (${f.redacted})`));
+		}
 	} else {
 		console.log(
 			chalk.green(`✅ No known suspicious patterns found in source.`),
@@ -327,7 +329,7 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 	const typoResult = checkTyposquat(pkgName);
 	if (typoResult.risky) hasBlocker = true;
 
-	let manifest;
+	let manifest: Awaited<ReturnType<typeof fetchPackageMetadata>>;
 	try {
 		manifest = await fetchPackageMetadata(
 			pkgName,
@@ -354,7 +356,7 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 	checkProvenance(pkgName, manifest);
 
 	// 4. Tarball Scan
-	let tarballResult;
+	let tarballResult: Awaited<ReturnType<typeof scanTarball>>;
 	try {
 		tarballResult = await scanTarball(pkgName, manifest);
 		if (tarballResult.findings.length > 0) hasBlocker = true;

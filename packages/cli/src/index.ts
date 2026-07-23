@@ -9,6 +9,7 @@ import { installAgent } from "./commands/install";
 import { runAgent } from "./commands/run";
 import { scanConfig } from "./commands/scan";
 import { setup } from "./commands/setup";
+import { watchConfig } from "./commands/watch";
 
 // Read the real version from package.json (dist/ sits next to it once built and
 // once published), so `--version` never drifts from the shipped release.
@@ -147,6 +148,35 @@ program
 	.action((target, options) => {
 		inspectMcp(target, options).catch((err) => {
 			console.error("Inspect failed:", err.message);
+			process.exit(1);
+		});
+	});
+
+program
+	.command("watch")
+	.description(
+		"Continuously watch an agent config directory and alert on security drift (config changes)",
+	)
+	.argument(
+		"[path]",
+		"directory to watch (default: ./.claude, then ~/.claude, then cwd)",
+	)
+	.option("--debounce <ms>", "debounce interval in milliseconds", "500")
+	.option("--alert <mode>", "alert mode: terminal, webhook, both", "terminal")
+	.option("--webhook <url>", "webhook URL for alerts (required for webhook/both)")
+	.option(
+		"--min-severity <severity>",
+		"minimum severity to track: critical, high, medium, low, info",
+		"info",
+	)
+	.option(
+		"--block",
+		"exit non-zero if the initial scan has critical findings (for CI)",
+		false,
+	)
+	.action((targetPath, options) => {
+		watchConfig(targetPath, options).catch((err) => {
+			console.error("Watch failed:", err.message);
 			process.exit(1);
 		});
 	});

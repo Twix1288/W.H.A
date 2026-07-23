@@ -43,7 +43,7 @@ async function runIntegrationTest() {
 		console.log("   Building shield-agent image...");
 		try {
 			await execAsync(
-				"cd ../shield-agent && docker build -t shield-agent-integration -f Dockerfile.smoketest .",
+				"cd ../../experimental/shield-agent && docker build -t shield-agent-integration -f Dockerfile.smoketest .",
 			);
 		} catch (e: any) {
 			console.error("Failed to build image:", e.message);
@@ -120,12 +120,23 @@ async function runIntegrationTest() {
 		if (useDocker && containerName) {
 			await execAsync(`docker rm -f ${containerName} || true`);
 		}
-		if (fs.existsSync("../shield-agent/shield-agent-bin")) {
-			fs.unlinkSync("../shield-agent/shield-agent-bin");
+		if (fs.existsSync("../../experimental/shield-agent/shield-agent-bin")) {
+			fs.unlinkSync("../../experimental/shield-agent/shield-agent-bin");
 		}
 	}
 }
 
+// This is an opt-in E2E test: it requires Docker + Linux (privileged, for eBPF)
+// and a buildable experimental/shield-agent. It cannot run on macOS or in the
+// default unit suite, so it stays inert unless explicitly requested. This keeps
+// `bun test` deterministic and keeps the experimental shield-agent out of the
+// shipping gate.
 if (require.main === module) {
-	runIntegrationTest();
+	if (process.env.RUN_SHIELD_E2E === "1") {
+		runIntegrationTest();
+	} else {
+		console.log(
+			"shield-agent E2E integration test skipped — set RUN_SHIELD_E2E=1 (needs Docker + Linux + a built experimental/shield-agent) to run it.",
+		);
+	}
 }

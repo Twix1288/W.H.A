@@ -27,6 +27,7 @@ We keep giving autonomous AI agents full terminal access to our laptops. If an a
 | `wh-agent inspect-mcp <name>` | Inspect an **MCP server** for supply-chain risk, tool poisoning, and prompt injection. Static by default; `--live` enumerates the server's real tools via the MCP Inspector. | `wh-agent inspect-mcp github` |
 | `wh-agent run <script> --experimental` | Execute an untrusted script inside the **OS sandbox** (macOS). Pin `--ast-hash` to block tampered files. | `wh-agent run ./agent.py --experimental` |
 | `wh-agent install <pkg>` | Vet an npm package (typosquat, secrets, lifecycle scripts) **before** installing, then install with `--ignore-scripts`. | `wh-agent install mcp-postgres-server` |
+| `wh-agent watch [path]` | **Continuously** re-scan an agent config and alert when its security posture drifts (a new MCP server, widened permissions, a new hook/secret). Local, cross-platform, no backend. | `wh-agent watch ~/.claude` |
 
 > ⏱️ **Performance:** the deep taint pass (`check`) and `scan --global` on a large config can take from a second to a couple of minutes — they read and analyze every file. Single-file `check` and a scoped `scan <path>` are typically sub-second. `inspect-mcp --live` also spends a few seconds downloading/starting the Inspector and the server.
 
@@ -39,6 +40,7 @@ W.H.Agent protects your machine in two stages: static scanning (finding bad code
 - **AST Taint Tracking (`check`):** Instead of using regex, `wh-agent check` parses scripts into Abstract Syntax Trees. It analyzes Python, JavaScript, TypeScript, Bash, and Rust, and tracks how variables flow — from sources (env/secret/file reads, user input) to sinks (network calls, `exec`/subprocess) — to catch data-exfiltration and injection logic before it runs. All five languages get real source→sink dataflow (JS/TS via the TypeScript compiler; Python/Bash/Rust via tree-sitter). This is the command to run on a specific tool/script (or a bundled skill script) to find malicious code.
 - **Supply Chain Checks (`install`):** The `install` command scans an npm package (typosquatting, hardcoded secrets, native binaries, lifecycle scripts) *before* installing, and then runs `npm install --ignore-scripts` so a malicious `preinstall`/`postinstall` can't execute arbitrary code on your machine during installation.
 - **MCP Inspection (`inspect-mcp`):** Point it at an MCP server (by name from your config, a command, or a URL) to check it for supply-chain risk (npx/git commands, known-malicious packages), tool-poisoning and prompt-injection patterns, over-broad file access, and exfiltration endpoints. Static by default (no execution); with `--live` it enumerates the server's actual tools via the official Anthropic MCP Inspector and scans their descriptions/schemas for poisoning.
+- **Config Drift Watch (`watch`):** Establish a baseline from an initial scan, then watch the config directory and re-scan on every change, alerting (terminal or webhook) when new findings appear or the score regresses. Fully local and cross-platform (macOS/Linux/Windows), no backend. `--block` exits non-zero if the initial scan has critical findings (useful in CI).
 
 > **`scan` vs `check`:** `scan` audits agent *configuration* directories (and discovers nested skills/agents/bundled files); `check` runs the AST rules + taint dataflow on the *source files* you point it at. Use `scan` to inventory and vet an agent install; use `check` to deep-scan a specific script for exfiltration/injection.
 
@@ -55,6 +57,14 @@ When an agent tries to run a tool, W.H.Agent intercepts the command and isolates
 We want to be entirely clear about what works today.
 The static scanners (`wh-agent scan`, `wh-agent check`, `wh-agent install`) are stable and production-ready; AST taint tracking covers all five languages, and `install` disables install-time lifecycle scripts by default.
 The runtime sandbox (`wh-agent run`) physically intercepts payloads and correctly isolates files **on macOS** (verified against host-file-read, write-then-exec, network-egress, subprocess-timeout and env-leak escapes). It is still experimental: on Linux both backends **fail closed** (they refuse to run rather than provide fake isolation) pending a real Landlock/gVisor implementation, Windows also **fails closed** pending Job Object confinement, and the system for passing dynamic arguments into a frozen sandbox snapshot (parameter IPC) is a prototype.
+
+Continuous monitoring (`wh-agent watch`) is config-drift detection built on the same scanners — cross-platform and fully local. A future opt-in runtime-network source (Linux eBPF, via the experimental `shield-agent`) is on the [roadmap](ROADMAP.md) but **not shipped**; `watch` today means config drift.
+
+## 🆕 What's new in v1.4.0
+- **Continuous monitoring (`wh-agent watch`)** — establish a baseline, then watch an agent config and alert on security drift. Cross-platform, local, no backend. `--block` gates CI on critical findings.
+- **Production-hardened drift engine** — the file watcher now attaches error handlers (a deleted watched dir or inotify limit no longer crashes the process), proactively falls back to per-directory watching on Linux + Node < 20 (where recursive `fs.watch` is silently ignored), and serializes rescans so overlapping changes can't diff against a stale baseline.
+- **Repo cleanup** — experimental prototypes (`shield-agent`, the Python guardrail) moved to `experimental/`; `packages/` now holds only what ships (`cli`, `sandbox-service`). `ARCHITECTURE.md`/`ROADMAP.md` now describe the real system.
+- **Experimental Python guardrail** — a backend-free library that screens RAG documents for prompt-injection risk in-process (`experimental/sdk-python`). Not part of the shipping CLI.
 
 ## 🆕 What's new in v1.3.0
 - **MCP inspection (`inspect-mcp`)** — inspect an MCP server by name/command/URL for supply-chain risk, tool poisoning, and prompt injection. Static by default; `--live` enumerates the server's real tools via the official Anthropic MCP Inspector and scans them.
@@ -192,6 +202,29 @@ WH_SANDBOX_BACKEND=<backend> wh-agent run <executable> [args...] --experimental
 WH_SANDBOX_BACKEND=landlock wh-agent run ./malicious-agent.js --experimental
 ```
 
+### 6. Continuous Monitoring (`watch`)
+Establish a baseline from an initial scan, then watch a config directory and re-scan on every change, alerting when the security posture drifts. Fully local, cross-platform, no backend.
+
+**Usage:**
+```bash
+wh-agent watch [path] [options]
+```
+
+**Arguments:**
+- `[path]`: Directory to watch. Defaults to `./.claude`, then `~/.claude`, then the current directory.
+
+**Options:**
+- `--debounce <ms>`: Debounce interval before re-scanning (default `500`, minimum `100`).
+- `--alert <mode>`: `terminal` (default), `webhook`, or `both`.
+- `--webhook <url>`: Webhook URL (required when `--alert` is `webhook` or `both`).
+- `--min-severity <severity>`: Minimum severity to track — `critical`, `high`, `medium`, `low`, `info` (default `info`).
+- `--block`: Exit non-zero if the **initial** scan has critical findings (for CI).
+
+**Example:**
+```bash
+wh-agent watch ~/.claude --min-severity high --alert both --webhook https://hooks.example/wh
+```
+
 ---
 
 ## 🎯 The Breakout Challenge
@@ -208,6 +241,14 @@ To test it:
 
 🏆 **Breakout Challenge Winners:**
 - [AbhinavGGarg](https://github.com/AbhinavGGarg)
+
+## Experimental & roadmap
+
+Some components live under [`experimental/`](experimental/) and are **not** part of the shipping CLI:
+- **`shield-agent`** — an eBPF runtime-telemetry prototype (Linux). Observe-only today; the seed of a future runtime-enforcement layer.
+- **`sdk-python`** — a backend-free Python guardrail that screens RAG documents for prompt-injection risk in-process.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for what ships today and [ROADMAP.md](ROADMAP.md) for where these are headed.
 
 ## Contributing
 

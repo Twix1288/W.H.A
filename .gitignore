@@ -1,2 +1,36 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+build/
+
+# Build caches & incremental artifacts
+.turbo/
+*.tsbuildinfo
+*.log
+
+# Generated scan reports (ad-hoc dev output)
+packages/cli/report.json
+packages/cli/test-report.json
+
+# Downloaded build tooling (fetched on demand, never committed)
+packages/sandbox-service/protoc_bin/
+packages/sandbox-service/protoc-*.zip
+
+# Compiled Go sandbox binary — built into the CLI at build/release time
+# (see `make build-sandbox`), never committed. If it is still tracked, untrack
+# it once with:  git rm --cached packages/cli/bin/wh-sandbox
+packages/cli/bin/wh-sandbox
+
+# Compiled experimental shield-agent binary (build artifact, not committed)
+experimental/shield-agent/shield-agent-bin
+
+# Python artifacts
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS / editor cruft
+.DS_Store

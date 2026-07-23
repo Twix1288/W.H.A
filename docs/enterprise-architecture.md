@@ -1,5 +1,7 @@
 # Advanced Enterprise Architecture
 
+> ⚠️ **Aspirational — not yet built.** This document describes a target end-state, not the current codebase. Components referenced here (`packages/ebpf-agent`, `packages/posture-service`, `packages/dashboard`, `middleware-sdk`, `red-team-engine`) do **not** exist in the repo today. For what actually ships, see [ARCHITECTURE.md](../ARCHITECTURE.md); for the plan to get from here to there, see [ROADMAP.md](../ROADMAP.md).
+
 While W.H.Agent acts natively as a CLI for checking and safely running untrusted AI agents, the platform is backed by a full Enterprise execution-layer control plane designed for SOC teams and platform engineers.
 
 This architecture scales from local development environments to distributed Kubernetes clusters.
@@ -17,7 +19,7 @@ This architecture scales from local development environments to distributed Kube
    - This explicitly links isolated events (a tool call, a database query, an outbound connection) to the exact conversational turn of the AI agent, providing full incident lineage for security forensics.
 
 3. **Inline Middleware SDK**
-   - Located in `packages/sdk-python`.
+   - Located in `experimental/sdk-python`.
    - Injects W3C telemetry into agent frameworks like LangChain.
    - Provides a developer surface for policy authoring and warning logging, acting as a lightweight guardrail inside the container envelope.
 

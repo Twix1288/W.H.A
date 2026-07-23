@@ -1,51 +1,87 @@
 # W.H.Agent Architecture
 
-W.H.Agent is designed as a modern, high-performance monorepo utilizing a mix of Node.js (TypeScript) for high-level tooling and Go for low-level, high-performance OS-native sandboxing and shielding.
+W.H.Agent ships as **two components that work together**:
 
-This document serves as a map to "where all the code that does the work" lives, to help contributors quickly onboard and navigate the project.
+1. **`packages/cli`** — the `wh-agent` CLI (TypeScript, published to npm as `wh-agent-cli`). This is the product surface and the entire static-analysis engine: `scan`, `check`, `inspect-mcp`, `install`, and `run`.
+2. **`packages/sandbox-service`** — a small Go binary, `wh-sandbox`, that the CLI spawns to execute untrusted code inside an OS-native sandbox. Real isolation is implemented on **macOS (Seatbelt)**; Linux and Windows currently **fail closed** — they refuse to execute rather than pretend to isolate.
 
-## High-Level Repository Structure
+Everything else in the repo is either an **experimental prototype** or **scaffolding for a future control plane** — see [Experimental & not-yet-wired](#experimental--not-yet-wired) and [ROADMAP.md](./ROADMAP.md). This document describes only what runs today.
+
+## Repository structure
 
 ```text
 wh-agent/
-├── packages/           # Core applications, libraries, and services
-│   ├── cli/            # The main `wh-agent` CLI application (TypeScript)
-│   ├── sandbox-service/# OS-Native execution sandbox (Go)
-│   ├── shield-agent/   # Runtime system shield / eBPF service (Go)
-│   ├── sdk-python/     # Python integration SDK
-│   ├── middleware-sdk/ # Node.js integration SDK
-│   └── red-team-engine/# Offensive security testing engine
-└── services/           # Supporting infrastructure services (Docker/Config)
+├── packages/
+│   ├── cli/               # [shipping]      wh-agent CLI + static analysis engine (TypeScript)
+│   └── sandbox-service/   # [shipping]      wh-sandbox OS-sandbox binary (Go); macOS real, Linux/Windows fail-closed
+├── experimental/          # prototypes — NOT shipped, NOT in CI (see experimental/README.md)
+│   ├── shield-agent/      # eBPF network-telemetry prototype (Go, Linux-only)
+│   └── sdk-python/        # early LangChain middleware SDK — needs a backend not in this repo
+├── services/              # [scaffolding]   config only: OPA policy, Postgres schema, Kafka topics — no consumer yet
+├── scripts/               # bootstrap + maintenance scripts
+└── Makefile               # build orchestration (see "Building")
 ```
 
-## Core Components Deep-Dive
+## The CLI — `packages/cli`
 
-### 1. `packages/cli` (The Entry Point)
-This is the heart of the user experience and the static analysis engine. It is written in TypeScript and executed via Node.js.
-- **`src/commands/`**: Contains the logic for the different CLI actions you can take (`scan`, `check`, `install`, `run`, `setup`).
-- **`src/core-scanner/`**: The core of the AST-based (Abstract Syntax Tree) static analyzer. It parses code to find dangerous variables, data exfiltration attempts, and logic flaws before execution.
-- **`src/vm/` & `src/ipc/`**: Orchestrates secure communication and manages the lifecycle of the underlying sandbox services.
+TypeScript, bundled with `tsup` into `dist/index.js` (exposed as both `wh-agent` and `shield`).
 
-### 2. `packages/sandbox-service` (The Sandbox)
-This is the OS-native execution sandbox, written in Go to maintain sub-millisecond execution speeds and strong isolation.
-- **`cmd/wh-sandbox/main.go`**: The entry point for the standalone sandbox binary. When the CLI invokes a `run` command, it spins up this binary to isolate the untrusted code.
-- **`internal/executor/` & `internal/vm/`**: Contains the platform-specific isolation logic (e.g., macOS Seatbelt profiles, Linux Landlock/seccomp-bpf, Windows Job Objects).
+- **`src/commands/`** — one module per command: `scan` (audit an agent config), `check` (AST rules + taint dataflow on source), `inspect-mcp` (MCP server risk), `install` (supply-chain-vetted npm install), `run` (spawn the sandbox).
+- **`src/core-scanner/`** — the analysis engine:
+  - `rules/` — detection rule packs (permissions, secrets, MCP tool-poisoning, MCP-CVE, prompt-defense, hooks, skills, package-manager, agents).
+  - `taint/` — source→sink dataflow. JS/TS via the TypeScript compiler; Python/Bash/Rust via tree-sitter.
+  - `parser.ts` / `fingerprint.ts` — AST parsing and the "Golden Snapshot" AST fingerprint used by `run --ast-hash`.
+  - `reporter/` — terminal, JSON, SARIF, and HTML output.
+  - `supply-chain/`, `threat-intel/`, `injection/`; `opus/` (optional LLM deep-scan, bring-your-own `ANTHROPIC_API_KEY`); `miniclaw/` (deterministic prompt-injection router).
+- **`src/vm/` + `src/ipc/`** — client-side plumbing for the *runtime shield* prototype (a Unix-socket client plus Lima/WSL/gVisor VM providers that expect `shield-agent`). **This path is experimental** and is separate from the macOS `run` path below.
+- **`bin/wh-sandbox`** — the compiled Go sandbox binary, produced by the build and shipped with the npm package. Built, not committed (see [Building](#building)).
 
-### 3. `packages/shield-agent` (The Runtime Shield)
-A specialized Go service utilizing eBPF (Extended Berkeley Packet Filter) and Linux native primitives to intercept system calls and detect or block malicious runtime behaviors that bypass static analysis.
+## The sandbox — `packages/sandbox-service`
 
-### 4. Developer SDKs
-- **`packages/sdk-python/`**: SDK allowing developers building Python agents (like LangChain/LlamaIndex) to embed W.H.Agent's security checks.
-- **`packages/middleware-sdk/`**: SDK for Node.js based agents to integrate directly with the W.H.Agent platform.
+A standalone Go binary (module `wh-agent/sandbox-service`).
 
-### 5. `services/` (Infrastructure)
-This directory contains configuration files and deployment scripts for supporting infrastructure, enabling W.H.Agent to integrate with:
-- **PostgreSQL / Redis**: State tracking and configuration drift detection caching.
-- **Vault**: Secure secret management.
-- **OPA (Open Policy Agent)**: Centralized policy enforcement.
-- **Kafka**: High-throughput telemetry and audit log streaming.
+- **`cmd/wh-sandbox/main.go`** — reads an `ExecRequest` as JSON on **stdin** (`{ Code, Language, TimeoutMs, Env }`), runs it under the platform sandbox, and writes an execution result as JSON on **stdout**.
+- **`internal/vm/`** — platform backends:
+  - `vm_darwin.go` — macOS Seatbelt via `sandbox-exec`. Real isolation, tested against host-read, write-then-exec, network-egress, subprocess-timeout, and env-leak escapes.
+  - `vm_linux.go`, `vm_windows.go` — **fail closed**, pending real Landlock/gVisor and Job Object implementations.
+- **`internal/executor/`** — process lifecycle: a timeout that kills the whole process tree, output size caps, and a strict env allow-list.
 
-## How the Pieces Fit Together
+## How the two fit together
 
-1. **Static Analysis Phase**: When a user runs `wh-agent check` or `wh-agent scan`, the `cli` component dynamically parses the target agent's code into an AST and evaluates intra-procedural logic, all within Node.js.
-2. **Execution Phase**: When a user runs `wh-agent run <script>`, the `cli` spawns the `wh-sandbox` binary (from `sandbox-service`), injecting the required policies via IPC. The untrusted script is executed directly within this OS-isolated layer, preventing unauthorized file system or network access.
+```text
+wh-agent run script.py
+   │
+   ├─ CLI (run.ts): read the file once, compute the AST fingerprint
+   │  (optionally enforce a pinned --ast-hash), build an ExecRequest
+   │
+   └─ spawnSync( packages/cli/bin/wh-sandbox )
+          │  stdin  → ExecRequest JSON  { Code, Language, TimeoutMs, Env }
+          │  stdout ← Result JSON       { Stdout, Stderr, ExitCode, ExecutionMs, Killed }
+          │
+          └─ wh-sandbox: generate a Seatbelt profile → exec under sandbox-exec (macOS)
+```
+
+The static commands (`scan` / `check` / `inspect-mcp` / `install`) run entirely inside the CLI and never touch the Go binary.
+
+## Building
+
+Both components are built by the `Makefile` (and mirrored in CI):
+
+```bash
+make build          # build the Go sandbox binary into packages/cli/bin, then build the TS packages
+make build-sandbox  # just the Go binary  (cd packages/sandbox-service && go build ./cmd/wh-sandbox)
+make build-cli      # just the TypeScript (pnpm turbo build)
+make test           # go vet + go test (sandbox) and turbo test (TypeScript)
+```
+
+The binary lands at `packages/cli/bin/wh-sandbox`, exactly where `run.ts` resolves it, and the CLI's `package.json` ships it via its `files` list (and rebuilds it in `prepublishOnly`). Because real isolation is macOS-only today, a **release binary must be built on macOS**; CI additionally validates the sandbox on a macOS runner.
+
+## Experimental & not-yet-wired
+
+These exist in the tree but are **not part of the shipping product** today:
+
+- **`experimental/shield-agent`** — a Go eBPF prototype that attaches a `sys_enter_connect` tracepoint and streams network events over `/tmp/shield-agent.sock`. Requires Linux + a compatible kernel; not built or tested in CI. It is the seed of a runtime-enforcement layer, not a finished one.
+- **`experimental/sdk-python`** — an early LangChain middleware SDK that polls a `posture-service` HTTP backend. That backend does not exist in this repo, so the SDK is non-functional standalone.
+- **`services/`** — config artifacts only: an OPA `package_install.rego` policy, Postgres migrations, and Kafka topic definitions. No code in the repo consumes them yet.
+
+The intended future for these components — and the commercial roadmap — lives in [ROADMAP.md](./ROADMAP.md).

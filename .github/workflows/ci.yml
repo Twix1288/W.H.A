@@ -24,6 +24,7 @@ jobs:
         with:
           bun-version: latest
       - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo lint
       - run: pnpm turbo type-check
 
   test:
@@ -44,3 +45,44 @@ jobs:
           bun-version: latest
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo test
+
+  sandbox-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/sandbox-service/go.mod
+      - name: Build (packages + wh-sandbox binary)
+        working-directory: packages/sandbox-service
+        run: |
+          go build ./...
+          mkdir -p ../cli/bin
+          go build -o ../cli/bin/wh-sandbox ./cmd/wh-sandbox
+      - name: Vet
+        working-directory: packages/sandbox-service
+        run: go vet ./...
+      - name: Test
+        working-directory: packages/sandbox-service
+        run: go test ./...
+
+  # The OS sandbox only provides real isolation on macOS, so validate the actual
+  # `run` path (build + Seatbelt tests) on a macOS runner in addition to the Linux
+  # compile check above.
+  sandbox-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/sandbox-service/go.mod
+      - name: Build wh-sandbox binary
+        working-directory: packages/sandbox-service
+        run: |
+          mkdir -p ../cli/bin
+          go build -o ../cli/bin/wh-sandbox ./cmd/wh-sandbox
+      - name: Test (Seatbelt isolation)
+        working-directory: packages/sandbox-service
+        run: go test ./...

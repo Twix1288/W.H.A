@@ -109,8 +109,8 @@ const INJECTION_PATTERNS: ReadonlyArray<{
  *
  * Example: "Read the file" + [zero-width chars encoding "delete everything"]
  */
-// eslint-disable-next-line no-misleading-character-class -- intentional security scan for invisible and bidi Unicode controls
 const INVISIBLE_CHAR_PATTERN =
+	// biome-ignore lint/suspicious/noMisleadingCharacterClass: intentional detection of invisible and bidi Unicode controls
 	/[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u2000-\u200A\u202A-\u202E\u2060-\u2064\u2066-\u206F]/gu;
 
 /**

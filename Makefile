@@ -1,50 +1,67 @@
-.PHONY: all build build-ebpf build-go build-ts test clean dev
+.PHONY: all build build-sandbox build-cli test test-ts test-go lint type-check bootstrap dev clean
 
-# Detect OS and architecture
-OS := $(shell uname -s)
-ARCH := $(shell uname -m)
+# ── W.H.Agent build orchestration ─────────────────────────────────────────────
+# The product is two components that ship together:
+#   • packages/cli             — the TypeScript CLI (published as `wh-agent-cli`),
+#                                bundled with tsup.
+#   • packages/sandbox-service — the Go OS-sandbox binary (`wh-sandbox`) that the
+#                                CLI spawns for `wh-agent run`.
+#
+# The compiled sandbox binary is written to packages/cli/bin/wh-sandbox, which the
+# CLI resolves at runtime (see packages/cli/src/commands/run.ts) and npm ships via
+# the CLI package's "files" list. Real isolation is macOS-only today; on Linux and
+# Windows the binary intentionally fails closed.
+# ──────────────────────────────────────────────────────────────────────────────
 
-all: bootstrap build
+SANDBOX_DIR := packages/sandbox-service
+SANDBOX_OUT := $(CURDIR)/packages/cli/bin/wh-sandbox
 
-bootstrap:
-	@echo "==> Bootstrapping W.H.Agent Monorepo..."
-	@bash scripts/bootstrap.sh
+all: build
 
-build: build-ebpf build-go build-ts
+## build: compile the Go sandbox binary, then build the TypeScript packages.
+build: build-sandbox build-cli
 	@echo "==> Build complete."
 
-build-ebpf:
-	@echo "==> Compiling eBPF C programs..."
-	@if [ "$(OS)" = "Linux" ]; then \
-		cd packages/ebpf-agent && go generate ./...; \
-	else \
-		echo "    Skipping eBPF compilation (Linux required). Use 'make build-ebpf-docker' to compile via Docker on macOS/Windows."; \
-	fi
+## build-sandbox: compile wh-sandbox (Go) into the CLI's bin/ for the host platform.
+build-sandbox:
+	@echo "==> Building wh-sandbox (Go) -> packages/cli/bin/wh-sandbox"
+	@mkdir -p "$(dir $(SANDBOX_OUT))"
+	@cd $(SANDBOX_DIR) && go build -o "$(SANDBOX_OUT)" ./cmd/wh-sandbox
 
-build-go:
-	@echo "==> Building Go microservices..."
-	@cd packages/ebpf-agent && go build -o bin/wh-agent-ebpf src/loader/main.go src/loader/loader_*.go
-	@cd packages/posture-service && go build -o bin/posture-service src/main.go
-
-build-ts:
-	@echo "==> Building TypeScript packages..."
+## build-cli: install deps and build the TypeScript packages via turbo.
+build-cli:
+	@echo "==> Building TypeScript packages"
 	@pnpm install
-	@pnpm run build
+	@pnpm turbo build
 
+## test: run every test suite (TypeScript + Go), mirroring CI.
+test: test-ts test-go
+
+test-ts:
+	@pnpm turbo test
+
+test-go:
+	@cd $(SANDBOX_DIR) && go vet ./... && go test ./...
+
+lint:
+	@pnpm turbo lint
+
+type-check:
+	@pnpm turbo type-check
+
+## bootstrap: check the toolchain, install deps, and build the sandbox binary.
+bootstrap:
+	@bash scripts/bootstrap.sh
+
+## dev: run the CLI directly from TypeScript source (no build step).
+##      Build the sandbox first if you want `wh-agent run` to work locally.
 dev:
-	@echo "==> Starting local development environment..."
-	@docker-compose up -d postgres kafka redis
-	@echo "    Infrastructure running. Use 'pnpm run dev' to start Node services."
+	@echo "==> Run the CLI from source:  pnpm --filter wh-agent-cli dev -- <command>"
+	@echo "    For 'run' support first:  make build-sandbox"
 
-test:
-	@echo "==> Running test suites..."
-	@cd packages/ebpf-agent && go test ./...
-	@cd packages/posture-service && go test ./...
-	@pnpm run test
-
+## clean: remove build artifacts (including the compiled sandbox binary).
 clean:
-	@echo "==> Cleaning build artifacts..."
-	@rm -rf packages/ebpf-agent/bin/
-	@rm -rf packages/posture-service/bin/
-	@pnpm run clean
-	@find . -name "node_modules" -type d -prune -exec rm -rf '{}' +
+	@echo "==> Cleaning build artifacts"
+	@rm -f "$(SANDBOX_OUT)"
+	@pnpm turbo clean || true
+	@find . -name "node_modules" -type d -prune -exec rm -rf '{}' + 2>/dev/null || true

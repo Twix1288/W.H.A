@@ -1,22 +1,25 @@
 {
   "name": "wh-agent-cli",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "W.H.Agent CLI",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "shield": "dist/index.js",
     "wh-agent": "dist/index.js"
   },
   "files": [
     "dist",
-    "src/scripts",
-    "bin/wh-sandbox",
-    "bin/wh-sandbox.exe"
+    "bin/wh-sandbox"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs --minify",
+    "build:sandbox": "mkdir -p bin && cd ../sandbox-service && go build -o ../cli/bin/wh-sandbox ./cmd/wh-sandbox",
+    "prepublishOnly": "npm run build:sandbox && npm run build",
     "dev": "ts-node src/index.ts",
-    "lint": "biome check src",
+    "lint": "biome lint src",
     "check": "biome check .",
     "update-popular-packages": "node scripts/update-popular-packages.js",
     "test": "bun test && pnpm run test:ast",

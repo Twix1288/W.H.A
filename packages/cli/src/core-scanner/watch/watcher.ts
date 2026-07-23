@@ -38,6 +38,8 @@ export function startWatcher(config: WatchConfig): {
 	let lastDrift: DriftResult | null = null;
 	let scanCount = 0;
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let isScanning = false;
+	let rescanQueued = false;
 	const watchers: WatchHandle[] = [];
 
 	// Perform initial scan to establish baseline
@@ -45,6 +47,33 @@ export function startWatcher(config: WatchConfig): {
 	if (initialBaseline) {
 		baseline = initialBaseline;
 		scanCount = 1;
+	}
+
+	// Serialize rescans: a change arriving mid-scan (or during a slow webhook
+	// dispatch) must not start a second overlapping handleChange that diffs
+	// against a stale baseline. Coalesce concurrent triggers into one queued
+	// follow-up rescan so drift is never double-counted or lost.
+	function runRescan(): void {
+		if (isScanning) {
+			rescanQueued = true;
+			return;
+		}
+		isScanning = true;
+		void handleChange(config, baseline, (result) => {
+			if (result.newBaseline) {
+				baseline = result.newBaseline;
+			}
+			if (result.drift) {
+				lastDrift = result.drift;
+			}
+			scanCount += 1;
+		}).finally(() => {
+			isScanning = false;
+			if (rescanQueued) {
+				rescanQueued = false;
+				runRescan();
+			}
+		});
 	}
 
 	// Set up watchers for each path
@@ -61,17 +90,7 @@ export function startWatcher(config: WatchConfig): {
 				if (debounceTimer) {
 					clearTimeout(debounceTimer);
 				}
-				debounceTimer = setTimeout(() => {
-					void handleChange(config, baseline, (result) => {
-						if (result.newBaseline) {
-							baseline = result.newBaseline;
-						}
-						if (result.drift) {
-							lastDrift = result.drift;
-						}
-						scanCount += 1;
-					});
-				}, config.debounceMs);
+				debounceTimer = setTimeout(runRescan, config.debounceMs);
 			});
 			watchers.push(...pathWatchers);
 		} catch (error) {
@@ -107,11 +126,38 @@ function createPathWatchers(
 	resolvedPath: string,
 	listener: WatchListener,
 ): ReadonlyArray<WatchHandle> {
-	try {
-		return [watch(resolvedPath, { recursive: true }, listener)];
-	} catch (error) {
-		if (!isRecursiveWatchUnsupported(error)) {
-			throw error;
+	// Keep a long-running watch alive across recoverable OS-level watcher errors
+	// (e.g. inotify ENOSPC on Linux, or a watched directory being deleted/renamed).
+	// Without an 'error' listener these surface as uncaught exceptions and crash
+	// the whole `watch` process.
+	const withErrorHandler = (handle: WatchHandle): WatchHandle => {
+		handle.on("error", (error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`  Watch error on ${resolvedPath}: ${message}`);
+		});
+		return handle;
+	};
+
+	// fs.watch({ recursive: true }) is natively supported on macOS and Windows.
+	// On Linux before Node 20 it is SILENTLY ignored (no throw) — only the top
+	// directory is watched, so subdirectory changes would be missed. Detect that
+	// case up front and use the per-directory fallback instead of relying on a
+	// thrown error that never comes.
+	const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
+	const recursiveUnsafe =
+		process.platform === "linux" &&
+		Number.isFinite(nodeMajor) &&
+		nodeMajor < 20;
+
+	if (!recursiveUnsafe) {
+		try {
+			return [
+				withErrorHandler(watch(resolvedPath, { recursive: true }, listener)),
+			];
+		} catch (error) {
+			if (!isRecursiveWatchUnsupported(error)) {
+				throw error;
+			}
 		}
 	}
 
@@ -119,7 +165,7 @@ function createPathWatchers(
 
 	try {
 		for (const directory of collectWatchDirectories(resolvedPath)) {
-			fallbackWatchers.push(watch(directory, listener));
+			fallbackWatchers.push(withErrorHandler(watch(directory, listener)));
 		}
 		return fallbackWatchers;
 	} catch (error) {

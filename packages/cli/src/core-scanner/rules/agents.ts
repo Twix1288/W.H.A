@@ -498,7 +498,7 @@ export const agentRules: ReadonlyArray<Rule> = [
 				readonly description: string;
 			}> = [
 				{
-					// eslint-disable-next-line no-misleading-character-class -- intentional security scan for hidden Unicode instructions
+					// biome-ignore lint/suspicious/noMisleadingCharacterClass: intentional detection of hidden zero-width Unicode instructions
 					pattern: /[\u200B\u200C\u200D\uFEFF]/gu,
 					name: "zero-width character",
 					description:

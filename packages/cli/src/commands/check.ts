@@ -234,7 +234,9 @@ export async function checkAgent(
 		);
 		unsupportedFiles
 			.slice(0, 5)
-			.forEach((f) => console.warn(chalk.gray(`     - ${f.file}`)));
+			.forEach((f) => {
+				console.warn(chalk.gray(`     - ${f.file}`));
+			});
 		if (unsupportedFiles.length > 5)
 			console.warn(
 				chalk.gray(`     - ... and ${unsupportedFiles.length - 5} more.`),
@@ -249,7 +251,9 @@ export async function checkAgent(
 		);
 		fileStatuses
 			.slice(0, 10)
-			.forEach((f) => console.log(chalk.gray(`   ${f.file}: ${f.astHash}`)));
+			.forEach((f) => {
+				console.log(chalk.gray(`   ${f.file}: ${f.astHash}`));
+			});
 		if (fileStatuses.length > 10)
 			console.log(chalk.gray(`   ... and ${fileStatuses.length - 10} more.`));
 	}
