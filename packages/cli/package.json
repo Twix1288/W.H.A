@@ -1,7 +1,19 @@
 {
   "name": "wh-agent-cli",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "W.H.Agent CLI",
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "antivirus",
+    "sandbox",
+    "mcp",
+    "model context protocol",
+    "llm",
+    "guardrail",
+    "static analysis"
+  ],
   "main": "dist/index.js",
   "engines": {
     "node": ">=20"

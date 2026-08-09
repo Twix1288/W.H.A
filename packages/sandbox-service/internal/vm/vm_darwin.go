@@ -9,9 +9,72 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// reapByScratchCwd kills any process still holding scratchDir as its working
+// directory. This catches a payload that detached via setsid()/a new session —
+// which moves it out of our process group so kill(-pgid) can no longer reach it —
+// because exec() preserves the inherited cwd (the sandbox runs the child with
+// cwd = scratch). Best-effort: lsof is standard on macOS; if it is missing or
+// matches nothing this is a no-op. Returns how many processes it killed so the
+// caller can report honestly instead of asserting a clean exit while a detached
+// descendant lives on. MUST run before the scratch dir is removed (lsof needs the
+// path to still exist to walk it).
+//
+// This is the immediate cleanup; the inherited RLIMIT_CPU is the independent
+// backstop that bounds a survivor which somehow evades this sweep (e.g. one that
+// chdir'd away from scratch) — a CPU-bound survivor is killed by the kernel at
+// the CPU limit even after setsid, and network/host-file access stays denied by
+// the Seatbelt profile regardless.
+func reapByScratchCwd(scratchDir string) int {
+	killed := 0
+	seen := map[int]bool{}
+	// A detached child can take a few ms to appear after the direct parent returns
+	// (fork -> setsid -> exec), so sweep a few times over a short window. Each pass
+	// is cheap because scratch holds only a handful of files.
+	for attempt := 0; attempt < 4; attempt++ {
+		// -w suppresses warnings; -t prints PIDs only. IMPORTANT: lsof exits
+		// NON-ZERO both when it matches nothing AND when it merely warns about a
+		// path it couldn't stat, yet it still prints valid matches to stdout — so we
+		// parse stdout regardless of the exit status (bailing on it silently drops
+		// real survivors). We only skip a genuine start failure (cmd.Start error),
+		// which surfaces as a non-ExitError.
+		cmd := exec.Command("lsof", "-w", "-t", "-a", "-d", "cwd", "+D", scratchDir)
+		out, err := cmd.Output()
+		if err != nil {
+			if _, isExit := err.(*exec.ExitError); !isExit {
+				return killed // lsof missing / failed to start — best-effort, give up
+			}
+		}
+		found := false
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			pid, perr := strconv.Atoi(line)
+			if perr != nil || pid <= 1 || pid == os.Getpid() || seen[pid] {
+				continue
+			}
+			found = true
+			seen[pid] = true
+			if syscall.Kill(pid, syscall.SIGKILL) == nil {
+				killed++
+			}
+		}
+		// Stop early once a pass is clean AND we've already caught something, or on
+		// the first clean pass if nothing has shown up yet after a brief settle.
+		if !found && (killed > 0 || attempt >= 1) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return killed
+}
 
 // readCappedFile reads up to maxOutputBytes from an already-open output file,
 // appending a truncation marker if there was more.
@@ -174,16 +237,49 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var cmdArgs []string
-	switch req.Language {
-	case "python":
-		cmdArgs = []string{"python3", codePath}
-	default: // "bash" or "" (validated upstream)
-		cmdArgs = []string{"bash", codePath}
+	interpreter := "bash"
+	if req.Language == "python" {
+		interpreter = "python3"
 	}
 
-	// Wrap with sandbox-exec
-	args := append([]string{"-f", profilePath}, cmdArgs...)
+	// Kernel resource limits (rlimits), applied via a `sh -c 'ulimit ...; exec ...'`
+	// wrapper. rlimits are inherited across fork AND setsid, so unlike the
+	// wall-clock timeout (which a detached process escapes) they also bound a
+	// payload that tries to outlive the sandbox. Empirically on macOS:
+	//   - RLIMIT_CPU  (ulimit -t): ENFORCED — bounds a runaway/detached CPU spinner.
+	//   - RLIMIT_FSIZE(ulimit -f): ENFORCED — bounds a trivial disk-fill via a big file.
+	//   - RLIMIT_NPROC(ulimit -u): ENFORCED but per-UID (counts ALL the user's
+	//     processes), so we only ever LOWER it toward a ceiling when the current
+	//     limit is comfortably above it — never below the user's real usage.
+	//   - RLIMIT_AS   (ulimit -v): IGNORED by Darwin — a hard memory cap needs a
+	//     container (the roadmap's gVisor/Landlock rung); we do NOT pretend to set it.
+	timeoutSec := int(timeout / time.Second)
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
+	// Generous CPU headroom over the wall clock so a legitimate multi-core burst
+	// inside the timeout window isn't false-killed, while a process that detaches
+	// (setsid) and escapes the wall-clock group kill is still bounded by the kernel.
+	cpuSec := timeoutSec*2 + 5
+	const fsizeKiB = 256 * 1024 // 256 MiB per file (macOS /bin/sh `ulimit -f` unit is KiB)
+
+	// ulimit values are integers we compute (safe to interpolate). The interpreter
+	// and script path are passed as positional args ($1,$2), never interpolated
+	// into the shell text, so there is no quoting/injection surface. `exec` replaces
+	// the shell with the interpreter, so the rlimits carry over and no extra shell
+	// process lingers. The NPROC clause is defensive: it lowers only when the
+	// current soft limit is a plain integer above the ceiling.
+	limitScript := fmt.Sprintf(
+		`ulimit -t %d 2>/dev/null; ulimit -f %d 2>/dev/null; `+
+			`if u=$(ulimit -u 2>/dev/null); then case "$u" in ''|*[!0-9]*) : ;; *) [ "$u" -gt 2048 ] && ulimit -u 2048 2>/dev/null;; esac; fi; `+
+			`exec "$1" "$2"`,
+		cpuSec, fsizeKiB,
+	)
+
+	// Wrap with sandbox-exec: the Seatbelt profile is inherited across the sh->interp
+	// exec, so the interpreter runs fully confined. /bin/sh is exec-allowed by the
+	// profile's process-exec* /bin subpath.
+	args := []string{"-f", profilePath, "/bin/sh", "-c", limitScript, "sh", interpreter, codePath}
 	cmd := exec.CommandContext(execCtx, "sandbox-exec", args...)
 
 	// Run inside the sandbox scratch dir. Otherwise the child inherits our cwd
@@ -238,8 +334,11 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sandbox process: %w", err)
 	}
-	// Tear down the whole process group no matter how we leave, so no orphaned
-	// grandchild survives the sandbox. -pid targets the group (Setgpid above).
+	// Tear down the process group on every exit path. This reaps the COMMON case
+	// (background subprocesses that stay in our group). It does NOT reach a process
+	// that called setsid()/created a new session to deliberately detach — that is
+	// what reapByScratchCwd (by cwd) and the inherited RLIMIT_CPU (by kernel) are
+	// for. -pid targets the group (Setpgid above).
 	pgid := cmd.Process.Pid
 	defer func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }()
 
@@ -258,13 +357,23 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 		}
 	}
 
+	// cmd.Wait() returns as soon as the DIRECT child exits — a payload can fork,
+	// detach via setsid(), and return the parent immediately, which would otherwise
+	// let it run on while we report a clean exit. Kill the group now, then sweep any
+	// process that detached into a new session, identifying it by the scratch dir it
+	// still holds as its cwd. This runs before the deferred RemoveAll so lsof can
+	// still walk the path.
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	reaped := reapByScratchCwd(realTmp)
+
 	return &ExecResult{
-		Stdout:      readCappedFile(outF),
-		Stderr:      readCappedFile(errF),
-		ExitCode:    exitCode,
-		ExecutionMs: time.Since(start).Milliseconds(),
-		SandboxID:   s.id,
-		Killed:      killed,
+		Stdout:         readCappedFile(outF),
+		Stderr:         readCappedFile(errF),
+		ExitCode:       exitCode,
+		ExecutionMs:    time.Since(start).Milliseconds(),
+		SandboxID:      s.id,
+		Killed:         killed,
+		DetachedReaped: reaped,
 	}, nil
 }
 

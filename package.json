@@ -1,6 +1,19 @@
 {
   "name": "wh-agent",
   "version": "1.1.0",
+  "description": "An antivirus and execution sandbox for your local AI agents.",
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "antivirus",
+    "sandbox",
+    "mcp",
+    "model context protocol",
+    "llm",
+    "guardrail",
+    "static analysis"
+  ],
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",

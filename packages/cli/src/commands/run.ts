@@ -108,6 +108,15 @@ export async function runAgent(
 				if (parsedResult.Killed) {
 					console.log(`⚠️ Process was killed (Timeout exceeded).`);
 				}
+				if (parsedResult.DetachedReaped > 0) {
+					// The payload forked a process that detached from our group
+					// (setsid/new session) to try to outlive the sandbox. We swept it
+					// up by its scratch cwd, but this is NOT a clean, self-contained
+					// run — surface it rather than let the ✅ above imply otherwise.
+					console.log(
+						`\x1b[33m⚠️  Reaped ${parsedResult.DetachedReaped} detached process(es): the script tried to spawn work that would outlive the sandbox.\x1b[0m`,
+					);
+				}
 			} catch (_e) {
 				console.log(`----- RAW STDOUT -----`);
 				console.log(result.stdout);

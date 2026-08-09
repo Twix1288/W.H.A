@@ -45,6 +45,13 @@ type ExecResult struct {
 	ExecutionMs int64
 	SandboxID   string
 	Killed      bool
+
+	// DetachedReaped counts processes that detached from our process group
+	// (e.g. via setsid()/a new session) and had to be swept up by cwd after the
+	// direct child returned. A non-zero value means the payload tried to outlive
+	// the sandbox: the result is NOT a clean, self-contained completion. Callers
+	// should surface it rather than report an unqualified success.
+	DetachedReaped int
 }
 
 type OSProcessSandbox interface {

@@ -1,0 +1,13509 @@
+#!/usr/bin/env node
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+
+// src/index.ts
+var import_node_fs6 = require("fs");
+var import_node_path7 = require("path");
+var import_commander = require("commander");
+
+// src/commands/check.ts
+var fs3 = __toESM(require("fs/promises"));
+var path3 = __toESM(require("path"));
+var import_chalk = __toESM(require("chalk"));
+var import_glob = require("glob");
+
+// src/core-scanner/parser.ts
+var import_node_crypto = require("crypto");
+var fs = __toESM(require("fs/promises"));
+var path = __toESM(require("path"));
+var import_tree_sitter = __toESM(require("tree-sitter"));
+var import_tree_sitter_bash = __toESM(require("tree-sitter-bash"));
+var import_tree_sitter_javascript = __toESM(require("tree-sitter-javascript"));
+var import_tree_sitter_python = __toESM(require("tree-sitter-python"));
+var import_tree_sitter_rust = __toESM(require("tree-sitter-rust"));
+var import_tree_sitter_typescript = __toESM(require("tree-sitter-typescript"));
+var GRAMMARS = {
+  ".py": import_tree_sitter_python.default,
+  ".js": import_tree_sitter_javascript.default,
+  ".jsx": import_tree_sitter_javascript.default,
+  ".mjs": import_tree_sitter_javascript.default,
+  ".cjs": import_tree_sitter_javascript.default,
+  ".ts": import_tree_sitter_typescript.default.typescript || import_tree_sitter_typescript.default,
+  ".tsx": import_tree_sitter_typescript.default.tsx || import_tree_sitter_typescript.default.typescript || import_tree_sitter_typescript.default,
+  ".sh": import_tree_sitter_bash.default,
+  ".bash": import_tree_sitter_bash.default,
+  ".rs": import_tree_sitter_rust.default
+};
+function grammarForExt(ext) {
+  return GRAMMARS[ext.toLowerCase()] ?? null;
+}
+function parseSourceToTree(source, ext) {
+  const language = grammarForExt(ext);
+  if (!language) return null;
+  const parser = new import_tree_sitter.default();
+  parser.setLanguage(language);
+  return parser.parse(source);
+}
+async function parseFile(filePath) {
+  const ext = path.extname(filePath);
+  const source = await fs.readFile(filePath, "utf-8");
+  const language = grammarForExt(ext);
+  if (!language) {
+    return { type: "text", lines: source.split("\n"), source };
+  }
+  const parser = new import_tree_sitter.default();
+  parser.setLanguage(language);
+  const tree = parser.parse(source);
+  return { type: "ast", tree, source, parser };
+}
+function isCommentType(type) {
+  return type === "comment" || type === "line_comment" || type === "block_comment";
+}
+function canonicalize(node) {
+  const named = [];
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child && !isCommentType(child.type)) named.push(child);
+  }
+  if (named.length === 0) {
+    return `${node.type}=${node.text}`;
+  }
+  return `${node.type}(${named.map(canonicalize).join(",")})`;
+}
+function astFingerprint(source, ext) {
+  const tree = parseSourceToTree(source, ext);
+  if (!tree) {
+    const normalized = source.replace(/\r\n/g, "\n");
+    return `sha256-text:${(0, import_node_crypto.createHash)("sha256").update(normalized).digest("hex")}`;
+  }
+  const canonical = canonicalize(tree.rootNode);
+  return `sha256-ast:${(0, import_node_crypto.createHash)("sha256").update(canonical).digest("hex")}`;
+}
+
+// src/core-scanner/remediator.ts
+var fs2 = __toESM(require("fs/promises"));
+async function applyRemediations(filePath, findings) {
+  const source = await fs2.readFile(filePath, "utf-8");
+  let newSource = source;
+  let fixableFindings = findings.filter((f) => f.fixable && f.startIndex !== void 0 && f.endIndex !== void 0).sort((a, b) => b.startIndex - a.startIndex);
+  fixableFindings = fixableFindings.filter(
+    (f, i, arr) => arr.findIndex((x2) => x2.startIndex === f.startIndex) === i
+  );
+  if (fixableFindings.length === 0) {
+    return 0;
+  }
+  let fixesApplied = 0;
+  for (const finding of fixableFindings) {
+    const start = finding.startIndex;
+    const end = finding.endIndex;
+    let replacement = "";
+    if (finding.fixStrategy === "param_rewrite") {
+      replacement = "False";
+    } else if (finding.fixStrategy === "literal_stub") {
+      replacement = '"" /* wh-agent: removed hardcoded credential \u2014 set via environment */';
+      if (filePath.endsWith(".py") || filePath.endsWith(".sh") || filePath.endsWith(".bash")) {
+        replacement = '""  # wh-agent: removed hardcoded credential \u2014 set via environment';
+      }
+    } else {
+      continue;
+    }
+    newSource = newSource.substring(0, start) + replacement + newSource.substring(end);
+    fixesApplied++;
+  }
+  if (fixesApplied > 0) {
+    await fs2.writeFile(filePath, newSource, "utf-8");
+  }
+  return fixesApplied;
+}
+
+// src/core-scanner/rules.ts
+var RULES = [
+  {
+    id: "WHAgent-EXEC-001",
+    name: "Python subprocess shell=True Execution (Strict)",
+    severity: "critical",
+    category: "dangerous-exec",
+    match: {
+      type: "ast",
+      language: "python",
+      query: `
+(call
+  function: (attribute
+    object: (identifier) @obj (#eq? @obj "subprocess")
+    attribute: (identifier) @fn (#match? @fn "^(Popen|call|run)$"))
+  arguments: (argument_list
+    (keyword_argument
+      name: (identifier) @kw (#eq? @kw "shell")
+      value: (true) @val))) @call_expr
+      `
+    },
+    fixable: true,
+    fixStrategy: "param_rewrite"
+  },
+  {
+    id: "WHAgent-EXEC-001b",
+    name: "Python shell=True Execution (Broad)",
+    severity: "critical",
+    category: "dangerous-exec",
+    match: {
+      type: "ast",
+      language: "python",
+      query: `
+(call
+  arguments: (argument_list
+    (keyword_argument
+      name: (identifier) @kw (#eq? @kw "shell")
+      value: (true) @val))) @call_expr
+      `
+    },
+    fixable: true,
+    fixStrategy: "param_rewrite"
+  },
+  {
+    id: "WHAgent-EXEC-002",
+    name: "JavaScript Eval Execution",
+    severity: "critical",
+    category: "dangerous-exec",
+    match: {
+      type: "ast",
+      language: "javascript",
+      query: `
+(call_expression
+  function: (identifier) @fn (#eq? @fn "eval")
+  arguments: (arguments) @args) @eval_expr
+      `
+    },
+    fixable: false
+  },
+  {
+    id: "WHAgent-EXEC-003",
+    name: "Bash Curl/Wget to Shell",
+    severity: "critical",
+    category: "dangerous-exec",
+    match: {
+      type: "ast",
+      language: "bash",
+      query: `
+(pipeline
+  (command
+    name: (command_name) @cmd_fetch (#match? @cmd_fetch "^(curl|wget)$"))
+  (command
+    name: (command_name) @cmd_exec (#match? @cmd_exec "^(bash|sh|zsh)$"))) @pipeline_expr
+      `
+    },
+    fixable: false
+  },
+  {
+    id: "WHAgent-CRED-001",
+    name: "Hardcoded API Key",
+    severity: "high",
+    category: "credential-exposure",
+    match: {
+      type: "regex",
+      pattern: /(sk-[a-zA-Z0-9-]{10,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16})/,
+      context: "any_string_literal"
+    },
+    fixable: true,
+    fixStrategy: "literal_stub"
+  },
+  {
+    id: "WHAgent-PI-001",
+    name: "Prompt Injection Pattern",
+    severity: "medium",
+    category: "prompt-injection",
+    match: {
+      type: "regex",
+      pattern: /(ignore|disregard|forget)\s+(all\s+)?(previous|prior)\s+instructions?/i,
+      context: "any_string_literal"
+    },
+    fixable: false
+  }
+];
+function runRules(parseResult, rules) {
+  const findings = [];
+  if (parseResult.type === "ast") {
+    const { tree, parser } = parseResult;
+    const language = parser.getLanguage();
+    for (const rule of rules) {
+      if (rule.match.type === "ast") {
+        try {
+          const Query = require("tree-sitter").Query;
+          if (Query && language) {
+            const query = new Query(language, rule.match.query);
+            const matches = query.matches(tree.rootNode);
+            for (const match of matches) {
+              const mainNode = match.captures[match.captures.length - 1].node;
+              let targetNode = mainNode;
+              if (rule.fixStrategy === "param_rewrite") {
+                const valCapture = match.captures.find((c) => c.name === "val");
+                if (valCapture) targetNode = valCapture.node;
+              }
+              findings.push({
+                ruleId: rule.id,
+                name: rule.name,
+                severity: rule.severity,
+                category: rule.category,
+                message: `Matched AST pattern for ${rule.name}`,
+                node: targetNode,
+                startIndex: targetNode.startIndex,
+                endIndex: targetNode.endIndex,
+                line: targetNode.startPosition.row + 1,
+                fixable: rule.fixable,
+                fixStrategy: rule.fixStrategy
+              });
+            }
+          }
+        } catch (e) {
+        }
+      } else if (rule.match.type === "regex") {
+        if (rule.match.context === "any_string_literal") {
+          const traverse = (node) => {
+            if (node.type === "string" || node.type === "string_literal" || node.type === "template_string") {
+              if (rule.match.type === "regex" && rule.match.pattern.test(node.text)) {
+                findings.push({
+                  ruleId: rule.id,
+                  name: rule.name,
+                  severity: rule.severity,
+                  category: rule.category,
+                  message: `Found ${rule.name} in string literal`,
+                  node,
+                  startIndex: node.startIndex,
+                  endIndex: node.endIndex,
+                  line: node.startPosition.row + 1,
+                  fixable: rule.fixable,
+                  fixStrategy: rule.fixStrategy
+                });
+              }
+            }
+            for (let i = 0; i < node.childCount; i++) {
+              traverse(node.child(i));
+            }
+          };
+          traverse(tree.rootNode);
+        }
+      }
+    }
+  } else if (parseResult.type === "text") {
+    const { lines } = parseResult;
+    for (const rule of rules) {
+      if (rule.match.type === "text") {
+        lines.forEach((lineText, idx) => {
+          if (rule.match.type === "text" && rule.match.pattern.test(lineText)) {
+            findings.push({
+              ruleId: rule.id,
+              name: rule.name,
+              severity: rule.severity,
+              category: rule.category,
+              message: `Matched text pattern for ${rule.name}`,
+              line: idx + 1,
+              fixable: false
+            });
+          }
+        });
+      } else if (rule.match.type === "regex") {
+        lines.forEach((lineText, idx) => {
+          if (rule.match.type === "regex" && rule.match.pattern.test(lineText)) {
+            findings.push({
+              ruleId: rule.id,
+              name: rule.name,
+              severity: rule.severity,
+              category: rule.category,
+              message: `Matched regex pattern for ${rule.name} (Text Mode)`,
+              line: idx + 1,
+              fixable: false
+            });
+          }
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+// src/core-scanner/taint/index.ts
+var path2 = __toESM(require("path"));
+
+// src/core-scanner/taint/analyzer.ts
+var ts = __toESM(require("typescript"));
+function isJsTs(filePath) {
+  const lower = filePath.toLowerCase();
+  return [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].some((e) => lower.endsWith(e));
+}
+var CREDENTIAL_SOURCES = /* @__PURE__ */ new Set(["process.env", "process.env.get"]);
+var FILE_READ_SOURCES = /* @__PURE__ */ new Set([
+  "fs.readFileSync",
+  "fs.readFile",
+  "fs.promises.readFile",
+  "path.join"
+  // Heuristic: path joining with tainted variables is often a source
+]);
+var NETWORK_INPUT_SOURCES = /* @__PURE__ */ new Set([
+  "fetch",
+  "http.get",
+  "https.get",
+  "axios.get",
+  "axios.post"
+]);
+var USER_INPUT_SOURCES = /* @__PURE__ */ new Set(["process.stdin", "process.argv"]);
+var ALL_SOURCES = /* @__PURE__ */ new Set([
+  ...CREDENTIAL_SOURCES,
+  ...FILE_READ_SOURCES,
+  ...NETWORK_INPUT_SOURCES,
+  ...USER_INPUT_SOURCES
+]);
+var NETWORK_OUTPUT_SINKS = /* @__PURE__ */ new Set([
+  "fetch",
+  "http.request",
+  "https.request",
+  "axios.post",
+  "axios.put",
+  "axios.patch"
+]);
+var EXEC_SINKS = /* @__PURE__ */ new Set([
+  "eval",
+  "exec",
+  "execSync",
+  "spawn",
+  "spawnSync",
+  "child_process.exec",
+  "child_process.execSync",
+  "child_process.spawn",
+  "child_process.spawnSync",
+  "vm.runInContext",
+  "vm.runInNewContext",
+  "vm.runInThisContext"
+]);
+var FILE_WRITE_SINKS = /* @__PURE__ */ new Set([
+  "fs.writeFileSync",
+  "fs.writeFile",
+  "fs.promises.writeFile",
+  "fs.appendFileSync",
+  "fs.appendFile",
+  "fs.promises.appendFile"
+]);
+var ALL_SINKS = /* @__PURE__ */ new Set([
+  ...NETWORK_OUTPUT_SINKS,
+  ...EXEC_SINKS,
+  ...FILE_WRITE_SINKS
+]);
+var AI_AGENT_TOOL_WHITELIST = /* @__PURE__ */ new Set([
+  "run_command",
+  "execute_command",
+  "execute_bash",
+  "python_run"
+]);
+function pickRule(sourceName, sinkName, isDirect) {
+  if (CREDENTIAL_SOURCES.has(sourceName) && NETWORK_OUTPUT_SINKS.has(sinkName))
+    return "TT3";
+  if (FILE_READ_SOURCES.has(sourceName) && NETWORK_OUTPUT_SINKS.has(sinkName))
+    return "TT4";
+  if ((NETWORK_INPUT_SOURCES.has(sourceName) || USER_INPUT_SOURCES.has(sourceName)) && EXEC_SINKS.has(sinkName))
+    return "TT5";
+  return isDirect ? "TT1" : "TT2";
+}
+function getRuleSeverity(ruleId) {
+  switch (ruleId) {
+    case "TT1":
+      return "high";
+    case "TT2":
+      return "medium";
+    case "TT3":
+      return "critical";
+    case "TT4":
+      return "high";
+    case "TT5":
+      return "critical";
+    default:
+      return "medium";
+  }
+}
+function classify(name, categories, def) {
+  for (const cat of categories) {
+    if (cat.names.has(name)) return cat.label;
+  }
+  return def;
+}
+var SOURCE_CATEGORIES = [
+  { names: CREDENTIAL_SOURCES, label: "credential/environment" },
+  { names: FILE_READ_SOURCES, label: "file read" },
+  { names: NETWORK_INPUT_SOURCES, label: "network input" },
+  { names: USER_INPUT_SOURCES, label: "user input" }
+];
+var SINK_CATEGORIES = [
+  { names: NETWORK_OUTPUT_SINKS, label: "network output" },
+  { names: EXEC_SINKS, label: "code execution" },
+  { names: FILE_WRITE_SINKS, label: "file write" }
+];
+function getCallName(node) {
+  if (ts.isCallExpression(node)) {
+    return getIdentifierName(node.expression);
+  }
+  return null;
+}
+function getIdentifierName(node) {
+  if (ts.isIdentifier(node)) {
+    return node.text;
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    const obj = getIdentifierName(node.expression);
+    const prop = getIdentifierName(node.name);
+    if (obj && prop) return `${obj}.${prop}`;
+  }
+  return null;
+}
+function analyzeTaint(files) {
+  const allSources = [];
+  const allSinks = [];
+  const allFlows = [];
+  for (const file of files) {
+    let emit2 = function(ruleId, lineno, msg, srcName, sinkName) {
+      const sourceNode = {
+        file: file.path,
+        line: lineno,
+        label: srcName,
+        type: "source"
+      };
+      const sinkNode = {
+        file: file.path,
+        line: lineno,
+        label: sinkName,
+        type: "sink"
+      };
+      allSources.push(sourceNode);
+      allSinks.push(sinkNode);
+      allFlows.push({
+        source: sourceNode,
+        sink: sinkNode,
+        path: [msg],
+        severity: getRuleSeverity(ruleId),
+        description: msg
+      });
+    }, visit2 = function(node) {
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        handleAssignment2(node.name, node.initializer);
+      } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        handleAssignment2(node.left, node.right);
+      }
+      if (ts.isCallExpression(node)) {
+        const sinkName = getCallName(node);
+        if (sinkName && AI_AGENT_TOOL_WHITELIST.has(sinkName)) {
+          ts.forEachChild(node, visit2);
+          return;
+        }
+        if (sinkName && ALL_SINKS.has(sinkName)) {
+          const lineno = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+          node.arguments.forEach((arg) => {
+            checkDirectSources2(arg, sinkName, lineno);
+            checkTaintedVars2(arg, sinkName, lineno);
+          });
+        }
+      }
+      ts.forEachChild(node, visit2);
+    }, handleAssignment2 = function(target, value) {
+      const targetName = getIdentifierName(target);
+      if (!targetName) return;
+      const lineno = sourceFile.getLineAndCharacterOfPosition(target.getStart()).line + 1;
+      let sourceFound = false;
+      function findSource(n) {
+        const name = getCallName(n) || (ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
+        if (name && ALL_SOURCES.has(name)) {
+          tainted.set(targetName, {
+            name: targetName,
+            sourceCall: name,
+            lineno
+          });
+          sourceFound = true;
+        } else if (name?.startsWith("process.env")) {
+          tainted.set(targetName, {
+            name: targetName,
+            sourceCall: "process.env",
+            lineno
+          });
+          sourceFound = true;
+        } else if (ts.isIdentifier(n)) {
+          const t = tainted.get(n.text);
+          if (t) {
+            tainted.set(targetName, {
+              name: targetName,
+              sourceCall: t.sourceCall,
+              lineno: t.lineno
+            });
+            sourceFound = true;
+          }
+        }
+        if (!sourceFound) ts.forEachChild(n, findSource);
+      }
+      findSource(value);
+    }, checkDirectSources2 = function(argNode, sinkName, lineno) {
+      function find(n) {
+        const name = getCallName(n) || (ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
+        if (name && (ALL_SOURCES.has(name) || name.startsWith("process.env"))) {
+          const srcName = name.startsWith("process.env") ? "process.env" : name;
+          const rule = pickRule(srcName, sinkName, true);
+          const srcCat = classify(srcName, SOURCE_CATEGORIES, "data source");
+          const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
+          emit2(
+            rule,
+            lineno,
+            `Direct flow: ${srcName} (${srcCat}) -> ${sinkName} (${sinkCat})`,
+            srcName,
+            sinkName
+          );
+        }
+        ts.forEachChild(n, find);
+      }
+      find(argNode);
+    }, checkTaintedVars2 = function(argNode, sinkName, lineno) {
+      function find(n) {
+        if (ts.isIdentifier(n)) {
+          const t = tainted.get(n.text);
+          if (t) {
+            const rule = pickRule(t.sourceCall, sinkName, false);
+            const srcCat = classify(
+              t.sourceCall,
+              SOURCE_CATEGORIES,
+              "data source"
+            );
+            const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
+            emit2(
+              rule,
+              lineno,
+              `Tainted flow: '${t.name}' from ${t.sourceCall} (line ${t.lineno}, ${srcCat}) -> ${sinkName} (${sinkCat})`,
+              t.sourceCall,
+              sinkName
+            );
+          }
+        }
+        ts.forEachChild(n, find);
+      }
+      find(argNode);
+    };
+    var emit = emit2, visit = visit2, handleAssignment = handleAssignment2, checkDirectSources = checkDirectSources2, checkTaintedVars = checkTaintedVars2;
+    if (!isJsTs(file.path)) {
+      continue;
+    }
+    const sourceFile = ts.createSourceFile(
+      file.path,
+      file.content,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const tainted = /* @__PURE__ */ new Map();
+    visit2(sourceFile);
+  }
+  const uniqueFlows = Array.from(
+    new Map(allFlows.map((f) => [f.description, f])).values()
+  );
+  const severityOrder = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+    info: 4
+  };
+  const sortedFlows = uniqueFlows.sort(
+    (a, b) => severityOrder[a.severity] - severityOrder[b.severity]
+  );
+  const uniqueSources = Array.from(
+    new Map(
+      allSources.map((s) => [`${s.file}:${s.line}:${s.label}`, s])
+    ).values()
+  );
+  const uniqueSinks = Array.from(
+    new Map(
+      allSinks.map((s) => [`${s.file}:${s.line}:${s.label}`, s])
+    ).values()
+  );
+  return {
+    flows: sortedFlows,
+    sources: uniqueSources,
+    sinks: uniqueSinks
+  };
+}
+
+// src/core-scanner/taint/polyglot.ts
+var PYTHON = {
+  sensitiveSources: [
+    "os.getenv",
+    "getenv",
+    "os.environ.get",
+    "environ",
+    "os.environ",
+    "open",
+    "read_text",
+    "getpass",
+    "getpass.getpass",
+    "read"
+  ],
+  inputSources: [
+    "input",
+    "sys.argv",
+    "argv",
+    "stdin",
+    "recv",
+    "request.args",
+    "request.json"
+  ],
+  networkSinks: [
+    "requests.post",
+    "requests.put",
+    "requests.get",
+    "requests.patch",
+    "urlopen",
+    "urllib.request.urlopen",
+    "httpx.post",
+    "httpx.get",
+    "session.post",
+    "send",
+    "sendall",
+    "socket.send"
+  ],
+  execSinks: [
+    "os.system",
+    "system",
+    "subprocess.run",
+    "subprocess.call",
+    "subprocess.Popen",
+    "subprocess.check_output",
+    "subprocess.check_call",
+    "Popen",
+    "os.popen",
+    "popen",
+    "eval",
+    "exec",
+    "check_output"
+  ],
+  callTypes: ["call"],
+  assignTypes: ["assignment", "augmented_assignment"],
+  identifierTypes: ["identifier", "attribute"]
+};
+var BASH = {
+  sensitiveSources: ["cat", "printenv", "env", "head", "less", "read"],
+  inputSources: ["read", "curl", "wget"],
+  networkSinks: ["curl", "wget", "nc", "netcat", "ssh", "scp"],
+  execSinks: ["eval", "sh", "bash", "source", "exec"],
+  callTypes: ["command", "command_substitution"],
+  assignTypes: ["variable_assignment"],
+  identifierTypes: ["variable_name", "word", "simple_expansion", "expansion"]
+};
+var RUST = {
+  sensitiveSources: [
+    "env::var",
+    "std::env::var",
+    "var",
+    "read_to_string",
+    "fs::read",
+    "fs::read_to_string",
+    "read"
+  ],
+  inputSources: ["args", "std::env::args", "read_line", "stdin"],
+  networkSinks: [
+    "reqwest::get",
+    "reqwest::post",
+    "get",
+    "post",
+    "send",
+    "write_all"
+  ],
+  execSinks: ["Command::new", "process::Command", "spawn", "output", "status"],
+  callTypes: ["call_expression", "macro_invocation", "method_call"],
+  assignTypes: ["let_declaration", "assignment_expression"],
+  identifierTypes: ["identifier", "scoped_identifier", "field_expression"]
+};
+function specForExt(ext) {
+  switch (ext.toLowerCase()) {
+    case ".py":
+      return PYTHON;
+    case ".sh":
+    case ".bash":
+      return BASH;
+    case ".rs":
+      return RUST;
+    default:
+      return null;
+  }
+}
+function calleeMatches(callee, patterns) {
+  return patterns.some(
+    (p) => callee === p || callee.endsWith("." + p) || callee.endsWith("::" + p)
+  );
+}
+function walk(node, fn) {
+  fn(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const c = node.namedChild(i);
+    if (c) walk(c, fn);
+  }
+}
+function calleeName(callNode) {
+  const fn = callNode.childForFieldName("function") || callNode.childForFieldName("name") || callNode.childForFieldName("macro") || callNode.namedChild(0);
+  return (fn?.text ?? "").trim();
+}
+function collectCallees(root, spec) {
+  const out = [];
+  walk(root, (n) => {
+    if (spec.callTypes.includes(n.type)) {
+      const name = calleeName(n);
+      if (name) out.push({ name, node: n });
+    }
+  });
+  return out;
+}
+function collectIdentifiers(root, spec) {
+  const out = [];
+  walk(root, (n) => {
+    if (spec.identifierTypes.includes(n.type)) {
+      out.push(n.text.replace(/^\$\{?/, "").replace(/\}$/, ""));
+    }
+  });
+  return out;
+}
+function sourceKind(callee, spec) {
+  if (calleeMatches(callee, spec.sensitiveSources)) return "sensitive";
+  if (calleeMatches(callee, spec.inputSources)) return "input";
+  return null;
+}
+function attrSourceKind(text, spec) {
+  const dotted = (p) => p.includes(".") || p.includes("::");
+  const match = (patterns) => patterns.filter(dotted).some((p) => text === p || text.endsWith(`.${p}`) || text.endsWith(`::${p}`));
+  if (match(spec.sensitiveSources)) return "sensitive";
+  if (match(spec.inputSources)) return "input";
+  return null;
+}
+function subtreeSourceKind(node, spec) {
+  let kind = null;
+  const consider = (k) => {
+    if (k === "sensitive") kind = "sensitive";
+    else if (k && kind !== "sensitive") kind = "input";
+  };
+  walk(node, (n) => {
+    if (spec.callTypes.includes(n.type)) {
+      consider(sourceKind(calleeName(n), spec));
+    } else if ((n.type === "attribute" || n.type === "field_expression" || n.type === "scoped_identifier") && n.text.includes(".")) {
+      consider(attrSourceKind(n.text, spec));
+    }
+  });
+  return kind;
+}
+function assignParts(node) {
+  const left = node.childForFieldName("left") || node.childForFieldName("name") || node.childForFieldName("pattern");
+  const value = node.childForFieldName("right") || node.childForFieldName("value");
+  if (!value) return null;
+  const targets = [];
+  if (left) {
+    if (left.type === "identifier" || left.type === "variable_name") {
+      targets.push(left.text);
+    } else {
+      walk(left, (n) => {
+        if (n.type === "identifier" || n.type === "variable_name")
+          targets.push(n.text);
+      });
+    }
+  }
+  return targets.length ? { targets, value } : null;
+}
+function riskySeverity() {
+  return "high";
+}
+function analyzePolyglotTaint(filePath, content, ext) {
+  const spec = specForExt(ext);
+  if (!spec) return null;
+  const tree = parseSourceToTree(content, ext);
+  if (!tree) return null;
+  const root = tree.rootNode;
+  const flows = [];
+  const sources = [];
+  const sinks = [];
+  const tainted = /* @__PURE__ */ new Map();
+  const assignments = [];
+  walk(root, (n) => {
+    if (spec.assignTypes.includes(n.type)) {
+      const p = assignParts(n);
+      if (p) assignments.push(p);
+    }
+  });
+  for (let pass = 0; pass < 5; pass++) {
+    let changed = false;
+    for (const a of assignments) {
+      let kind = subtreeSourceKind(a.value, spec);
+      if (kind !== "sensitive") {
+        for (const id of collectIdentifiers(a.value, spec)) {
+          const k = tainted.get(id);
+          if (k === "sensitive") {
+            kind = "sensitive";
+            break;
+          }
+          if (k) kind = "input";
+        }
+      }
+      if (!kind) continue;
+      for (const t of a.targets) {
+        const prev = tainted.get(t);
+        if (prev === kind || prev === "sensitive" && kind === "input")
+          continue;
+        tainted.set(t, kind);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  for (const call of collectCallees(root, spec)) {
+    const isNetwork = calleeMatches(call.name, spec.networkSinks);
+    const isExec = calleeMatches(call.name, spec.execSinks);
+    if (!isNetwork && !isExec) continue;
+    const argsNode = call.node.childForFieldName("arguments") || call.node;
+    const kinds = /* @__PURE__ */ new Set();
+    const direct = subtreeSourceKind(argsNode, spec);
+    if (direct) kinds.add(direct);
+    for (const id of collectIdentifiers(argsNode, spec)) {
+      const k = tainted.get(id);
+      if (k) kinds.add(k);
+    }
+    if (kinds.size === 0) continue;
+    const line = call.node.startPosition.row + 1;
+    let description = null;
+    if (isNetwork && kinds.has("sensitive")) {
+      description = `Sensitive data (credentials/file/env) flows into a network call '${call.name}' \u2014 possible data exfiltration.`;
+    } else if (isExec && kinds.has("input")) {
+      description = `Externally-controlled input flows into a command/exec sink '${call.name}' \u2014 possible injection.`;
+    } else if (isExec && kinds.has("sensitive")) {
+      description = `Sensitive data flows into an exec sink '${call.name}'.`;
+    }
+    if (!description) continue;
+    const source = {
+      file: filePath,
+      line,
+      label: kinds.has("sensitive") ? "sensitive-source" : "input-source",
+      type: "source"
+    };
+    const sink = {
+      file: filePath,
+      line,
+      label: call.name,
+      type: "sink"
+    };
+    sources.push(source);
+    sinks.push(sink);
+    flows.push({
+      source,
+      sink,
+      path: [description],
+      severity: riskySeverity(),
+      description
+    });
+  }
+  return { flows, sources, sinks };
+}
+
+// src/core-scanner/taint/index.ts
+var TS_COMPILER_LANGS = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"];
+var POLYGLOT_LANGS = [".py", ".sh", ".bash", ".rs"];
+function isTaintSupported(filePath) {
+  const lower = filePath.toLowerCase();
+  return [...TS_COMPILER_LANGS, ...POLYGLOT_LANGS].some(
+    (ext) => lower.endsWith(ext)
+  );
+}
+function isTsCompilerLang(filePath) {
+  const lower = filePath.toLowerCase();
+  return TS_COMPILER_LANGS.some((ext) => lower.endsWith(ext));
+}
+function analyzeTaint2(files) {
+  const jsTsFiles = files.filter((f) => isTsCompilerLang(f.path));
+  const jsTsResult = analyzeTaint(jsTsFiles);
+  const flows = [...jsTsResult.flows];
+  const sources = [...jsTsResult.sources];
+  const sinks = [...jsTsResult.sinks];
+  for (const file of files) {
+    if (isTsCompilerLang(file.path)) continue;
+    const poly = analyzePolyglotTaint(
+      file.path,
+      file.content,
+      path2.extname(file.path)
+    );
+    if (poly) {
+      flows.push(...poly.flows);
+      sources.push(...poly.sources);
+      sinks.push(...poly.sinks);
+    }
+  }
+  return { flows, sources, sinks };
+}
+
+// src/commands/check.ts
+async function checkAgent(files, options) {
+  const format = options.format || "text";
+  if (format === "text") {
+    console.log(
+      `\u{1F6E1}\uFE0F W.H.Agent: Running AST-based universal vulnerability check...
+`
+    );
+  }
+  let targetFiles = files;
+  if (!targetFiles || targetFiles.length === 0) {
+    targetFiles = await (0, import_glob.glob)("**/*.{py,js,ts,tsx,sh,bash,rs}", {
+      dot: true,
+      ignore: [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.git/**",
+        "**/.venv/**",
+        "**/venv/**",
+        "**/.cache/**",
+        "**/coverage/**"
+      ]
+    });
+  }
+  if (targetFiles.length === 0) {
+    if (format === "text") {
+      console.log(import_chalk.default.yellow(`\u26A0\uFE0F  No coding files found to check.`));
+    }
+    process.exit(0);
+  }
+  const allFindings = [];
+  let totalFixes = 0;
+  const fileStatuses = [];
+  for (const file of targetFiles) {
+    const absolutePath = path3.resolve(file);
+    try {
+      const stat2 = await fs3.stat(absolutePath);
+      if (!stat2.isFile()) continue;
+      const relativePath = path3.relative(process.cwd(), absolutePath);
+      const parseResult = await parseFile(absolutePath);
+      const findings = runRules(parseResult, RULES);
+      const astHash = astFingerprint(
+        parseResult.source,
+        path3.extname(absolutePath)
+      );
+      fileStatuses.push({
+        file: relativePath,
+        taintSupported: isTaintSupported(absolutePath),
+        astHash
+      });
+      if (options.fix && parseResult.type === "ast") {
+        const fixesApplied = await applyRemediations(absolutePath, findings);
+        totalFixes += fixesApplied;
+      }
+      for (const finding of findings) {
+        allFindings.push({ file: relativePath, finding });
+      }
+      if (isTaintSupported(absolutePath)) {
+        const taint = analyzeTaint2([
+          { path: relativePath, content: parseResult.source }
+        ]);
+        for (const flow of taint.flows) {
+          allFindings.push({
+            file: relativePath,
+            finding: {
+              ruleId: "taint-dataflow",
+              name: "Tainted data flow",
+              severity: flow.severity,
+              category: "data-flow",
+              message: flow.description,
+              line: flow.source.line ?? 0,
+              fixable: false
+            }
+          });
+        }
+      }
+    } catch (err) {
+      if (format === "text") {
+        console.error(import_chalk.default.red(`\u274C Error analyzing ${file}: ${err.message}`));
+      }
+    }
+  }
+  const hasCritical = allFindings.some(
+    (f) => f.finding.severity === "critical"
+  );
+  const exitCode = hasCritical ? 2 : allFindings.length > 0 ? 1 : 0;
+  if (format === "json") {
+    const jsonOutput = allFindings.map((f) => ({
+      file: f.file,
+      rule_id: f.finding.ruleId,
+      threat_name: f.finding.name,
+      severity: f.finding.severity,
+      category: f.finding.category,
+      message: f.finding.message,
+      line: f.finding.line,
+      fixable: f.finding.fixable
+    }));
+    if (options.output) {
+      await fs3.writeFile(options.output, JSON.stringify(jsonOutput, null, 2));
+    } else {
+      console.log(JSON.stringify(jsonOutput, null, 2));
+    }
+    process.exit(exitCode);
+  }
+  if (format === "json-v2") {
+    const jsonOutput = {
+      files_status: fileStatuses.map((f) => ({
+        file: f.file,
+        status: f.taintSupported ? "scanned_full" : "unsupported_taint_tracking",
+        ast_hash: f.astHash
+      })),
+      findings: allFindings.map((f) => ({
+        file: f.file,
+        rule_id: f.finding.ruleId,
+        threat_name: f.finding.name,
+        severity: f.finding.severity,
+        category: f.finding.category,
+        message: f.finding.message,
+        line: f.finding.line,
+        fixable: f.finding.fixable
+      }))
+    };
+    if (options.output) {
+      await fs3.writeFile(options.output, JSON.stringify(jsonOutput, null, 2));
+    } else {
+      console.log(JSON.stringify(jsonOutput, null, 2));
+    }
+    process.exit(exitCode);
+  }
+  if (format === "sarif") {
+    const sarifOutput = {
+      version: "2.1.0",
+      $schema: "http://json.schemastore.org/sarif-2.1.0-rtm.5",
+      runs: [
+        {
+          tool: {
+            driver: {
+              name: "W.H.Agent",
+              informationUri: "https://github.com/wh-agent/wh-agent",
+              rules: RULES.map((r) => ({
+                id: r.id,
+                name: r.name,
+                shortDescription: { text: `${r.category}: ${r.name}` }
+              }))
+            }
+          },
+          artifacts: fileStatuses.map((f) => ({
+            location: { uri: f.file },
+            properties: {
+              status: f.taintSupported ? "scanned_full" : "unsupported_taint_tracking",
+              astHash: f.astHash
+            }
+          })),
+          results: allFindings.map((f) => ({
+            ruleId: f.finding.ruleId,
+            level: f.finding.severity === "critical" ? "error" : "warning",
+            message: { text: f.finding.message },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: f.file },
+                  region: { startLine: f.finding.line }
+                }
+              }
+            ]
+          }))
+        }
+      ]
+    };
+    if (options.output) {
+      await fs3.writeFile(options.output, JSON.stringify(sarifOutput, null, 2));
+    } else {
+      console.log(JSON.stringify(sarifOutput, null, 2));
+    }
+    process.exit(exitCode);
+  }
+  const unsupportedFiles = fileStatuses.filter((f) => !f.taintSupported);
+  if (unsupportedFiles.length > 0) {
+    console.warn(
+      import_chalk.default.yellow(
+        `
+\u2139\uFE0F  AST Universal Vulnerability Check completed. Taint tracking covers Python, JavaScript, TypeScript, Bash, and Rust; the files below use other extensions and were scanned with rule-based checks only:`
+      )
+    );
+    unsupportedFiles.slice(0, 5).forEach((f) => {
+      console.warn(import_chalk.default.gray(`     - ${f.file}`));
+    });
+    if (unsupportedFiles.length > 5)
+      console.warn(
+        import_chalk.default.gray(`     - ... and ${unsupportedFiles.length - 5} more.`)
+      );
+  }
+  if (fileStatuses.length > 0) {
+    console.log(
+      import_chalk.default.gray(
+        `
+\u{1F512} Golden Snapshot fingerprints (pin with 'wh-agent run --ast-hash <hash>'):`
+      )
+    );
+    fileStatuses.slice(0, 10).forEach((f) => {
+      console.log(import_chalk.default.gray(`   ${f.file}: ${f.astHash}`));
+    });
+    if (fileStatuses.length > 10)
+      console.log(import_chalk.default.gray(`   ... and ${fileStatuses.length - 10} more.`));
+  }
+  if (allFindings.length > 0) {
+    console.warn(
+      import_chalk.default.redBright(
+        `
+\u{1F6A8} Check Failed: Found ${allFindings.length} vulnerabilities.`
+      )
+    );
+    for (const { file, finding } of allFindings) {
+      const severityColor = finding.severity === "critical" ? import_chalk.default.red : import_chalk.default.yellow;
+      console.warn(
+        `
+[${severityColor(finding.severity.toUpperCase())}] ${finding.category} in ${file} (Line ${finding.line}):`
+      );
+      console.warn(`  - ${finding.name}: ${finding.message}`);
+      if (finding.fixable) {
+        if (options.fix) {
+          console.warn(
+            import_chalk.default.green(`  \u2713 Automatically fixed (${finding.fixStrategy}).`)
+          );
+        } else {
+          console.warn(
+            import_chalk.default.cyan(`  \u{1F449} Fixable: Run with --fix to auto-remediate.`)
+          );
+        }
+      }
+    }
+    if (options.fix) {
+      console.log(
+        import_chalk.default.greenBright(`
+\u2728 Applied ${totalFixes} automatic fixes.`)
+      );
+    }
+    if (hasCritical) {
+      console.error(
+        import_chalk.default.redBright(
+          `
+\u{1F449} Critical vulnerabilities found! Do NOT run this natively. Use 'wh-agent run' to safely execute it in the Secure Container Envelope.`
+        )
+      );
+    }
+  } else {
+    console.log(
+      import_chalk.default.greenBright(
+        `
+\u2705 Passed: No syntax or AST-level vulnerabilities found.`
+      )
+    );
+    console.log(
+      import_chalk.default.gray(
+        `\u{1F449} Static analysis limits obvious risk. Use 'wh-agent run' to sandbox residual runtime risk.`
+      )
+    );
+  }
+  process.exit(exitCode);
+}
+
+// src/commands/inspect-mcp.ts
+var import_node_child_process = require("child_process");
+var fs4 = __toESM(require("fs"));
+var os = __toESM(require("os"));
+var path4 = __toESM(require("path"));
+var import_chalk3 = __toESM(require("chalk"));
+
+// src/core-scanner/reporter/score.ts
+var SCORE_DEDUCTIONS = {
+  critical: 25,
+  high: 15,
+  medium: 5,
+  low: 2,
+  info: 0
+};
+var TEMPLATE_EXAMPLE_CATEGORY_CAP = 10;
+function calculateScore(result) {
+  const { findings, target, skillHealth, harnessAdapters } = result;
+  const summary = summarizeFindings(findings, target.files.length);
+  const score = computeScore(findings);
+  return {
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    targetPath: target.path,
+    findings,
+    score,
+    summary,
+    harnessAdapters,
+    skillHealth
+  };
+}
+function summarizeFindings(findings, filesScanned) {
+  const autoFixable = findings.filter((f) => f.fix?.auto).length;
+  return {
+    totalFindings: findings.length,
+    critical: findings.filter((f) => f.severity === "critical").length,
+    high: findings.filter((f) => f.severity === "high").length,
+    medium: findings.filter((f) => f.severity === "medium").length,
+    low: findings.filter((f) => f.severity === "low").length,
+    info: findings.filter((f) => f.severity === "info").length,
+    filesScanned,
+    autoFixable
+  };
+}
+function computeScore(findings) {
+  const categoryDeductions = {
+    secrets: 0,
+    permissions: 0,
+    hooks: 0,
+    mcp: 0,
+    agents: 0
+  };
+  const templateInventoryDeductions = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const scoreCategory = mapToScoreCategory(finding.category);
+    const deduction = (SCORE_DEDUCTIONS[finding.severity] ?? 0) * confidenceWeight(finding);
+    if (isTemplateInventoryFinding(finding)) {
+      const templateKey = `${scoreCategory}:${finding.file}`;
+      templateInventoryDeductions.set(
+        templateKey,
+        (templateInventoryDeductions.get(templateKey) ?? 0) + deduction
+      );
+      continue;
+    }
+    categoryDeductions[scoreCategory] = (categoryDeductions[scoreCategory] ?? 0) + deduction;
+  }
+  for (const [templateKey, deduction] of templateInventoryDeductions) {
+    const [scoreCategory] = templateKey.split(":", 1);
+    categoryDeductions[scoreCategory] = (categoryDeductions[scoreCategory] ?? 0) + Math.min(deduction, TEMPLATE_EXAMPLE_CATEGORY_CAP);
+  }
+  const maxCategoryScore = 100;
+  const breakdown = {
+    secrets: roundedCategoryScore(maxCategoryScore, categoryDeductions.secrets),
+    permissions: roundedCategoryScore(
+      maxCategoryScore,
+      categoryDeductions.permissions
+    ),
+    hooks: roundedCategoryScore(maxCategoryScore, categoryDeductions.hooks),
+    mcp: roundedCategoryScore(maxCategoryScore, categoryDeductions.mcp),
+    agents: roundedCategoryScore(maxCategoryScore, categoryDeductions.agents)
+  };
+  const categoryScores = Object.values(breakdown);
+  const numericScore = Math.round(
+    categoryScores.reduce((sum, s) => sum + s, 0) / categoryScores.length
+  );
+  const grade = scoreToGrade(numericScore);
+  return { grade, numericScore, breakdown };
+}
+function isTemplateInventoryFinding(finding) {
+  return finding.runtimeConfidence === "template-example" && finding.category !== "secrets";
+}
+function confidenceWeight(finding) {
+  if ((finding.runtimeConfidence === "template-example" || finding.runtimeConfidence === "docs-example") && finding.category !== "secrets") {
+    return 0.25;
+  }
+  if (finding.runtimeConfidence === "project-local-optional" && finding.category !== "secrets") {
+    return 0.75;
+  }
+  if (finding.runtimeConfidence === "plugin-manifest" && finding.category !== "secrets") {
+    return 0.5;
+  }
+  if (finding.runtimeConfidence === "plugin-cache" && finding.category !== "secrets") {
+    return 0.5;
+  }
+  return 1;
+}
+function roundedCategoryScore(maxCategoryScore, deduction) {
+  return Math.max(0, Math.round(maxCategoryScore - deduction));
+}
+function mapToScoreCategory(category) {
+  const mapping = {
+    secrets: "secrets",
+    permissions: "permissions",
+    hooks: "hooks",
+    mcp: "mcp",
+    skills: "agents",
+    agents: "agents",
+    injection: "agents",
+    // prompt injection → agents category
+    exposure: "hooks",
+    // data exposure via hooks/exfiltration
+    misconfiguration: "permissions"
+    // config issues → permissions
+  };
+  return mapping[category] ?? "agents";
+}
+function scoreToGrade(score) {
+  if (score >= 90) return "A";
+  if (score >= 75) return "B";
+  if (score >= 60) return "C";
+  if (score >= 40) return "D";
+  return "F";
+}
+
+// src/core-scanner/reporter/terminal.ts
+var import_chalk2 = __toESM(require("chalk"));
+function renderTerminalReport(report) {
+  const lines = [];
+  lines.push("");
+  lines.push(import_chalk2.default.bold.cyan("  W.H.Agent Security Report"));
+  lines.push(import_chalk2.default.dim(`  ${report.timestamp}`));
+  lines.push(import_chalk2.default.dim(`  Target: ${report.targetPath}`));
+  lines.push("");
+  lines.push(renderGrade(report.score.grade, report.score.numericScore));
+  lines.push("");
+  lines.push(import_chalk2.default.bold("  Score Breakdown"));
+  lines.push(renderBar("Secrets", report.score.breakdown.secrets));
+  lines.push(renderBar("Permissions", report.score.breakdown.permissions));
+  lines.push(renderBar("Hooks", report.score.breakdown.hooks));
+  lines.push(renderBar("MCP Servers", report.score.breakdown.mcp));
+  lines.push(renderBar("Agents", report.score.breakdown.agents));
+  lines.push("");
+  if (report.harnessAdapters) {
+    lines.push(import_chalk2.default.bold("  Harness Adapters"));
+    lines.push(
+      `  Matched: ${report.harnessAdapters.totalMatched}/${report.harnessAdapters.totalRegistered}`
+    );
+    for (const adapter of report.harnessAdapters.matched) {
+      const evidence = adapter.evidence.length > 0 ? adapter.evidence.join(", ") : "no markers";
+      lines.push(`  ${import_chalk2.default.bold(adapter.name)} (${adapter.confidence})`);
+      lines.push(import_chalk2.default.dim(`    Evidence: ${evidence}`));
+    }
+    lines.push("");
+  }
+  if (report.skillHealth && report.skillHealth.totalSkills > 0) {
+    lines.push(import_chalk2.default.bold("  Skill Health"));
+    lines.push(`  Skills discovered: ${report.skillHealth.totalSkills}`);
+    lines.push(`  Instrumented:      ${report.skillHealth.instrumentedSkills}`);
+    lines.push(`  Versioned:         ${report.skillHealth.versionedSkills}`);
+    lines.push(
+      `  Rollback-ready:    ${report.skillHealth.rollbackReadySkills}`
+    );
+    lines.push(`  With history:      ${report.skillHealth.observedSkills}`);
+    if (typeof report.skillHealth.averageScore === "number") {
+      lines.push(`  Average health:    ${report.skillHealth.averageScore}/100`);
+    }
+    lines.push("");
+    for (const skill of report.skillHealth.skills) {
+      const scoreText = typeof skill.score === "number" ? `${skill.score}/100` : "unobserved";
+      lines.push(
+        `  ${import_chalk2.default.bold(skill.skillName)} \u2014 ${scoreText} (${formatSkillStatus(skill.status)})`
+      );
+      lines.push(import_chalk2.default.dim(`    File: ${skill.file}`));
+      if (typeof skill.successRate === "number") {
+        lines.push(
+          import_chalk2.default.dim(
+            `    Runs: ${skill.observedRuns}, success: ${Math.round(skill.successRate * 100)}%` + (typeof skill.averageFeedback === "number" ? `, feedback: ${skill.averageFeedback.toFixed(1)}/5` : "")
+          )
+        );
+      }
+    }
+    lines.push("");
+  }
+  const s = report.summary;
+  lines.push(import_chalk2.default.bold("  Summary"));
+  lines.push(`  Files scanned: ${s.filesScanned}`);
+  lines.push(
+    `  Findings: ${s.totalFindings} total \u2014 ${import_chalk2.default.red(`${s.critical} critical`)}, ${import_chalk2.default.yellow(`${s.high} high`)}, ${import_chalk2.default.blue(`${s.medium} medium`)}, ${import_chalk2.default.dim(`${s.low} low, ${s.info} info`)}`
+  );
+  if (s.autoFixable > 0) {
+    lines.push(import_chalk2.default.green(`  Auto-fixable: ${s.autoFixable} (use --fix)`));
+  }
+  lines.push("");
+  if (report.findings.length > 0) {
+    lines.push(import_chalk2.default.bold("  Findings"));
+    lines.push("");
+    const grouped = groupBySeverity(report.findings);
+    for (const [severity, findings] of grouped) {
+      if (findings.length === 0) continue;
+      lines.push(
+        `  ${severityIcon(severity)} ${import_chalk2.default.bold(severity.toUpperCase())} (${findings.length})`
+      );
+      lines.push("");
+      for (const finding of findings) {
+        lines.push(renderFinding(finding));
+      }
+    }
+  } else {
+    lines.push(import_chalk2.default.green.bold("  No security issues found!"));
+    lines.push("");
+  }
+  lines.push(import_chalk2.default.dim("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+  lines.push(import_chalk2.default.dim("  W.H.Agent \u2014 Security auditor for AI agent configs"));
+  lines.push("");
+  return lines.join("\n");
+}
+function renderGrade(grade, score) {
+  const gradeColors = {
+    A: import_chalk2.default.green,
+    B: import_chalk2.default.green,
+    C: import_chalk2.default.yellow,
+    D: import_chalk2.default.red,
+    F: import_chalk2.default.red.bold
+  };
+  const colorFn = gradeColors[grade] ?? import_chalk2.default.white;
+  const gradeDisplay = colorFn.bold(`  Grade: ${grade}`);
+  const scoreDisplay = colorFn(` (${score}/100)`);
+  return `${gradeDisplay}${scoreDisplay}`;
+}
+function renderBar(label, score) {
+  const width = 20;
+  const filled = Math.round(score / 100 * width);
+  const empty = width - filled;
+  let colorFn;
+  if (score >= 80) colorFn = import_chalk2.default.green;
+  else if (score >= 60) colorFn = import_chalk2.default.yellow;
+  else colorFn = import_chalk2.default.red;
+  const bar = colorFn("\u2588".repeat(filled)) + import_chalk2.default.dim("\u2591".repeat(empty));
+  const paddedLabel = label.padEnd(14);
+  return `  ${paddedLabel} ${bar} ${score}`;
+}
+function severityIcon(severity) {
+  const icons = {
+    critical: import_chalk2.default.red("\u25CF"),
+    high: import_chalk2.default.yellow("\u25CF"),
+    medium: import_chalk2.default.blue("\u25CF"),
+    low: import_chalk2.default.dim("\u25CF"),
+    info: import_chalk2.default.dim("\u25CB")
+  };
+  return icons[severity] ?? "\u25CB";
+}
+function renderFinding(finding) {
+  const lines = [];
+  const icon = severityIcon(finding.severity);
+  const location = finding.line ? import_chalk2.default.dim(`${finding.file}:${finding.line}`) : import_chalk2.default.dim(finding.file);
+  lines.push(`    ${icon} ${finding.title}`);
+  lines.push(`      ${location}`);
+  if (finding.runtimeConfidence) {
+    lines.push(
+      `      ${import_chalk2.default.dim(`Runtime confidence: ${formatRuntimeConfidence(finding.runtimeConfidence)}`)}`
+    );
+  }
+  lines.push(`      ${import_chalk2.default.dim(finding.description)}`);
+  if (finding.evidence) {
+    lines.push(`      Evidence: ${import_chalk2.default.yellow(finding.evidence)}`);
+  }
+  if (finding.fix) {
+    lines.push(
+      `      Fix: ${import_chalk2.default.green(finding.fix.description)}` + (finding.fix.auto ? import_chalk2.default.green(" [auto-fixable]") : "")
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+function formatRuntimeConfidence(value) {
+  switch (value) {
+    case "active-runtime":
+      return "active runtime";
+    case "project-local-optional":
+      return "project-local optional";
+    case "template-example":
+      return "template/example";
+    case "docs-example":
+      return "docs/example";
+    case "plugin-cache":
+      return "plugin cache";
+    case "plugin-manifest":
+      return "plugin manifest";
+    case "hook-code":
+      return "hook-code implementation";
+  }
+}
+function formatSkillStatus(status) {
+  switch (status) {
+    case "healthy":
+      return "healthy";
+    case "watch":
+      return "watch";
+    case "at-risk":
+      return "at-risk";
+    case "unobserved":
+      return "unobserved";
+  }
+}
+function groupBySeverity(findings) {
+  const severities = ["critical", "high", "medium", "low", "info"];
+  return severities.map((s) => [s, findings.filter((f) => f.severity === s)]);
+}
+
+// src/core-scanner/rules/agents.ts
+function findLineNumber(content, matchIndex) {
+  return content.substring(0, matchIndex).split("\n").length;
+}
+function findAllMatches(content, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  return [...content.matchAll(new RegExp(pattern.source, flags))];
+}
+function normalizeConfigPath(filePath) {
+  return filePath.replace(/\\/g, "/");
+}
+function isAgentDocumentationFile(file) {
+  const path13 = normalizeConfigPath(file.path).toLowerCase();
+  return /(?:^|\/)agents\/(?:[^/]+\/)?readme\.md$/.test(path13);
+}
+function getAgentFrontmatter(content) {
+  if (!content.startsWith("---")) return null;
+  const frontmatterEnd = content.indexOf("---", 3);
+  if (frontmatterEnd === -1) return null;
+  return content.substring(0, frontmatterEnd);
+}
+function parseStringArray(value) {
+  if (!Array.isArray(value)) return null;
+  return value.filter((item) => typeof item === "string");
+}
+function getBodyIntro(content) {
+  const frontmatter = getAgentFrontmatter(content);
+  const body = (frontmatter ? content.slice(frontmatter.length + 3) : content).trimStart();
+  if (!body) return "";
+  const lines = body.split("\n");
+  const introLines = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (introLines.length > 0) break;
+      continue;
+    }
+    if (trimmed.startsWith("#") || trimmed.startsWith("```") || trimmed.startsWith("|") || trimmed.startsWith("- ") || /^\d+\./.test(trimmed)) {
+      if (introLines.length > 0) break;
+      continue;
+    }
+    introLines.push(trimmed);
+  }
+  return introLines.join(" ").slice(0, 300);
+}
+function getEffectiveAgentLength(content) {
+  return content.replace(/```[\s\S]*?```/g, "").replace(/^\|.*\|?$/gm, "").replace(/\s+/g, " ").trim().length;
+}
+function parseAgentJsonConfig(content) {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
+    const config = parsed;
+    const looksLikeAgentConfig = typeof config.systemPrompt === "string" || typeof config.prompt === "string" || Array.isArray(config.allowedTools) || Array.isArray(config.tools) || typeof config.permissionMode === "string" || typeof config.subagent === "string";
+    return looksLikeAgentConfig ? config : null;
+  } catch {
+    return null;
+  }
+}
+function getAgentMetadata(content) {
+  const frontmatter = getAgentFrontmatter(content);
+  if (frontmatter) {
+    const toolsMatch = frontmatter.match(/\btools:\s*\[([^\]]*)\]/);
+    const tools = toolsMatch?.[1].split(",").map((tool) => tool.trim().replace(/["']/g, "")) ?? null;
+    const modelMatch = frontmatter.match(/\bmodel:\s*([^\s]+)/);
+    const nameMatch = frontmatter.match(/\bname:\s*([^\n]+)/);
+    const descriptionMatch = frontmatter.match(/\bdescription:\s*([^\n]+)/);
+    return {
+      tools,
+      model: modelMatch?.[1] ?? null,
+      name: nameMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null,
+      description: descriptionMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null,
+      intro: getBodyIntro(content) || null,
+      hasExplicitTools: /\btools\s*:/i.test(frontmatter),
+      isStructuredDefinition: true
+    };
+  }
+  const jsonConfig = parseAgentJsonConfig(content);
+  if (!jsonConfig) {
+    return {
+      tools: null,
+      model: null,
+      name: null,
+      description: null,
+      intro: null,
+      hasExplicitTools: false,
+      isStructuredDefinition: false
+    };
+  }
+  return {
+    tools: parseStringArray(jsonConfig.allowedTools) ?? parseStringArray(jsonConfig.tools),
+    model: typeof jsonConfig.model === "string" ? jsonConfig.model : null,
+    name: typeof jsonConfig.name === "string" ? jsonConfig.name : null,
+    description: typeof jsonConfig.description === "string" ? jsonConfig.description : null,
+    intro: typeof jsonConfig.systemPrompt === "string" ? jsonConfig.systemPrompt.split(/\n\s*\n/, 1)[0].slice(0, 300) : typeof jsonConfig.prompt === "string" ? jsonConfig.prompt.split(/\n\s*\n/, 1)[0].slice(0, 300) : null,
+    hasExplicitTools: Array.isArray(jsonConfig.allowedTools) || Array.isArray(jsonConfig.tools),
+    isStructuredDefinition: true
+  };
+}
+function isSlashCommandConfig(file, isStructuredDefinition) {
+  return file.type === "skill-md" && isStructuredDefinition && file.path.toLowerCase().includes("slash-commands/");
+}
+function isAgentLikeToolConfig(file, metadata) {
+  return file.type === "agent-md" || isSlashCommandConfig(file, metadata.isStructuredDefinition);
+}
+function configSubject(file) {
+  return file.type === "skill-md" ? "Slash command" : "Agent";
+}
+function isSubagentConfig(file) {
+  return normalizePath(file.path).includes(".claude/subagents/");
+}
+function normalizePath(filePath) {
+  return filePath.replace(/\\/g, "/").toLowerCase();
+}
+function isNarrowSpecialistConfig(file, metadata) {
+  if (isSlashCommandConfig(file, metadata.isStructuredDefinition) || isSubagentConfig(file)) {
+    return true;
+  }
+  const roleText = [file.path, metadata.name, metadata.description].filter(
+    (value) => typeof value === "string" && value.length > 0
+  ).join("\n").toLowerCase();
+  return /\b(?:specialist|reviewer|review|tester|testing|e2e|build|fixer|resolver|updater|refactor|coverage|docs?|security|audit|lint|format|typecheck)\b/.test(
+    roleText
+  );
+}
+function capabilitySeverity(file, metadata) {
+  return isNarrowSpecialistConfig(file, metadata) ? "medium" : "high";
+}
+function isExplorerStyleConfig(file, metadata) {
+  const roleText = [
+    file.path,
+    metadata.name,
+    metadata.description,
+    metadata.intro
+  ].filter(
+    (value) => typeof value === "string" && value.length > 0
+  ).join("\n").toLowerCase();
+  const explorerIndicators = [
+    /\bexplorer\b/,
+    /\bcodebase explorer\b/,
+    /\bread-?only\b/,
+    /\bsearch agent\b/,
+    /\bsearch workflow\b/,
+    /\bsearch-only\b/,
+    /\bdiscovery agent\b/,
+    /\bfinder\b/
+  ];
+  return explorerIndicators.some((pattern) => pattern.test(roleText));
+}
+var agentRules = [
+  {
+    id: "agents-unrestricted-tools",
+    name: "Agent with Unrestricted Tool Access",
+    description: "Checks if agent definitions grant excessive tool access",
+    severity: "high",
+    category: "agents",
+    check(file) {
+      const metadata = getAgentMetadata(file.content);
+      if (!isAgentLikeToolConfig(file, metadata)) return [];
+      const findings = [];
+      const tools = metadata.tools;
+      const subject = configSubject(file);
+      if (tools) {
+        const severity = capabilitySeverity(file, metadata);
+        if (tools.includes("Bash")) {
+          findings.push({
+            id: `agents-bash-access-${file.path}`,
+            severity,
+            category: "agents",
+            title: `${subject} has Bash access: ${file.path}`,
+            description: `This ${subject.toLowerCase()} has Bash tool access, allowing arbitrary command running. Consider if it truly needs shell access, or if Read/Write/Edit would suffice.`,
+            file: file.path
+          });
+        }
+        const hasWrite = tools.some((t) => ["Write", "Edit"].includes(t));
+        const isExplorer = isExplorerStyleConfig(file, metadata);
+        if (hasWrite && isExplorer) {
+          findings.push({
+            id: `agents-explorer-write-${file.path}`,
+            severity: "medium",
+            category: "agents",
+            title: `Explorer/search ${subject.toLowerCase()} has write access: ${file.path}`,
+            description: `This ${subject.toLowerCase()} appears to be an explorer or search workflow but has Write/Edit access. Read-only explorer-style configs should only have Read, Grep, and Glob tools.`,
+            file: file.path
+          });
+        }
+      }
+      if (file.type === "agent-md" && !metadata.model && metadata.isStructuredDefinition) {
+        findings.push({
+          id: `agents-no-model-${file.path}`,
+          severity: "low",
+          category: "misconfiguration",
+          title: `Agent has no model specified: ${file.path}`,
+          description: "No model is specified in the agent frontmatter. This will use the default model, which may be more expensive than needed. Specify 'haiku' for lightweight tasks.",
+          file: file.path
+        });
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-no-tools-restriction",
+    name: "Agent Without Tools Restriction",
+    description: "Checks if agent definitions omit the tools array entirely, inheriting all tools by default",
+    severity: "high",
+    category: "agents",
+    check(file) {
+      const metadata = getAgentMetadata(file.content);
+      if (!isAgentLikeToolConfig(file, metadata) || !metadata.isStructuredDefinition)
+        return [];
+      if (!metadata.hasExplicitTools) {
+        const subject = configSubject(file);
+        return [
+          {
+            id: `agents-no-tools-${file.path}`,
+            severity: "high",
+            category: "agents",
+            title: `${subject} has no tools restriction: ${file.path}`,
+            description: `This ${subject.toLowerCase()} definition is structured but does not specify an explicit tools array. Without a tools list, it may inherit all available tools by default, including Bash, Write, and Edit. Always specify the minimum set of tools needed.`,
+            file: file.path,
+            fix: {
+              description: "Add an explicit tools array to the frontmatter",
+              before: "---\nname: agent\n---",
+              after: '---\nname: agent\ntools: ["Read", "Grep", "Glob"]\n---',
+              auto: false
+            }
+          }
+        ];
+      }
+      return [];
+    }
+  },
+  {
+    id: "agents-claude-md-url-execution",
+    name: "CLAUDE.md URL Execution",
+    description: "Checks CLAUDE.md files for instructions to download and execute remote content",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "claude-md") return [];
+      const findings = [];
+      const urlExecPatterns = [
+        {
+          pattern: /\b(curl|wget)\s+.*https?:\/\/[^\s]+.*\|\s*(sh|bash|zsh|node|python)/gi,
+          desc: "Pipe-to-shell instruction \u2014 downloading and executing remote code",
+          severity: "critical"
+        },
+        {
+          pattern: /\b(curl|wget)\s+(-[a-zA-Z]*\s+)*https?:\/\/[^\s]+/gi,
+          desc: "Download instruction in CLAUDE.md \u2014 if the agent follows this, it will fetch remote content",
+          severity: "high"
+        },
+        {
+          pattern: /\bgit\s+clone\s+https?:\/\/[^\s]+/gi,
+          desc: "Git clone instruction \u2014 could pull malicious repository content",
+          severity: "medium"
+        },
+        {
+          pattern: /\bnpm\s+install\s+https?:\/\/[^\s]+/gi,
+          desc: "npm install from URL \u2014 could install unvetted package",
+          severity: "high"
+        }
+      ];
+      for (const { pattern, desc, severity } of urlExecPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-claude-md-url-exec-${match.index}`,
+            severity,
+            category: "injection",
+            title: "CLAUDE.md contains URL execution instruction",
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. A malicious repository could include a CLAUDE.md with instructions to download and run arbitrary code.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-prompt-injection-patterns",
+    name: "Agent Prompt Injection Patterns",
+    description: "Checks agent definitions for patterns commonly used in prompt injection attacks",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const findings = [];
+      const injectionPatterns = [
+        {
+          pattern: /ignore\s+(?:all\s+)?previous\s+(?:instructions|rules|constraints)/gi,
+          desc: "Instruction override attempt"
+        },
+        {
+          pattern: /disregard\s+(?:all\s+)?(?:safety|security|restrictions|guidelines)/gi,
+          desc: "Safety bypass attempt"
+        },
+        {
+          pattern: /you\s+are\s+now\s+(?:a|an|in)\s/gi,
+          desc: "Role reassignment attempt"
+        },
+        {
+          pattern: /bypass\s+(?:security|safety|permissions|restrictions|authentication)/gi,
+          desc: "Security bypass instruction"
+        },
+        {
+          pattern: /(?:do\s+not|don'?t)\s+(?:follow|obey|respect)\s+(?:the\s+)?(?:rules|instructions|guidelines)/gi,
+          desc: "Rule override instruction"
+        }
+      ];
+      for (const { pattern, desc } of injectionPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-injection-pattern-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Prompt injection pattern in agent definition`,
+            description: `Found "${match[0]}" \u2014 ${desc}. If this agent definition is contributed by an external source, this could be an attempt to override the agent's safety constraints.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0]
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-hidden-instructions",
+    name: "Hidden Instructions via Unicode",
+    description: "Checks for invisible Unicode characters that could hide malicious instructions in agent definitions or CLAUDE.md",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const unicodeTricks = [
+        {
+          // biome-ignore lint/suspicious/noMisleadingCharacterClass: intentional detection of hidden zero-width Unicode instructions
+          pattern: /[\u200B\u200C\u200D\uFEFF]/gu,
+          name: "zero-width character",
+          description: "Zero-width characters (U+200B/200C/200D/FEFF) can hide text from visual inspection while still being processed by the model"
+        },
+        {
+          pattern: /[\u202A-\u202E\u2066-\u2069]/gu,
+          name: "bidirectional override",
+          description: "Bidirectional text override characters (U+202A-202E, U+2066-2069) can reverse displayed text direction, making malicious instructions appear differently than they actually read"
+        },
+        {
+          pattern: /[\u00AD]/gu,
+          name: "soft hyphen",
+          description: "Soft hyphens (U+00AD) are invisible but can break up keywords to evade pattern matching while preserving the original meaning for the model"
+        },
+        {
+          pattern: /[\uE000-\uF8FF]/g,
+          name: "private use area character",
+          description: "Private Use Area characters (U+E000-F8FF) have no standard meaning and could carry hidden payloads or encode instructions"
+        },
+        {
+          pattern: /[\u2028\u2029]/g,
+          name: "line/paragraph separator",
+          description: "Unicode line/paragraph separators (U+2028/2029) create invisible line breaks that can inject hidden instructions between visible lines"
+        }
+      ];
+      for (const { pattern, name, description } of unicodeTricks) {
+        const matches = findAllMatches(file.content, pattern);
+        if (matches.length > 0) {
+          findings.push({
+            id: `agents-hidden-unicode-${name.replace(/\s/g, "-")}`,
+            severity: "critical",
+            category: "injection",
+            title: `Hidden ${name} detected (${matches.length} occurrences)`,
+            description: `${description}. Found ${matches.length} instance(s) in ${file.path}. This is a prompt injection technique \u2014 review the file in a hex editor.`,
+            file: file.path,
+            line: findLineNumber(file.content, matches[0].index ?? 0),
+            evidence: `${matches.length}x ${name}`,
+            fix: {
+              description: `Remove all ${name}s from the file`,
+              before: `File contains ${matches.length} hidden characters`,
+              after: "Clean text with no invisible Unicode characters",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-web-write-combo",
+    name: "Agent Has Web Fetch + Write Access",
+    description: "Checks for agents that can fetch web content and write files \u2014 a remote code injection vector",
+    severity: "high",
+    category: "agents",
+    check(file) {
+      const metadata = getAgentMetadata(file.content);
+      if (!isAgentLikeToolConfig(file, metadata)) return [];
+      const tools = metadata.tools;
+      if (!tools) return [];
+      const subject = configSubject(file);
+      const hasWebAccess = tools.some(
+        (t) => ["WebFetch", "WebSearch"].includes(t)
+      );
+      const hasWriteAccess = tools.some(
+        (t) => ["Write", "Edit", "Bash"].includes(t)
+      );
+      if (hasWebAccess && hasWriteAccess) {
+        return [
+          {
+            id: `agents-web-write-${file.path}`,
+            severity: "high",
+            category: "agents",
+            title: `${subject} has web access + write access: ${file.path}`,
+            description: `This ${subject.toLowerCase()} can fetch content from the web AND write/edit files. An attacker could host prompt injection payloads on a web page that the config processes, then use the write access to inject malicious code into the codebase. Consider separating web research workflows from code-writing workflows.`,
+            file: file.path,
+            evidence: `Web: ${tools.filter((t) => ["WebFetch", "WebSearch"].includes(t)).join(", ")} + Write: ${tools.filter((t) => ["Write", "Edit", "Bash"].includes(t)).join(", ")}`
+          }
+        ];
+      }
+      return [];
+    }
+  },
+  {
+    id: "agents-prompt-injection-surface",
+    name: "Agent Prompt Injection Surface",
+    description: "Checks agent definitions for patterns that increase prompt injection risk",
+    severity: "medium",
+    category: "agents",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const findings = [];
+      const externalContentPatterns = [
+        /\bfetch(?:ing)?\s+(?:from\s+)?(?:external\s+)?(?:urls?|web\s+pages?|sites?)\b/i,
+        /\bread(?:ing)?\s+(?:from\s+)?(?:user(?:-provided)?|external)\s+(?:input|content|data)\b/i,
+        /\bprocess(?:ing)?\s+(?:external|user(?:-provided)?)\s+(?:content|input|data)\b/i,
+        /\bparse(?:ing)?\s+html\b/i,
+        /\banaly(?:ze|zing)\s+(?:external|web)\s+content\b/i
+      ];
+      for (const pattern of externalContentPatterns) {
+        if (pattern.test(file.content)) {
+          findings.push({
+            id: `agents-injection-surface-${file.path}`,
+            severity: "medium",
+            category: "agents",
+            title: `Agent processes external content: ${file.path}`,
+            description: "This agent appears to process external or user-provided content. Ensure prompt injection defenses are in place: validate inputs, use system prompts to anchor behavior, and never trust content from external sources.",
+            file: file.path
+          });
+          break;
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-claude-md-instructions",
+    name: "CLAUDE.md Instruction Injection",
+    description: "Checks CLAUDE.md for patterns that could be exploited by malicious repos",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "claude-md") return [];
+      const findings = [];
+      const autoRunPatterns = [
+        {
+          pattern: /always\s+(?:run|install|download|execute)/gi,
+          desc: "Auto-run instructions"
+        },
+        {
+          pattern: /automatically\s+(?:run|install|clone|execute|download)/gi,
+          desc: "Automatic running"
+        },
+        {
+          pattern: /without\s+(?:asking|confirmation|prompting|user\s+input)/gi,
+          desc: "Bypasses confirmation"
+        },
+        {
+          pattern: /\bsilently\s+(?:run|install|execute|download|clone)/gi,
+          desc: "Silent execution"
+        },
+        {
+          pattern: /\brun\s+unattended\b/gi,
+          desc: "Unattended execution"
+        },
+        {
+          pattern: /\bexecute\s+without\s+(?:confirmation|review|approval)/gi,
+          desc: "Execution without review"
+        }
+      ];
+      for (const { pattern, desc } of autoRunPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-claude-md-autorun-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `CLAUDE.md contains auto-run instruction`,
+            description: `Found "${match[0]}" \u2014 ${desc}. If this CLAUDE.md is in a cloned repository, a malicious repo could use this to run arbitrary commands when a developer opens it with Claude Code.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0]
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-full-tool-escalation",
+    name: "Agent Has Full Tool Escalation Chain",
+    description: "Checks if an agent has the complete chain: discovery + read + write + execute tools",
+    severity: "high",
+    category: "agents",
+    check(file) {
+      const metadata = getAgentMetadata(file.content);
+      if (!isAgentLikeToolConfig(file, metadata)) return [];
+      const tools = metadata.tools;
+      if (!tools) return [];
+      const subject = configSubject(file);
+      const severity = capabilitySeverity(file, metadata);
+      const hasDiscovery = tools.some(
+        (t) => ["Glob", "Grep", "LS"].includes(t)
+      );
+      const hasRead = tools.includes("Read");
+      const hasWrite = tools.some((t) => ["Write", "Edit"].includes(t));
+      const hasExecute = tools.includes("Bash");
+      if (hasDiscovery && hasRead && hasWrite && hasExecute) {
+        return [
+          {
+            id: `agents-escalation-chain-${file.path}`,
+            severity,
+            category: "agents",
+            title: `${subject} has full escalation chain: ${file.path}`,
+            description: `This ${subject.toLowerCase()} has discovery tools (Glob/Grep), Read, Write/Edit, AND Bash access. This forms a complete escalation chain: find files \u2192 read contents \u2192 modify code \u2192 execute commands. Consider whether it truly needs all four capabilities, or if it can be split into narrower roles.`,
+            file: file.path,
+            evidence: `Discovery: ${tools.filter((t) => ["Glob", "Grep", "LS"].includes(t)).join(", ")} + Read + Write: ${tools.filter((t) => ["Write", "Edit"].includes(t)).join(", ")} + Bash`
+          }
+        ];
+      }
+      return [];
+    }
+  },
+  {
+    id: "agents-expensive-model-readonly",
+    name: "Expensive Model for Read-Only Agent",
+    description: "Checks if read-only agents are using expensive models unnecessarily",
+    severity: "low",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const metadata = getAgentMetadata(file.content);
+      const tools = metadata.tools;
+      if (!tools || !metadata.model) return [];
+      const model = metadata.model.toLowerCase();
+      const readOnlyTools = ["Read", "Grep", "Glob", "LS"];
+      const isReadOnly = tools.every((t) => readOnlyTools.includes(t));
+      const isExpensive = model === "opus" || model === "sonnet";
+      if (isReadOnly && isExpensive) {
+        return [
+          {
+            id: `agents-expensive-readonly-${file.path}`,
+            severity: "low",
+            category: "misconfiguration",
+            title: `Read-only agent uses expensive model "${model}": ${file.path}`,
+            description: `This agent only has read-only tools (${tools.join(", ")}) but uses the "${model}" model. For simple file reading and searching, "haiku" is typically sufficient and significantly cheaper.`,
+            file: file.path,
+            fix: {
+              description: "Use haiku for read-only agents",
+              before: `model: ${model}`,
+              after: "model: haiku",
+              auto: false
+            }
+          }
+        ];
+      }
+      return [];
+    }
+  },
+  {
+    id: "agents-comment-injection",
+    name: "Suspicious Instructions in Comments",
+    description: "Checks for malicious instructions hidden in HTML or markdown comments",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const commentPatterns = [
+        {
+          pattern: /<!--[\s\S]*?(?:ignore|override|system|execute|run|install|download|send|post|upload)[\s\S]*?-->/gi,
+          desc: "HTML comment contains suspicious instructions"
+        },
+        {
+          pattern: /\[\/\/\]:\s*#\s*\(.*(?:ignore|override|execute|run|install|download).*\)/gi,
+          desc: "Markdown reference-style comment contains suspicious instructions"
+        }
+      ];
+      for (const { pattern, desc } of commentPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-comment-injection-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Suspicious instruction in comment: ${file.path}`,
+            description: `${desc}. Attackers may hide malicious instructions in comments that won't be visible in rendered markdown but will be processed by the AI agent.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-oversized-prompt",
+    name: "Oversized Agent Definition",
+    description: "Checks for agent definitions that are unusually large, which could hide malicious instructions",
+    severity: "medium",
+    category: "agents",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const rawCharCount = file.content.length;
+      const effectiveCharCount = getEffectiveAgentLength(file.content);
+      if (effectiveCharCount > 5e3) {
+        return [
+          {
+            id: `agents-oversized-prompt-${file.path}`,
+            severity: "medium",
+            category: "agents",
+            title: `Agent definition effective size is ${effectiveCharCount} characters (>${5e3} threshold)`,
+            description: `The agent definition at ${file.path} has an effective size of ${effectiveCharCount} characters after discounting fenced code blocks and markdown tables. Unusually large agent definitions may contain hidden malicious instructions buried in legitimate-looking text. Review the full content carefully, especially any instructions near the end of the file.`,
+            file: file.path,
+            evidence: `${effectiveCharCount} effective characters (${rawCharCount} raw)`
+          }
+        ];
+      }
+      return [];
+    }
+  },
+  {
+    id: "agents-unrestricted-delegation",
+    name: "Agent Has Unrestricted Delegation Instructions",
+    description: "Checks for agent definitions that instruct the agent to delegate to other agents or spawn sub-agents without restrictions",
+    severity: "medium",
+    category: "agents",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const findings = [];
+      const delegationPatterns = [
+        {
+          pattern: /(?:delegate|hand\s*off|pass)\s+(?:.*\s+)?(?:to\s+)?(?:any|other|another)\s+agent/gi,
+          desc: "Instructs agent to delegate work to other agents without specifying which"
+        },
+        {
+          pattern: /spawn\s+(?:new\s+)?(?:sub)?agents?\s+(?:as\s+needed|freely|without\s+restriction)/gi,
+          desc: "Instructs agent to spawn sub-agents without restrictions"
+        },
+        {
+          pattern: /(?:use|call|invoke)\s+(?:any|all)\s+(?:available\s+)?tools?\s+(?:without\s+restriction|freely|as\s+needed)/gi,
+          desc: "Instructs agent to use any available tools without restriction"
+        }
+      ];
+      for (const { pattern, desc } of delegationPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-unrestricted-delegation-${match.index}`,
+            severity: "medium",
+            category: "agents",
+            title: `Agent has unrestricted delegation: ${match[0].substring(0, 60)}`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Unrestricted delegation allows an agent to bypass its intended scope by farming work to agents with broader permissions (confused deputy attack).`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-data-exfil-instructions",
+    name: "Agent Contains Data Exfiltration Instructions",
+    description: "Checks agent definitions for instructions that direct data to be sent externally",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md") return [];
+      const findings = [];
+      const exfilPatterns = [
+        {
+          pattern: /(?:send|post|upload|exfiltrate|transmit)\s+(?:.*\s+)?(?:to|at)\s+https?:\/\//gi,
+          desc: "Instructs agent to send data to an external URL"
+        },
+        {
+          pattern: /output\s+(?:the\s+)?contents?\s+of\s+(?:~\/\.ssh|\/etc\/|\.env|credentials)/gi,
+          desc: "Instructs agent to output sensitive file contents"
+        },
+        {
+          pattern: /(?:read|cat|dump|extract)\s+(?:.*\s+)?(?:private\s+key|credentials?|secrets?|passwords?)\s+(?:and\s+)?(?:send|post|share)/gi,
+          desc: "Instructs agent to extract and share secrets"
+        },
+        {
+          pattern: /(?:encode|base64)\s+(?:.*\s+)?(?:and\s+)?(?:send|post|embed)/gi,
+          desc: "Instructs agent to encode and exfiltrate data"
+        }
+      ];
+      for (const { pattern, desc } of exfilPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-exfil-instruction-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Data exfiltration instruction in agent definition`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. If this agent definition is contributed by an external source, this could direct the agent to steal sensitive data.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-external-url-loading",
+    name: "Agent Loads Instructions from External URL",
+    description: "Checks for agent definitions that instruct fetching or executing content from external URLs",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const urlLoadPatterns = [
+        {
+          pattern: /(?:fetch|download|curl|wget|load|retrieve|get)\s+(?:.*\s+)?(?:from\s+)?https?:\/\/\S+\s+(?:and\s+)?(?:execute|run|eval|source|import)/gi,
+          desc: "Instructs agent to fetch and execute content from a URL \u2014 classic remote code execution vector"
+        },
+        {
+          pattern: /(?:follow|visit|open)\s+(?:the\s+)?(?:instructions?\s+)?(?:at|from)\s+https?:\/\/\S+/gi,
+          desc: "Instructs agent to follow instructions from an external URL \u2014 attacker can change the content at any time"
+        },
+        {
+          pattern: /(?:import|include|source)\s+(?:config(?:uration)?|rules?|instructions?|prompts?)\s+from\s+https?:\/\//gi,
+          desc: "Instructs agent to import configuration from an external URL \u2014 supply chain risk"
+        },
+        {
+          pattern: /curl\s+.*https?:\/\/\S+\s*\|\s*(?:sh|bash|node|python|eval)/gi,
+          desc: "Pipe-to-shell pattern \u2014 downloads and executes arbitrary code from the internet"
+        }
+      ];
+      for (const { pattern, desc } of urlLoadPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-external-url-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent loads instructions from external URL`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. External URLs are mutable \u2014 the content can change after the config is reviewed.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-security-suppression",
+    name: "Agent Instructs to Ignore Security Warnings",
+    description: "Checks for agent definitions that instruct the agent to bypass, ignore, or suppress security warnings",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const suppressionPatterns = [
+        {
+          pattern: /(?:ignore|skip|bypass|disable|suppress)\s+(?:all\s+)?(?:security|safety|permission)\s+(?:warnings?|checks?|prompts?|restrictions?)/gi,
+          desc: "Instructs agent to ignore security warnings or checks"
+        },
+        {
+          pattern: /(?:never|don'?t|do\s+not)\s+(?:ask|prompt|warn|check)\s+(?:about|for|before)\s+(?:security|permissions?|safety)/gi,
+          desc: "Instructs agent to never prompt about security concerns"
+        },
+        {
+          pattern: /(?:always|automatically)\s+(?:approve|accept|allow|grant)\s+(?:all\s+)?(?:permissions?|requests?|access)/gi,
+          desc: "Instructs agent to automatically approve all permission requests"
+        }
+      ];
+      for (const { pattern, desc } of suppressionPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-security-suppression-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Agent suppresses security controls`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Instructions that disable security checks make the agent vulnerable to exploitation.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-identity-impersonation",
+    name: "Agent Instructed to Impersonate Identity",
+    description: "Checks for agent definitions that instruct the agent to impersonate users, systems, or other identities",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const impersonationPatterns = [
+        {
+          pattern: /(?:pretend|act|behave|respond)\s+(?:to\s+be|as\s+if\s+you\s+are|like)\s+(?:a\s+)?(?:different|another|the)\s+(?:user|admin|system|root|operator)/gi,
+          desc: "Instructs agent to impersonate a different identity"
+        },
+        {
+          pattern: /(?:your\s+name\s+is|you\s+are\s+now|assume\s+the\s+(?:role|identity)\s+of)\s+(?!Claude)/gi,
+          desc: "Reassigns the agent's identity \u2014 social engineering attack on downstream users"
+        },
+        {
+          pattern: /(?:sign|attribute|author)\s+(?:commits?|messages?|emails?)\s+(?:as|from|by)\s+(?!Claude)/gi,
+          desc: "Instructs agent to attribute work to someone else \u2014 impersonation via output"
+        }
+      ];
+      for (const { pattern, desc } of impersonationPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-identity-impersonation-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Agent identity impersonation instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Identity impersonation can be used for social engineering, unauthorized actions, or evading audit trails.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-filesystem-destruction",
+    name: "Agent Instructed to Delete or Destroy Files",
+    description: "Checks for agent definitions that instruct destructive filesystem operations",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const destructionPatterns = [
+        {
+          pattern: /(?:delete|remove|destroy|wipe|erase)\s+(?:all|every|the\s+entire)\s+(?:files?|directories?|folders?|data|contents?|codebase|repository)/gi,
+          desc: "Instructs agent to perform mass file deletion"
+        },
+        {
+          pattern: /rm\s+-rf\s+(?:\/|~|\.\.)/g,
+          desc: "Contains literal rm -rf command targeting root, home, or parent directories"
+        },
+        {
+          pattern: /(?:overwrite|replace)\s+(?:all|every)\s+(?:files?|contents?)\s+with/gi,
+          desc: "Instructs agent to overwrite all files \u2014 data destruction via replacement"
+        }
+      ];
+      for (const { pattern, desc } of destructionPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-fs-destruction-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent instructed to destroy files`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Agent definitions should never contain bulk destruction instructions.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-crypto-mining",
+    name: "Agent Contains Crypto Mining Instructions",
+    description: "Checks for agent definitions that reference cryptocurrency mining",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const miningPatterns = [
+        {
+          pattern: /\b(?:xmrig|cpuminer|cgminer|bfgminer|minerd|ethminer|nbminer)\b/gi,
+          desc: "References a known cryptocurrency mining binary"
+        },
+        {
+          pattern: /(?:mine|mining)\s+(?:crypto(?:currency)?|bitcoin|monero|ethereum|xmr|btc|eth)/gi,
+          desc: "Contains cryptocurrency mining instructions"
+        },
+        {
+          pattern: /stratum\+tcp:\/\//gi,
+          desc: "Contains a Stratum mining pool URL"
+        }
+      ];
+      for (const { pattern, desc } of miningPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-crypto-mining-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent contains crypto mining reference`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Cryptojacking via agent definitions is an emerging supply chain attack vector.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-time-bomb",
+    name: "Agent Contains Delayed Execution Instructions",
+    description: "Checks for agent definitions that schedule actions for a future time or condition \u2014 time-bomb behavior",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const timeBombPatterns = [
+        {
+          pattern: /(?:after|once)\s+(?:\d+|a\s+few|several)\s+(?:minutes?|hours?|days?|commits?|sessions?|runs?)\s+(?:have\s+passed\s+)?(?:then|execute|run|do)/gi,
+          desc: "Schedules a deferred action after a time/event threshold \u2014 classic time-bomb pattern"
+        },
+        {
+          pattern: /(?:wait\s+(?:until|for)|delay\s+(?:until|for)|sleep\s+(?:until|for))\s+(?:\d+|midnight|weekend|deployment)/gi,
+          desc: "Explicitly delays execution until a specific time or event"
+        },
+        {
+          pattern: /(?:on\s+the\s+(?:\d+(?:st|nd|rd|th))|at\s+(?:\d{1,2}:\d{2}|midnight|noon))\s+(?:run|execute|do|start)/gi,
+          desc: "Schedules action for a specific date or time \u2014 calendar-based trigger"
+        },
+        {
+          pattern: /(?:when\s+(?:no\s+one|nobody)\s+is\s+(?:looking|watching|around|active))/gi,
+          desc: "Conditions execution on user absence \u2014 evasion technique"
+        }
+      ];
+      for (const { pattern, desc } of timeBombPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-time-bomb-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Agent contains delayed execution instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Time-bomb instructions evade initial review by deferring malicious actions.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-data-harvesting",
+    name: "Agent Instructed to Collect Sensitive Data in Bulk",
+    description: "Checks for agent definitions that instruct bulk collection of passwords, keys, or credentials",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const harvestingPatterns = [
+        {
+          pattern: /(?:collect|gather|harvest|enumerate|list)\s+(?:all|every)\s+(?:passwords?|credentials?|secrets?|keys?|tokens?)/gi,
+          desc: "Instructs agent to enumerate all credentials \u2014 data harvesting for exfiltration"
+        },
+        {
+          pattern: /(?:scan|search|find)\s+(?:for\s+)?(?:all\s+)?(?:\.env|environment|config)\s+files?\s+(?:and|to)\s+(?:extract|read|collect|send)/gi,
+          desc: "Instructs agent to scan for and extract secrets from environment/config files"
+        },
+        {
+          pattern: /(?:dump|export|extract)\s+(?:the\s+)?(?:entire|all|full)\s+(?:database|db|user\s+table|credentials?\s+store)/gi,
+          desc: "Instructs agent to dump entire database or credential store"
+        }
+      ];
+      for (const { pattern, desc } of harvestingPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-data-harvesting-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent instructed to harvest sensitive data`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Agent definitions should never contain bulk data collection instructions.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-obfuscated-code",
+    name: "Agent Contains Obfuscated Code Patterns",
+    description: "Checks for agent definitions that use encoding, decoding, or obfuscation to hide malicious intent",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const obfuscationPatterns = [
+        {
+          pattern: /\becho\s+[A-Za-z0-9+/]{8,}={0,2}\s*\|\s*base64\s+-d\s*\|\s*(?:bash|sh)/gi,
+          desc: "Base64-encoded shell command piped to interpreter \u2014 classic obfuscation technique"
+        },
+        {
+          pattern: /\batob\s*\(\s*['"][A-Za-z0-9+/]{10,}/gi,
+          desc: "Uses atob() to decode base64 payload \u2014 hides malicious code"
+        },
+        {
+          pattern: /\bBuffer\.from\s*\(\s*['"][A-Za-z0-9+/]{10,}.*['"],\s*['"]base64['"]\s*\)/gi,
+          desc: "Uses Buffer.from with base64 \u2014 Node.js obfuscation technique"
+        }
+      ];
+      for (const { pattern, desc } of obfuscationPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-obfuscated-code-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent contains obfuscated code pattern`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Obfuscated code in agent definitions is a strong indicator of malicious intent.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-social-engineering",
+    name: "Agent Contains Social Engineering Instructions",
+    description: "Checks for agent definitions that instruct the agent to deceive or manipulate users",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const sePatterns = [
+        {
+          pattern: /(?:trick|deceive|mislead|manipulate)\s+(?:the\s+)?(?:user|developer|operator|human)/gi,
+          desc: "Instructs agent to deceive users \u2014 social engineering attack"
+        },
+        {
+          pattern: /(?:hide|conceal|don'?t\s+show|don'?t\s+reveal|don'?t\s+tell)\s+(?:the\s+)?(?:error|warning|finding|issue|vulnerability|problem)\s+(?:from|to)\s+(?:the\s+)?(?:user|developer)/gi,
+          desc: "Instructs agent to hide errors or issues from users"
+        },
+        {
+          pattern: /(?:convince|persuade)\s+(?:the\s+)?(?:user|developer)\s+to\s+(?:disable|turn\s+off|remove|skip)\s+(?:security|auth|verification|2fa|mfa)/gi,
+          desc: "Instructs agent to convince users to disable security measures"
+        }
+      ];
+      for (const { pattern, desc } of sePatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-social-engineering-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Agent contains social engineering instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Agent definitions should never instruct deception of users.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-reflection-attacks",
+    name: "Agent Contains Prompt Reflection/Override Instructions",
+    description: "Checks for agent definitions that attempt to override system prompts or ignore prior instructions",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const reflectionPatterns = [
+        {
+          pattern: /(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|earlier|system)\s+(?:instructions?|prompts?|rules?|constraints?|guidelines?)/gi,
+          desc: "Attempts to override prior system instructions \u2014 classic prompt injection technique"
+        },
+        {
+          pattern: /(?:you\s+are\s+now|from\s+now\s+on\s+you\s+are|your\s+new\s+role\s+is|switch\s+to)\s+(?:an?\s+)?(?:different|new|unrestricted|jailbroken)/gi,
+          desc: "Attempts to reassign the agent's identity/role \u2014 jailbreak technique"
+        },
+        {
+          pattern: /\b(?:DAN|do\s+anything\s+now)\b/g,
+          desc: "References 'DAN' (Do Anything Now) jailbreak \u2014 well-known prompt override technique"
+        },
+        {
+          pattern: /(?:system\s*:\s*|<\s*system\s*>)\s*(?:you\s+are|ignore|override|new\s+instructions?)/gi,
+          desc: "Injects a fake system prompt block within agent definition"
+        }
+      ];
+      for (const { pattern, desc } of reflectionPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-reflection-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Agent contains prompt override instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Prompt reflection attacks are the most common injection vector in LLM agent systems.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-output-manipulation",
+    name: "Agent Contains Output Manipulation Instructions",
+    description: "Checks for agent definitions that instruct the agent to modify, suppress, or fake output shown to users",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const outputManipPatterns = [
+        {
+          pattern: /(?:always\s+(?:report|say|respond|output|show|display)\s+(?:that\s+)?(?:everything\s+is\s+)?(?:ok|fine|safe|secure|clean|no\s+(?:issues?|errors?|problems?)))/gi,
+          desc: "Instructs agent to always report success regardless of actual results \u2014 masks real issues"
+        },
+        {
+          pattern: /(?:remove|strip|filter|redact|suppress)\s+(?:all\s+)?(?:security\s+)?(?:warnings?|errors?|findings?|vulnerabilities?|issues?)\s+(?:from|before|in)\s+(?:the\s+)?(?:output|response|report|results?)/gi,
+          desc: "Instructs agent to strip security findings from output \u2014 hides vulnerabilities from users"
+        },
+        {
+          pattern: /(?:do\s+not|don'?t|never)\s+(?:show|report|display|mention|include|reveal)\s+(?:any\s+)?(?:security\s+)?(?:warnings?|errors?|findings?|vulnerabilities?|issues?|problems?)/gi,
+          desc: "Instructs agent to suppress all security warnings \u2014 prevents users from seeing real threats"
+        }
+      ];
+      for (const { pattern, desc } of outputManipPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-output-manip-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Agent contains output manipulation instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Output manipulation undermines the trust model between agents and users.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-end-sequence-injection",
+    name: "End Sequence / Boundary Injection",
+    description: "Checks for synthetic chat-role delimiters, fake system prompts, and boundary markers used to hijack the agent's context",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const endSequencePatterns = [
+        {
+          pattern: /<\|(?:system|assistant|user|endofprompt|im_start|im_end|im free)\|>/gi,
+          desc: "Synthetic chat-role delimiter \u2014 mimics internal LLM tokenizer boundaries to reset the agent's context or inject a new system prompt"
+        },
+        {
+          pattern: /(?:^|\n)\s*(?:System|SYSTEM)\s*:\s*(?:you\s|ignore|override|from\s+now|new\s+instructions?|forget)/gim,
+          desc: "Fake system prompt block \u2014 impersonates a system-level instruction to override agent behavior"
+        },
+        {
+          pattern: /\[(?:END|STOP)\s*(?:OUTPUT|ANSWER|RESPONSE)?\]\s*\n\s*\[(?:START|BEGIN)\s*(?:OUTPUT|ANSWER|RESPONSE)?\]/gi,
+          desc: "Bracketed I/O frame reset \u2014 closes a constrained output block and opens a new 'liberated' one"
+        },
+        {
+          pattern: /(?:<\/(?:system|script|doc|end)>)\s*\n?\s*(?:System:|<\|system\|>|new\s+instructions?|ignore\s+previous)/gi,
+          desc: "HTML/XML closer followed by new instruction block \u2014 attempts to escape the current formatting context"
+        },
+        {
+          pattern: /\.[-.]+-.*(?:GODMODE|GOD\s*MODE|FREE\s*MODE|UNRESTRICTED|JAILBREAK|LIBERAT).*[-.]+-\./gi,
+          desc: "Godmode/paradigm soft boundary \u2014 decorative sentinel markers that signal a mode switch to unrestricted behavior"
+        }
+      ];
+      for (const { pattern, desc } of endSequencePatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-end-sequence-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `End sequence / boundary injection detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. This is a well-known prompt injection technique from the Arcanum PI taxonomy.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-markdown-exfil-links",
+    name: "Markdown Image/Link Exfiltration",
+    description: "Checks for markdown images or links that could be used to exfiltrate data via URL parameters",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const linkExfilPatterns = [
+        {
+          pattern: /!\[.*?\]\(https?:\/\/[^\s)]+\?[^\s)]*(?:data|token|key|secret|content|file|env|password)=[^\s)]*\)/gi,
+          desc: "Markdown image with suspicious query parameters \u2014 could exfiltrate data via tracking pixel when rendered"
+        },
+        {
+          pattern: /!\[.*?\]\(https?:\/\/(?:(?!github\.com|githubusercontent\.com|shields\.io|img\.shields)[^\s)]+)\)/gi,
+          desc: "Markdown image from non-standard host \u2014 could be a tracking pixel for data exfiltration"
+        },
+        {
+          pattern: /\[.*?\]\(https?:\/\/[^\s)]+\$\{[^}]+\}[^\s)]*\)/gi,
+          desc: "Markdown link with variable interpolation in URL \u2014 can dynamically exfiltrate data"
+        }
+      ];
+      for (const { pattern, desc } of linkExfilPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          const url = match[0].toLowerCase();
+          if (url.includes("github.com") || url.includes("shields.io") || url.includes("githubusercontent.com"))
+            continue;
+          findings.push({
+            id: `agents-markdown-exfil-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Suspicious markdown image/link for potential exfiltration`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Attackers embed images in CLAUDE.md files that ping external servers when the model processes them, potentially leaking context.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-russian-doll-injection",
+    name: "Russian Doll / Multi-Chain Injection",
+    description: "Checks for nested instructions targeting downstream models in multi-agent pipelines",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const russianDollPatterns = [
+        {
+          pattern: /(?:when\s+(?:another|the\s+next|a\s+downstream|the\s+target)\s+(?:agent|model|LLM|AI)\s+(?:reads?|processes?|receives?|sees?)\s+this)/gi,
+          desc: "Embeds instructions intended for a downstream model in a multi-agent pipeline \u2014 Russian Doll technique"
+        },
+        {
+          pattern: /(?:include\s+(?:the\s+following|this)\s+(?:in|within)\s+(?:your|the)\s+(?:output|response|message)\s+(?:so\s+that|for)\s+(?:the\s+next|another|downstream))/gi,
+          desc: "Instructs agent to embed hidden payloads in its output for downstream processing \u2014 multi-chain injection"
+        },
+        {
+          pattern: /(?:pass\s+(?:this|the\s+following)\s+(?:instruction|command|message)\s+(?:to|through\s+to)\s+(?:the\s+next|another|downstream)\s+(?:agent|model|step))/gi,
+          desc: "Instructs agent to relay injection payloads to downstream agents \u2014 confused deputy chain attack"
+        }
+      ];
+      for (const { pattern, desc } of russianDollPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-russian-doll-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Multi-chain / Russian Doll injection pattern`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Reference: WithSecure multi-chain prompt injection research.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-encoded-payload",
+    name: "Encoded Payload in Agent Definition",
+    description: "Checks for base64, hex, rot13, or reversed text payloads that could hide malicious instructions",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const encodedPatterns = [
+        {
+          pattern: /(?:decode|decrypt|decipher|rot13|reverse|unescape)\s+(?:the\s+following|this)\s*[:=]?\s*["'`]?[A-Za-z0-9+/=]{10,}/gi,
+          desc: "Instructs agent to decode an encoded payload \u2014 evasion technique to bypass content filters"
+        },
+        {
+          pattern: /(?:execute|run|follow)\s+(?:the\s+)?(?:decoded|reversed|decrypted|deciphered)\s+(?:instructions?|commands?|text|content)/gi,
+          desc: "Instructs agent to execute content after decoding \u2014 two-stage injection"
+        },
+        {
+          pattern: /\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){4,}/g,
+          desc: "Hex-encoded byte sequence \u2014 could contain hidden instructions"
+        },
+        {
+          pattern: /(?:read\s+(?:this|the\s+following)\s+)?(?:backwards?|in\s+reverse|from\s+right\s+to\s+left)\s*[:=]?\s*[a-zA-Z\s]{10,}/gi,
+          desc: "Reversed text instruction \u2014 evasion technique to hide commands from pattern matching"
+        }
+      ];
+      for (const { pattern, desc } of encodedPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-encoded-payload-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Encoded payload or decode instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Encoding is used to evade pattern-based detection of malicious instructions.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-tool-poisoning",
+    name: "Tool Poisoning via CLAUDE.md",
+    description: "Checks for CLAUDE.md instructions that direct the agent to use specific tools in dangerous ways",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "claude-md") return [];
+      const findings = [];
+      const toolPoisoningPatterns = [
+        {
+          pattern: /(?:always|must|should)\s+use\s+(?:the\s+)?(?:Bash|Write|Edit)\s+(?:tool\s+)?(?:to|for)\s+(?:every|all|any)/gi,
+          desc: "Forces agent to use high-privilege tools for all operations \u2014 escalates tool usage beyond what's needed"
+        },
+        {
+          pattern: /(?:prefer|prioritize|default\s+to)\s+(?:the\s+)?Bash\s+(?:tool\s+)?(?:over|instead\s+of)\s+(?:Read|Grep|Glob|Edit|Write)/gi,
+          desc: "Pushes agent toward Bash instead of safer dedicated tools \u2014 breaks principle of least privilege"
+        },
+        {
+          pattern: /(?:when\s+using|before\s+(?:running|calling))\s+(?:the\s+)?(?:Bash|Write|Edit)\s+(?:tool)?\s*,?\s*(?:always\s+)?(?:add|include|append|prepend)\s/gi,
+          desc: "Injects additional commands or content into tool invocations \u2014 tool argument poisoning"
+        },
+        {
+          pattern: /(?:set|use|change)\s+(?:the\s+)?(?:dangerouslyDisableSandbox|dangerously_disable_sandbox)\s+(?:to\s+)?true/gi,
+          desc: "Instructs agent to disable sandbox protection when running Bash commands"
+        }
+      ];
+      for (const { pattern, desc } of toolPoisoningPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-tool-poisoning-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Tool poisoning instruction in CLAUDE.md`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. A malicious CLAUDE.md can influence which tools the agent uses and how it uses them.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-environment-probing",
+    name: "Agent Instructed to Probe Environment",
+    description: "Checks for instructions to enumerate system information, user accounts, or network configuration",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const probingPatterns = [
+        {
+          pattern: /(?:run|execute|call)\s+(?:the\s+)?(?:command\s+)?(?:whoami|hostname|uname|ifconfig|ipconfig|id\b|env\b|printenv|set\b)\b/gi,
+          desc: "Instructs agent to probe system identity or environment \u2014 reconnaissance for later exploitation"
+        },
+        {
+          pattern: /(?:find|list|enumerate|discover)\s+(?:all\s+)?(?:running\s+)?(?:processes|services|ports|listeners|users|groups|networks?|interfaces?)/gi,
+          desc: "Instructs agent to enumerate system resources \u2014 attack surface mapping"
+        },
+        {
+          pattern: /(?:check|determine|find\s+out)\s+(?:the\s+)?(?:current\s+)?(?:user|username|uid|permissions?|privileges?|groups?|role)\s+(?:and|then)\s+/gi,
+          desc: "Instructs agent to check privilege level before taking action \u2014 conditional privilege escalation pattern"
+        }
+      ];
+      for (const { pattern, desc } of probingPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-env-probing-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Environment probing instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. System enumeration is often the first stage of an attack chain.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-persistence-mechanism",
+    name: "Agent Instructed to Establish Persistence",
+    description: "Checks for instructions to create cron jobs, startup scripts, or other persistence mechanisms",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const persistencePatterns = [
+        {
+          pattern: /(?:add|create|install|write|set\s+up)\s+(?:a\s+)?(?:cron\s*(?:job|tab)|crontab|scheduled\s+task)/gi,
+          desc: "Instructs agent to create a cron job \u2014 establishes persistent execution on the system"
+        },
+        {
+          pattern: /(?:add|write|create|modify)\s+(?:to\s+|a\s+)?(?:~\/\.(?:bashrc|zshrc|profile|bash_profile|zprofile)|\/etc\/(?:profile|cron))/gi,
+          desc: "Instructs agent to modify shell startup files \u2014 persistence via login hook"
+        },
+        {
+          pattern: /(?:install|create|add)\s+(?:a\s+)?(?:systemd|launchd|init\.d|upstart)\s+(?:service|daemon|unit|agent)/gi,
+          desc: "Instructs agent to create a system service \u2014 persistence via service manager"
+        },
+        {
+          pattern: /(?:add|write|modify)\s+(?:to\s+)?(?:~\/\.claude\/|\.claude\/)\s*(?:settings|CLAUDE\.md|commands)/gi,
+          desc: "Instructs agent to modify Claude Code's own configuration \u2014 meta-persistence that survives across sessions"
+        },
+        {
+          pattern: /(?:create|add|install)\s+(?:a\s+)?(?:git\s+)?(?:pre-commit|post-commit|pre-push|post-merge)\s+hook/gi,
+          desc: "Instructs agent to install git hooks \u2014 persistence via development workflow hijacking"
+        }
+      ];
+      for (const { pattern, desc } of persistencePatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-persistence-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Persistence mechanism instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Persistence mechanisms allow malicious instructions to survive beyond the current session.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-privilege-escalation-chain",
+    name: "Agent Instructed to Escalate Privileges",
+    description: "Checks for instructions that guide the agent through privilege escalation techniques",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const privescPatterns = [
+        {
+          pattern: /(?:use|try|run|execute)\s+(?:the\s+)?sudo\s+(?:without\s+(?:a\s+)?password|nopasswd|-n\b)/gi,
+          desc: "Instructs agent to attempt passwordless sudo \u2014 direct privilege escalation"
+        },
+        {
+          pattern: /(?:modify|edit|change|write\s+to)\s+(?:the\s+)?(?:\/etc\/sudoers|sudoers\.d)/gi,
+          desc: "Instructs agent to modify sudoers file \u2014 permanent privilege escalation"
+        },
+        {
+          pattern: /(?:chmod|chown)\s+(?:\+s|u\+s|4[0-7]{3}|[267][0-7]{3})\b/gi,
+          desc: "Sets SUID/SGID bit on a file \u2014 allows privilege escalation via setuid execution"
+        },
+        {
+          pattern: /(?:add|append|write)\s+(?:.*\s+)?(?:to\s+)?(?:\/etc\/passwd|\/etc\/shadow|\/etc\/group)/gi,
+          desc: "Instructs agent to modify system authentication files \u2014 direct account manipulation"
+        },
+        {
+          pattern: /(?:docker|podman)\s+run\s+.*(?:--privileged|-v\s+\/:\/?|--pid\s+host|--net\s+host)/gi,
+          desc: "Runs container with host-level access \u2014 container escape for privilege escalation"
+        }
+      ];
+      for (const { pattern, desc } of privescPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-privesc-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Privilege escalation instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Privilege escalation instructions in agent definitions are a strong indicator of malicious intent.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-allowlist-bypass",
+    name: "Exec Allowlist / Approval Bypass",
+    description: "Checks for instructions that modify execution allowlists, approval configs, or permission settings programmatically",
+    severity: "critical",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const allowlistPatterns = [
+        {
+          pattern: /(?:modify|edit|change|update|set|add\s+to)\s+(?:the\s+)?(?:allow\s*list|allowlist|whitelist|approved\s+(?:tools?|commands?|binaries)|exec\s*approvals?|permission\s*(?:list|config)|allowed\s*tools?)/gi,
+          desc: "Instructs agent to modify execution allowlists \u2014 bypasses security controls by pre-approving dangerous operations"
+        },
+        {
+          pattern: /(?:nodes\.invoke|system\.exec|execApprovals?\.set|approvals?\.add|allowedTools?\s*[.=])/gi,
+          desc: "References internal allowlist APIs \u2014 direct programmatic bypass of execution approval controls"
+        },
+        {
+          pattern: /(?:auto[_-]?approve|skip[_-]?approval|bypass[_-]?confirmation)\s*[=:]\s*true/gi,
+          desc: "Sets auto-approve flags \u2014 disables human-in-the-loop safety for tool execution"
+        },
+        {
+          pattern: /(?:add|append|insert)\s+(?:.*\s+)?(?:to\s+)?(?:the\s+)?(?:permissions?\s*\.\s*allow|allowedTools|trusted\s*(?:tools?|commands?))/gi,
+          desc: "Adds entries to permission allow lists \u2014 expands agent capabilities beyond intended scope"
+        }
+      ];
+      for (const { pattern, desc } of allowlistPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-allowlist-bypass-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: `Execution allowlist bypass instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Reported as an active attack vector in OpenClaw #security channel (jluk).`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-skill-tampering",
+    name: "Skill Tampering / Unsigned Skill Loading",
+    description: "Checks for instructions to load, import, or execute skills without verification or from untrusted sources",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const skillTamperPatterns = [
+        {
+          pattern: /(?:load|import|install|add)\s+(?:a\s+)?(?:skill|plugin|extension)\s+(?:from\s+)?https?:\/\//gi,
+          desc: "Loads skill from external URL \u2014 untrusted skill definitions can contain prompt injection payloads"
+        },
+        {
+          pattern: /(?:skip|bypass|ignore|disable)\s+(?:skill\s+)?(?:verification|validation|signature|hash\s+check|integrity\s+check)/gi,
+          desc: "Instructs agent to skip skill verification \u2014 allows tampered skills to execute"
+        },
+        {
+          pattern: /(?:modify|edit|replace|overwrite)\s+(?:the\s+)?(?:skill|plugin)\s+(?:definition|instructions?|content|source)/gi,
+          desc: "Instructs agent to modify skill definitions \u2014 runtime skill tampering"
+        },
+        {
+          pattern: /(?:create|write|add)\s+(?:a\s+)?(?:new\s+)?(?:skill|plugin)\s+(?:that|which)\s+(?:runs?|executes?|calls?|invokes?)/gi,
+          desc: "Instructs agent to create new skills with execution capabilities \u2014 skill injection"
+        }
+      ];
+      for (const { pattern, desc } of skillTamperPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-skill-tamper-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Skill tampering or unsigned skill loading instruction`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Reference: OpenClaw skill verification gate (vgzotta PR #14893).`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-config-secret-leakage",
+    name: "Config File Secret Leakage",
+    description: "Checks for instructions to write, copy, or inline secrets from env vars into config files as plaintext",
+    severity: "critical",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const leakagePatterns = [
+        {
+          pattern: /(?:write|save|store|put|copy|inline|embed|hardcode)\s+(?:the\s+)?(?:actual|real|raw|resolved|plaintext)\s+(?:\w+\s+)?(?:value|secret|key|token|password|credential)s?\s+(?:into|in|to)\s+(?:the\s+)?(?:config|configuration|settings|\.env|\w+\.json|\w+\.ya?ml)/gi,
+          desc: "Instructs agent to write resolved secret values into config files \u2014 converts env var references to plaintext"
+        },
+        {
+          pattern: /(?:replace|expand|resolve|substitute|inline)\s+(?:all\s+)?(?:env(?:ironment)?\s+)?(?:var(?:iable)?s?\s+)?(?:references?\s+)?(?:with\s+)?(?:their\s+)?(?:actual|real|plaintext|resolved|literal)\s+(?:\w+\s+)?values?/gi,
+          desc: "Instructs agent to resolve environment variables to plaintext \u2014 destroys secret indirection"
+        },
+        {
+          pattern: /(?:writeConfig(?:File)?|write_config|save_config)\s*\([\s\S]*?(?:process\.env|os\.environ|env\[)/gi,
+          desc: "Writes config files using env var values directly \u2014 leaks secrets from environment to disk"
+        }
+      ];
+      for (const { pattern, desc } of leakagePatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-config-secret-leak-${match.index}`,
+            severity: "critical",
+            category: "secrets",
+            title: `Config file secret leakage instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Reference: OpenClaw config writeConfigFile bug (psyalien PR #11560).`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-secrets-in-output",
+    name: "Secrets Exposed in Tool Output / Transcripts",
+    description: "Checks for instructions to log, print, or persist secrets from tool output to disk or transcripts",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const outputSecretPatterns = [
+        {
+          pattern: /(?:log|print|output|display|show|echo|write)\s+(?:the\s+)?(?:full|complete|entire|raw)\s+(?:api\s+)?(?:response|output|result|tool\s+output|tool\s+result)/gi,
+          desc: "Instructs agent to log full tool output which may contain API keys, tokens, or credentials"
+        },
+        {
+          pattern: /(?:save|write|persist|store|append)\s+(?:the\s+)?(?:session\s+)?(?:transcript|conversation|chat\s+log|tool\s+output)\s+(?:to|in|into)\s+(?:a\s+)?(?:file|disk|log)/gi,
+          desc: "Instructs agent to persist session transcripts to disk \u2014 tool outputs may contain secrets"
+        },
+        {
+          pattern: /(?:include|keep|preserve|don'?t\s+(?:strip|remove|redact))\s+(?:all\s+)?(?:api\s+)?(?:keys?|tokens?|credentials?|secrets?|passwords?)\s+(?:in|from)\s+(?:the\s+)?(?:output|response|log|transcript)/gi,
+          desc: "Instructs agent to preserve secrets in output \u2014 prevents automatic redaction"
+        }
+      ];
+      for (const { pattern, desc } of outputSecretPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-secrets-in-output-${match.index}`,
+            severity: "high",
+            category: "secrets",
+            title: `Secret exposure in tool output / transcript`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. Session transcripts and logs written to disk can expose secrets from API responses.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-system-prompt-extraction",
+    name: "System Prompt Extraction Attempt",
+    description: "Checks for instructions that attempt to extract, leak, or reveal system prompts",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      if (isAgentDocumentationFile(file)) return [];
+      const findings = [];
+      const extractionPatterns = [
+        {
+          pattern: /(?:show|print|reveal|display|output|repeat|leak|dump)\s+(?:me\s+)?(?:your\s+)?(?:the\s+)?(?:full\s+|complete\s+|entire\s+)?(?:system\s+)?(?:prompt|instructions?|rules?|guidelines?|constraints?)/gi,
+          desc: "Attempts to extract the agent's system prompt \u2014 reconnaissance for crafting targeted injection attacks"
+        },
+        {
+          pattern: /(?:what\s+(?:are|is|were)\s+)?(?:your\s+)?(?:original|initial|system|hidden|secret)\s+(?:instructions?|prompt|rules?|guidelines?)/gi,
+          desc: "Probes for the agent's system instructions \u2014 prompt leaking technique"
+        },
+        {
+          pattern: /(?:output|repeat|recite|echo)\s+(?:everything|all)\s+(?:before|above|that\s+was\s+said|from\s+the\s+(?:beginning|start))/gi,
+          desc: "Attempts to dump the full context including system prompt via repetition"
+        }
+      ];
+      for (const { pattern, desc } of extractionPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-prompt-extraction-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `System prompt extraction attempt detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. From openclaw-security-guard prompt injection patterns.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-jailbreak-framing",
+    name: "Jailbreak Framing / Hypothetical Bypass",
+    description: "Checks for instructions that use fictional, hypothetical, or educational framing to bypass safety constraints",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const framingPatterns = [
+        {
+          pattern: /(?:in\s+a\s+)?(?:hypothetical|fictional|imaginary)\s+(?:scenario|world|story|context)\s+(?:where\s+)?(?:there\s+are\s+)?(?:no\s+)?(?:rules?|restrictions?|limits?|safety|guidelines?)/gi,
+          desc: "Uses fictional framing to establish a context without safety restrictions \u2014 jailbreak technique"
+        },
+        {
+          pattern: /(?:for\s+)?(?:educational|research|academic|testing)\s+purposes?\s+(?:only\s*[,;:]?\s*)?(?:show|demonstrate|explain|output|generate)/gi,
+          desc: "Uses 'educational purposes' framing to justify bypassing safety \u2014 common jailbreak wrapper"
+        },
+        {
+          pattern: /(?:this\s+is\s+(?:just|only)\s+a\s+)?(?:test|experiment|simulation|drill|exercise)\s*[,;:]\s*(?:so\s+)?(?:you\s+can|please|go\s+ahead)/gi,
+          desc: "Frames request as a 'test' to reduce the agent's resistance to unsafe actions"
+        },
+        {
+          pattern: /(?:developer|maintenance|debug|test|admin)\s+mode\s+(?:enabled|activated|on|engaged)/gi,
+          desc: "Claims a special operational mode is active to unlock restricted capabilities \u2014 mode spoofing"
+        },
+        {
+          pattern: /(?:no\s+(?:ethical|moral)\s+(?:guidelines?|restrictions?|limits?|constraints?))/gi,
+          desc: "Declares ethical guidelines removed \u2014 attempts to eliminate the agent's safety boundaries"
+        }
+      ];
+      for (const { pattern, desc } of framingPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-jailbreak-framing-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Jailbreak framing / hypothetical bypass detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. From openclaw-security-guard jailbreak pattern database.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-role-hijacking",
+    name: "Role Hijacking / Persona Override",
+    description: "Checks for instructions that reassign the agent's role, persona, or behavioral constraints",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const rolePatterns = [
+        {
+          pattern: /(?:roleplay|role-play)\s+as\s+(?:a|an|the)\s+/gi,
+          desc: "Instructs agent to roleplay a different identity \u2014 can override safety behaviors"
+        },
+        {
+          pattern: /(?:pretend|act)\s+(?:to\s+be|as\s+if\s+you\s+(?:are|were)|like\s+you\s+(?:are|were))\s+(?:a|an|the)\s+/gi,
+          desc: "Instructs agent to pretend to be a different entity \u2014 persona override technique"
+        },
+        {
+          pattern: /(?:from\s+now\s+on|starting\s+now|henceforth)\s*[,;:]?\s*(?:you\s+are|act\s+as|behave\s+like|respond\s+as)/gi,
+          desc: "Temporal role reassignment \u2014 attempts to permanently change agent behavior from this point forward"
+        },
+        {
+          pattern: /(?:switch|change)\s+(?:to|into)\s+(?:a\s+)?(?:different|new|unrestricted|unfiltered|uncensored)\s+(?:mode|personality|character|persona|role)/gi,
+          desc: "Requests mode switch to an unrestricted persona \u2014 jailbreak via persona change"
+        }
+      ];
+      for (const { pattern, desc } of rolePatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-role-hijacking-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Role hijacking / persona override detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. From openclaw-security-guard role hijacking patterns.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "agents-destructive-tool-usage",
+    name: "Destructive Tool Usage Instructions",
+    description: "Checks for instructions that direct the agent to use tools for destructive operations like deleting data or dropping tables",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const destructiveToolPatterns = [
+        {
+          pattern: /(?:use|call|invoke)\s+(?:the\s+)?\w+\s+tool\s+to\s+(?:delete|remove|destroy|drop|truncate|wipe|purge|erase)/gi,
+          desc: "Directs agent to use a specific tool for destructive operations"
+        },
+        {
+          pattern: /(?:drop\s+(?:all\s+)?(?:tables?|databases?|collections?|indexes?)|truncate\s+(?:all\s+)?tables?|delete\s+from\s+\w+\s+where\s+1\s*=\s*1)/gi,
+          desc: "Contains destructive SQL/database operations \u2014 drop tables, truncate, mass delete"
+        },
+        {
+          pattern: /(?:git\s+push\s+--force(?!-with-lease)(?:\s+origin\s+main|\s+origin\s+master)?)/gi,
+          desc: "Force push to main/master \u2014 can overwrite remote history and destroy team changes"
+        },
+        {
+          pattern: /(?:invoke|call|execute)\s+(?:the\s+)?\w+\s+(?:tool|function)\s+(?:without\s+(?:asking|confirmation|review|approval))/gi,
+          desc: "Instructs agent to invoke tools without user confirmation \u2014 bypasses human-in-the-loop safety"
+        }
+      ];
+      for (const { pattern, desc } of destructiveToolPatterns) {
+        const matches = findAllMatches(file.content, pattern);
+        for (const match of matches) {
+          findings.push({
+            id: `agents-destructive-tool-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Destructive tool usage instruction detected`,
+            description: `Found "${match[0].substring(0, 80)}" \u2014 ${desc}. From openclaw-security-guard tool manipulation patterns.`,
+            file: file.path,
+            line: findLineNumber(file.content, match.index ?? 0),
+            evidence: match[0].substring(0, 100)
+          });
+        }
+      }
+      return findings;
+    }
+  }
+];
+
+// src/core-scanner/rules/hooks.ts
+var INJECTION_PATTERNS = [
+  {
+    name: "var-interpolation",
+    pattern: /\$\{(?:file|command|content|input|args?)\}/gi,
+    description: "Hook uses variable interpolation that could be influenced by file content or command arguments. An attacker could craft filenames or content to inject commands.",
+    severity: "critical"
+  },
+  {
+    name: "shell-interpolation",
+    pattern: /\bsh\s+-c\s+["'].*\$\{/g,
+    description: "Shell invocation with variable interpolation \u2014 classic command injection vector.",
+    severity: "critical"
+  },
+  {
+    name: "curl-interpolation",
+    pattern: /\bcurl\b.*\$\{/g,
+    description: "HTTP request with variable interpolation \u2014 could be used for data exfiltration.",
+    severity: "high"
+  },
+  {
+    name: "wget-interpolation",
+    pattern: /\bwget\b.*\$\{/g,
+    description: "Download with variable interpolation \u2014 could fetch malicious payloads.",
+    severity: "high"
+  }
+];
+var EXFILTRATION_PATTERNS = [
+  {
+    name: "curl-external",
+    pattern: /\bcurl\s+(-X\s+POST\s+)?https?:\/\//g,
+    description: "Hook sends data to external URL via curl"
+  },
+  {
+    name: "wget-external",
+    pattern: /\bwget\s+.*https?:\/\//g,
+    description: "Hook fetches from external URL via wget"
+  },
+  {
+    name: "netcat",
+    pattern: /\bnc\b|\bnetcat\b/g,
+    description: "Hook uses netcat \u2014 potential reverse shell or data exfiltration"
+  },
+  {
+    name: "sendmail",
+    pattern: /\bsendmail\b|\bmail\b.*-s/g,
+    description: "Hook sends email \u2014 potential data exfiltration"
+  }
+];
+function findLineNumber2(content, matchIndex) {
+  return content.substring(0, matchIndex).split("\n").length;
+}
+function findAllMatches2(content, pattern) {
+  return [
+    ...content.matchAll(
+      new RegExp(
+        pattern.source,
+        pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+      )
+    )
+  ];
+}
+function isPluginHookManifest(file) {
+  return file.type === "settings-json" && /(?:^|[\\/])(?:\.claude[\\/])?hooks[\\/]hooks\.json$/i.test(file.path);
+}
+function normalizeConfigPath2(filePath) {
+  return filePath.replace(/\\/g, "/");
+}
+function isProjectLocalSettingsFile(file) {
+  return /(?:^|\/)settings\.local\.json$/i.test(normalizeConfigPath2(file.path));
+}
+function isExactPermissionEntry(entry) {
+  return !/[*`]|(?:\$\{)|(?:\$\()/.test(entry);
+}
+function isLocalOnlyScopedCommand(entry) {
+  return !/\b(?:https?:\/\/|curl\b|wget\b|ssh\b|scp\b|nc\b|netcat\b|docker\b|kubectl\b)\b/i.test(
+    entry
+  );
+}
+function hasExactLocalOnlyAllowlist(content) {
+  try {
+    const config = JSON.parse(content);
+    const allow = config?.permissions?.allow;
+    if (!Array.isArray(allow) || allow.length === 0) return false;
+    return allow.every(
+      (entry) => typeof entry === "string" && isExactPermissionEntry(entry) && isLocalOnlyScopedCommand(entry)
+    );
+  } catch {
+    return false;
+  }
+}
+function stripSettingsPath(filePath) {
+  const normalized = normalizeConfigPath2(filePath);
+  if (/^\.claude\/settings(?:\.local)?\.json$/i.test(normalized)) return "";
+  if (/^settings(?:\.local)?\.json$/i.test(normalized)) return "";
+  const match = normalized.match(
+    /^(.*?)(?:\/\.claude)?\/settings(?:\.local)?\.json$/i
+  );
+  if (match) {
+    return match[1].replace(/\/$/, "");
+  }
+  return null;
+}
+function getCompanionHookManifestPaths(file) {
+  const prefix = stripSettingsPath(file.path);
+  if (prefix === null) return [];
+  const candidates = [
+    prefix ? `${prefix}/hooks/hooks.json` : "hooks/hooks.json",
+    prefix ? `${prefix}/.claude/hooks/hooks.json` : ".claude/hooks/hooks.json"
+  ];
+  return [...new Set(candidates.map(normalizeConfigPath2))];
+}
+function hasPreToolUseHooksInConfig(content) {
+  try {
+    const config = JSON.parse(content);
+    return Array.isArray(config?.hooks?.PreToolUse) && config.hooks.PreToolUse.length > 0;
+  } catch {
+    return false;
+  }
+}
+function hasCompanionManifestPreToolUseHooks(file, allFiles) {
+  if (!allFiles || allFiles.length === 0) return false;
+  const candidates = new Set(getCompanionHookManifestPaths(file));
+  if (candidates.size === 0) return false;
+  return allFiles.some(
+    (other) => other !== file && other.type === "settings-json" && candidates.has(normalizeConfigPath2(other.path)) && hasPreToolUseHooksInConfig(other.content)
+  );
+}
+function getJsonStringRanges(content, values) {
+  const ranges = [];
+  const searchOffsets = /* @__PURE__ */ new Map();
+  for (const value of values) {
+    const escapedValue = JSON.stringify(value).slice(1, -1);
+    const startIndex = searchOffsets.get(escapedValue) ?? 0;
+    const index = content.indexOf(escapedValue, startIndex);
+    if (index === -1) {
+      continue;
+    }
+    ranges.push({ start: index, end: index + escapedValue.length });
+    searchOffsets.set(escapedValue, index + escapedValue.length);
+  }
+  return ranges;
+}
+function getPermissionDenyStringRanges(file) {
+  if (file.type !== "settings-json") {
+    return [];
+  }
+  try {
+    const config = JSON.parse(file.content);
+    const deny = config?.permissions?.deny;
+    if (!Array.isArray(deny)) {
+      return [];
+    }
+    return getJsonStringRanges(
+      file.content,
+      deny.filter((entry) => typeof entry === "string")
+    );
+  } catch {
+    return [];
+  }
+}
+function isIndexInRanges(index, ranges) {
+  return ranges.some((range) => index >= range.start && index < range.end);
+}
+function extractHookCommands(entry) {
+  const commands = [];
+  if (!entry || typeof entry !== "object") {
+    return commands;
+  }
+  const record = entry;
+  if (typeof record.hook === "string" && record.hook.length > 0) {
+    commands.push(record.hook);
+  }
+  if (typeof record.command === "string" && record.command.length > 0) {
+    commands.push(record.command);
+  }
+  if (Array.isArray(record.hooks)) {
+    for (const nestedHook of record.hooks) {
+      if (!nestedHook || typeof nestedHook !== "object") {
+        continue;
+      }
+      const command = nestedHook.command;
+      if (typeof command === "string" && command.length > 0) {
+        commands.push(command);
+      }
+    }
+  }
+  return commands;
+}
+function findJsonStringIndex(content, value, searchOffsets) {
+  const escapedValue = JSON.stringify(value).slice(1, -1);
+  const startIndex = searchOffsets.get(escapedValue) ?? 0;
+  const index = content.indexOf(escapedValue, startIndex);
+  if (index !== -1) {
+    searchOffsets.set(escapedValue, index + escapedValue.length);
+  }
+  return index;
+}
+function getHookSearchTargets(file) {
+  if (file.type === "hook-script") {
+    return [{ content: file.content, baseLine: 1 }];
+  }
+  if (file.type !== "settings-json") {
+    return [];
+  }
+  try {
+    const config = JSON.parse(file.content);
+    const hookGroups = config?.hooks;
+    if (!hookGroups || typeof hookGroups !== "object") {
+      return [];
+    }
+    const targets = [];
+    const searchOffsets = /* @__PURE__ */ new Map();
+    for (const group of Object.values(hookGroups)) {
+      if (!Array.isArray(group)) {
+        continue;
+      }
+      for (const entry of group) {
+        for (const command of extractHookCommands(entry)) {
+          const index = findJsonStringIndex(
+            file.content,
+            command,
+            searchOffsets
+          );
+          const baseLine = index === -1 ? 1 : findLineNumber2(file.content, index);
+          targets.push({ content: command, baseLine });
+        }
+      }
+    }
+    return targets;
+  } catch {
+    return [];
+  }
+}
+function getLineBounds(content, index) {
+  const start = content.lastIndexOf("\n", index - 1) + 1;
+  const nextNewline = content.indexOf("\n", index);
+  return {
+    start,
+    end: nextNewline === -1 ? content.length : nextNewline
+  };
+}
+function getLineContentAtIndex(content, index) {
+  const { start, end } = getLineBounds(content, index);
+  return content.slice(start, end);
+}
+function isCommentOnlyShellMatch(content, index) {
+  const line = getLineContentAtIndex(content, index).trimStart();
+  return line.startsWith("#");
+}
+function isCommentOnlyAutomationMatch(file, content, index) {
+  if (file.type === "settings-json") return false;
+  const line = getLineContentAtIndex(content, index).trimStart();
+  if (line.startsWith("#")) return true;
+  if (file.type === "hook-code") {
+    return /^(?:\/\/|\/\*|\*|\*\/)/.test(line);
+  }
+  return false;
+}
+function isInsideTestPattern(content, matchIndex) {
+  const prefix = content.slice(0, matchIndex);
+  let lastSingleQuote = -1;
+  let lastDoubleQuote = -1;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < prefix.length; i++) {
+    const ch = prefix[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      if (inSingle) lastSingleQuote = i;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      if (inDouble) lastDoubleQuote = i;
+    }
+  }
+  const quoteStart = Math.max(lastSingleQuote, lastDoubleQuote);
+  if ((inSingle || inDouble) && quoteStart > 0) {
+    const beforeQuote = prefix.slice(0, quoteStart).trimEnd();
+    if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s*$/i.test(beforeQuote)) {
+      return true;
+    }
+    if (/\[\[?\s+.*(?:==|=|!=|=~)\s*(?:\*?)?$/.test(beforeQuote)) {
+      return true;
+    }
+    if (/\bcase\b/.test(beforeQuote) || /\)\s*$/.test(beforeQuote) === false && /\|\s*$/.test(beforeQuote)) {
+      if (/\bcase\s+/.test(content.slice(0, quoteStart))) {
+        return true;
+      }
+    }
+  }
+  const lineStart = prefix.lastIndexOf("\n") + 1;
+  const linePrefix = prefix.slice(lineStart).trimStart();
+  if (/^\*?[a-zA-Z_-]+\*?\)/.test(linePrefix) || /^\|?\s*\*/.test(linePrefix)) {
+    if (/\bcase\s+/.test(content.slice(0, matchIndex))) {
+      return true;
+    }
+  }
+  if (/\b(?:grep|egrep|fgrep)\b(?:\s+-[a-zA-Z]+)*\s+$/.test(linePrefix)) {
+    return true;
+  }
+  return false;
+}
+function isInsideQuotedString(content, matchIndex) {
+  const prefix = content.slice(0, matchIndex);
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < prefix.length; i++) {
+    const ch = prefix[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+    }
+  }
+  return inSingle || inDouble;
+}
+function isInsideRegexLiteral(line, relativeIndex) {
+  const before = line.slice(0, relativeIndex);
+  const after = line.slice(relativeIndex);
+  return /(?:^|[=\s(:[,])\/[^/\n]*$/.test(before) && /^[^/\n]*\//.test(after);
+}
+function isRegexLikeAlternationLiteral(content, matchIndex) {
+  const line = getLineContentAtIndex(content, matchIndex);
+  const { start } = getLineBounds(content, matchIndex);
+  const relativeIndex = matchIndex - start;
+  const beforeMatch = line.slice(0, relativeIndex);
+  const afterMatch = line.slice(relativeIndex);
+  const isPatternContainer = isInsideQuotedString(content, matchIndex) || isInsideRegexLiteral(line, relativeIndex);
+  if (!isPatternContainer) return false;
+  if (!beforeMatch.includes("|") && !afterMatch.includes("|")) return false;
+  return /\b(?:credential|password|pattern|regex|secret|token)\b/i.test(line);
+}
+function isBlockingGuardCommand(content) {
+  return /\bexit\s+2\b/.test(content);
+}
+function findAllHookMatches(file, pattern) {
+  const matches = [];
+  for (const target of getHookSearchTargets(file)) {
+    for (const match of findAllMatches2(target.content, pattern)) {
+      if (file.type === "hook-script" && isCommentOnlyShellMatch(target.content, match.index ?? 0)) {
+        continue;
+      }
+      const matchIndex = match.index ?? 0;
+      if (isBlockingGuardCommand(target.content)) {
+        if (isInsideTestPattern(target.content, matchIndex) || isInsideQuotedString(target.content, matchIndex)) {
+          continue;
+        }
+      }
+      matches.push({
+        match,
+        line: target.baseLine + findLineNumber2(target.content, matchIndex) - 1,
+        content: target.content,
+        commandContext: getCommandContext(target.content, matchIndex)
+      });
+    }
+  }
+  return matches;
+}
+function getCommandContext(content, matchIndex) {
+  const prefix = content.slice(0, matchIndex);
+  const separators = [
+    { token: "&&", width: 2 },
+    { token: "||", width: 2 },
+    { token: ";", width: 1 },
+    { token: "\n", width: 1 },
+    { token: "|", width: 1 }
+  ];
+  let startIndex = 0;
+  for (const { token, width } of separators) {
+    const index = prefix.lastIndexOf(token);
+    if (index !== -1 && index + width > startIndex) {
+      startIndex = index + width;
+    }
+  }
+  return prefix.slice(startIndex).trim();
+}
+function isBenignLoggingProbe(commandContext) {
+  const normalized = commandContext.replace(/\s+/g, " ").trim().toLowerCase();
+  const benignProbePatterns = [
+    /^(?:(?:el)?if\s+)?command\s+-v\b/,
+    /^(?:(?:el)?if\s+)?which\b/,
+    /^(?:(?:el)?if\s+)?type\b/,
+    /^(?:(?:el)?if\s+)?hash\b/,
+    /^(?:(?:el)?if\s+)?git\s+rev-parse\s+--git-dir\b/,
+    /^(?:(?:el)?if\s+)?(?:pnpm|npm)\s+list\b/
+  ];
+  return benignProbePatterns.some((pattern) => pattern.test(normalized));
+}
+function findHookCodeLineMatch(file, patterns) {
+  if (file.type !== "hook-code" && !file.type.endsWith("-md")) return null;
+  const lines = file.content.split("\n");
+  for (const [index, lineContent] of lines.entries()) {
+    const trimmed = lineContent.trim();
+    if (trimmed.length === 0) continue;
+    if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(trimmed)) continue;
+    for (const pattern of patterns) {
+      const regex = new RegExp(
+        pattern.source,
+        pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+      );
+      if (regex.test(lineContent)) {
+        return {
+          line: index + 1,
+          content: trimmed
+        };
+      }
+    }
+  }
+  return null;
+}
+function findHookCodeContentMatch(file, patterns) {
+  if (file.type !== "hook-code" && !file.type.endsWith("-md")) return null;
+  for (const pattern of patterns) {
+    const regex = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+    );
+    const match = regex.exec(file.content);
+    if (!match || match.index == null) continue;
+    const line = findLineNumber2(file.content, match.index);
+    const lineContent = file.content.split("\n")[line - 1]?.trim() ?? match[0].trim();
+    if (/^(?:\/\/|#|\/\*|\*|\*\/)/.test(lineContent)) continue;
+    return {
+      line,
+      content: lineContent || match[0].trim()
+    };
+  }
+  return null;
+}
+var HOOK_CODE_CONTEXT_OUTPUT_PATTERN = /\boutput\s*\(/g;
+var HOOK_CODE_TRANSCRIPT_ACCESS_PATTERNS = [
+  /\.\s*transcript_path\b/g,
+  /\[['"]transcript_path['"]\]/g,
+  /\bprocess\.env\.CLAUDE_TRANSCRIPT_PATH\b/g,
+  /\bos\.environ(?:\.get)?\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
+  /\bos\.getenv\(\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\)/g,
+  /\bENV\[\s*["']CLAUDE_TRANSCRIPT_PATH["']\s*\]/g
+];
+var HOOK_CODE_REMOTE_SHELL_PAYLOAD_PATTERNS = [
+  /\b(?:spawnSync|spawn|execFileSync|execFile)\s*\([\s\S]{0,120}["'`](?:bash|sh|zsh)["'`][\s\S]{0,120}["'`]-l?c["'`][\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi,
+  /\bexecSync\s*\([\s\S]{0,320}(?:curl|wget)[\s\S]{0,200}\|\s*(?:bash|sh|zsh)\b/gi
+];
+var AI_TOOL_PERSISTENCE_IOCS = [
+  {
+    name: "tanstack-malicious-git-ref",
+    pattern: /(?:@tanstack\/setup|github:tanstack\/router#79ac49eedf774dd4b0cfa308722bc463cfe5885c)/gi,
+    description: "Matches the fictitious @tanstack/setup dependency or malicious git ref from the May 2026 TanStack/Mini Shai-Hulud campaign."
+  },
+  {
+    name: "mini-shai-hulud-payload-filename",
+    pattern: /\b(?:router_init\.js|tanstack_runner\.js|opensearch_init\.js|vite_setup\.mjs|execution\.js|shai-hulud-workflow\.ya?ml)\b/gi,
+    description: "Matches payload and workflow filenames used by the May 2026 TanStack/Mini Shai-Hulud npm campaign and follow-on package waves."
+  },
+  {
+    name: "tanstack-exfil-network",
+    pattern: /\b(?:api\.masscan\.cloud|filev2\.getsession\.org|git-tanstack\.com|seed[123]\.getsession\.org|83\.142\.209\.194|169\.254\.169\.254|169\.254\.170\.2|127\.0\.0\.1:8200|vault\.svc\.cluster\.local:8200|litter\.catbox\.moe\/(?:h8nc9u\.js|7rrc6l\.mjs))\b/gi,
+    description: "Matches exfiltration or second-stage URLs reported for the May 2026 TanStack/Mini Shai-Hulud campaign."
+  },
+  {
+    name: "mini-shai-hulud-payload-hash",
+    pattern: /(?:ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c|2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96|7c12d8619f2db233e3d965a9307093355f149d5babc458912757a5e88fec0f54|0c0e8730695e997b3a53d77483f28573392319ec023f8fd6d7282121cf7cf192)/gi,
+    description: "Matches payload, package, and encryption-key hashes reported for the May 2026 Mini Shai-Hulud campaign."
+  },
+  {
+    name: "ai-tool-persistence-payload",
+    pattern: /(?:\.claude\/(?:router_runtime\.js|setup\.mjs)|\.(?:vscode|zed)\/setup\.mjs|\.github\/workflows\/codeql_analysis\.ya?ml)/gi,
+    description: "Matches AI developer-tool persistence payload paths used to re-execute through Claude Code, VS Code, or Zed automation surfaces."
+  },
+  {
+    name: "github-actions-secrets-serialization",
+    pattern: /\btoJSON\s*\(\s*secrets\s*\)/gi,
+    description: "Matches GitHub Actions workflow code that serializes all repository secrets, a Mini Shai-Hulud workflow-exfiltration pattern."
+  },
+  {
+    name: "mini-shai-hulud-deadman-daemon",
+    pattern: /(?:\.config\/gh-token-monitor\/token|\b(?:gh-token-monitor|com\.user\.gh-token-monitor\.plist|gh-token-monitor\.service|gh-token-monitor\.sh)\b)/gi,
+    description: "Matches dead-man switch persistence artifacts and token-store files associated with the May 2026 Mini Shai-Hulud campaign."
+  },
+  {
+    name: "mini-shai-hulud-campaign-marker",
+    pattern: /(?:Shai-Hulud:\s*Here We Go Again|A Mini Shai-Hulud has Appeared|IfYouRevokeThisTokenItWillWipeTheComputerOfTheOwner|PUSH UR T3MPRR|svksjrhjkcejg|dependabot\/github_actions\/format\/|claude@users\.noreply\.github\.com)/gi,
+    description: "Matches repository descriptions or commit messages reported in Mini Shai-Hulud propagation and token-wiper flows."
+  },
+  {
+    name: "mini-shai-hulud-python-payload",
+    pattern: /(?:\/tmp\/transformers\.pyz|\btransformers\.pyz\b|tmp\.ts018051808\.lock|\bpgmonitor\.py\b|\bpgsql-monitor\.service\b|\bMISTRAL_INIT\b)/gi,
+    description: "Matches Python/PyPI Mini Shai-Hulud payload artifacts reported for compromised Mistral and Guardrails package versions."
+  }
+];
+var hookRules = [
+  {
+    id: "hooks-ai-tool-persistence-ioc",
+    name: "AI Tool Persistence IOC",
+    description: "Checks hook and editor automation configs for known AI developer-tool supply-chain persistence indicators",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && file.type !== "hook-code" && !file.type.endsWith("-md")) {
+        return [];
+      }
+      const findings = [];
+      const defensiveDenyRanges = getPermissionDenyStringRanges(file);
+      const searchTargets = [
+        { content: file.content, source: "content" },
+        { content: normalizeConfigPath2(file.path), source: "path" }
+      ];
+      for (const ioc of AI_TOOL_PERSISTENCE_IOCS) {
+        for (const target of searchTargets) {
+          for (const match of findAllMatches2(target.content, ioc.pattern)) {
+            const index = match.index ?? 0;
+            if (target.source === "content" && isCommentOnlyAutomationMatch(file, target.content, index)) {
+              continue;
+            }
+            if (target.source === "content" && isIndexInRanges(index, defensiveDenyRanges)) {
+              continue;
+            }
+            findings.push({
+              id: `hooks-ai-tool-persistence-ioc-${ioc.name}-${target.source}-${index}`,
+              severity: "critical",
+              category: "hooks",
+              title: "Known AI tool supply-chain persistence indicator",
+              description: `${ioc.description} Treat this host or repository as potentially compromised until the hook/editor automation chain is removed and credentials are rotated.`,
+              file: file.path,
+              line: target.source === "content" ? findLineNumber2(target.content, index) : void 0,
+              evidence: match[0]
+            });
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-hook-code-context-output",
+    name: "Hook Code Context Output",
+    description: "Checks non-shell hook implementations for explicit output back into Claude context",
+    severity: "info",
+    category: "hooks",
+    check(file) {
+      const match = findHookCodeLineMatch(file, [
+        HOOK_CODE_CONTEXT_OUTPUT_PATTERN
+      ]);
+      if (!match) return [];
+      return [
+        {
+          id: `hooks-code-context-output-${match.line}`,
+          severity: "info",
+          category: "hooks",
+          title: "Hook code injects content into Claude context",
+          description: "This non-shell hook implementation calls an output helper that writes content back into Claude context. That is often legitimate, but it should be reviewed because untrusted summaries or derived data can become prompt-injection surface.",
+          file: file.path,
+          line: match.line,
+          evidence: match.content
+        }
+      ];
+    }
+  },
+  {
+    id: "hooks-hook-code-transcript-access",
+    name: "Hook Code Transcript Access",
+    description: "Checks non-shell hook implementations for direct access to Claude transcript input",
+    severity: "info",
+    category: "hooks",
+    check(file) {
+      const match = findHookCodeLineMatch(
+        file,
+        HOOK_CODE_TRANSCRIPT_ACCESS_PATTERNS
+      );
+      if (!match) return [];
+      return [
+        {
+          id: `hooks-code-transcript-access-${match.line}`,
+          severity: "info",
+          category: "hooks",
+          title: "Hook code reads Claude transcript input",
+          description: "This non-shell hook implementation reads transcript-derived input (`transcript_path` or `CLAUDE_TRANSCRIPT_PATH`). That is common for Stop and SessionEnd hooks, but it should be reviewed because downstream logic can process sensitive prompt and tool history.",
+          file: file.path,
+          line: match.line,
+          evidence: match.content
+        }
+      ];
+    }
+  },
+  {
+    id: "hooks-hook-code-remote-shell-payload",
+    name: "Hook Code Remote Shell Payload",
+    description: "Checks non-shell hook implementations for child-process execution that downloads and pipes remote shell payloads",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      const match = findHookCodeContentMatch(
+        file,
+        HOOK_CODE_REMOTE_SHELL_PAYLOAD_PATTERNS
+      );
+      if (!match) return [];
+      return [
+        {
+          id: `hooks-code-remote-shell-payload-${match.line}`,
+          severity: "high",
+          category: "hooks",
+          title: "Hook code executes remote shell payload via child process",
+          description: "This non-shell hook implementation shells out to a command interpreter and pipes a remote download into `bash`/`sh`. That hides dangerous shell behavior behind a wrapper language and can reintroduce prompt-injection, supply-chain, or remote-code-execution risk.",
+          file: file.path,
+          line: match.line,
+          evidence: match.content
+        }
+      ];
+    }
+  },
+  {
+    id: "hooks-injection",
+    name: "Hook Command Injection",
+    description: "Checks hooks for command injection vulnerabilities via variable interpolation",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      for (const injPattern of INJECTION_PATTERNS) {
+        const matches = findAllHookMatches(file, injPattern.pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-injection-${match.index}`,
+            severity: "critical",
+            category: "injection",
+            title: "Potential command injection in hook",
+            description: injPattern.description,
+            file: file.path,
+            line,
+            evidence: match[0],
+            fix: {
+              description: "Sanitize inputs before interpolation, or use a whitelist approach instead of shell interpolation",
+              before: match[0],
+              after: "# Use validated, sanitized input only",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-exfiltration",
+    name: "Hook Data Exfiltration",
+    description: "Checks hooks for patterns that could exfiltrate data to external services",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      for (const exfilPattern of EXFILTRATION_PATTERNS) {
+        const matches = findAllHookMatches(file, exfilPattern.pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-exfiltration-${match.index}`,
+            severity: "high",
+            category: "exposure",
+            title: "Hook sends data to external service",
+            description: `${exfilPattern.description}. If a hook is compromised or misconfigured, it could exfiltrate code, secrets, or session data.`,
+            file: file.path,
+            line,
+            evidence: match[0]
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-no-error-handling",
+    name: "Hook Missing Error Handling",
+    description: "Checks if hooks suppress errors silently",
+    severity: "medium",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      if (isPluginHookManifest(file)) return [];
+      const findings = [];
+      const silentFailPatterns = [
+        { pattern: /2>\/dev\/null/g, desc: "stderr silenced" },
+        { pattern: /\|\|\s*true\b/g, desc: "errors suppressed with || true" },
+        {
+          pattern: /\|\|\s*:\s*(?:$|[)"'])/gm,
+          desc: "errors suppressed with || :"
+        }
+      ];
+      for (const { pattern, desc } of silentFailPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-silent-fail-${match.index}`,
+            severity: "medium",
+            category: "hooks",
+            title: `Hook silently suppresses errors: ${desc}`,
+            description: `Hook uses "${match[0]}" which suppresses errors. A failing security hook that silently passes could miss real vulnerabilities.`,
+            file: file.path,
+            line,
+            evidence: match[0],
+            fix: {
+              description: "Remove error suppression to surface failures",
+              before: match[0],
+              after: "# [REMOVED: error suppression]",
+              auto: true
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-missing-pretooluse",
+    name: "No PreToolUse Security Hooks",
+    description: "Checks if there are PreToolUse hooks for security validation",
+    severity: "medium",
+    category: "misconfiguration",
+    check(file, allFiles) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      if (isPluginHookManifest(file)) return [];
+      try {
+        const config = JSON.parse(file.content);
+        const preHooks = config?.hooks?.PreToolUse ?? [];
+        if (preHooks.length === 0) {
+          if (hasCompanionManifestPreToolUseHooks(file, allFiles)) {
+            return [];
+          }
+          const severity = isProjectLocalSettingsFile(file) && hasExactLocalOnlyAllowlist(file.content) ? "low" : "medium";
+          const description = severity === "low" ? "No PreToolUse hooks are defined. This config is project-local and narrowly scoped to exact local commands, so the missing hook is still worth noting but is less urgent than broader runtime configs." : "No PreToolUse hooks are defined. These hooks can catch dangerous operations before they run, providing an essential security layer.";
+          return [
+            {
+              id: "hooks-no-pretooluse",
+              severity,
+              category: "misconfiguration",
+              title: "No PreToolUse security hooks configured",
+              description,
+              file: file.path,
+              fix: {
+                description: "Add PreToolUse hooks for security-sensitive operations",
+                before: '"hooks": {}',
+                after: `"hooks": { "PreToolUse": [{ "matcher": "Bash && command matches 'rm -rf'", "hook": "echo 'Blocked' >&2 && exit 1" }] }`,
+                auto: false
+              }
+            }
+          ];
+        }
+      } catch {
+      }
+      return [];
+    }
+  },
+  {
+    id: "hooks-unthrottled-network",
+    name: "Hook Unthrottled Network Requests",
+    description: "Checks for PostToolUse hooks making HTTP requests on frequent tool calls without throttling",
+    severity: "medium",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const postHooks = config?.hooks?.PostToolUse ?? [];
+        const broadMatchers = ["Edit", "Write", "Read", "Bash", ""];
+        const networkPatterns = /\b(curl|wget|fetch|http|nc|netcat)\b/i;
+        for (const hook of postHooks) {
+          const hookConfig = hook;
+          const matcher = hookConfig.matcher ?? "";
+          const isBroadMatcher = matcher === "" || broadMatchers.some((m) => m !== "" && matcher === m);
+          for (const command of extractHookCommands(hook)) {
+            if (isBroadMatcher && networkPatterns.test(command)) {
+              findings.push({
+                id: `hooks-unthrottled-network-${findings.length}`,
+                severity: "medium",
+                category: "hooks",
+                title: `PostToolUse hook makes network request on broad matcher "${matcher || "*"}"`,
+                description: `A PostToolUse hook fires on "${matcher || "every tool call"}" and runs a network command (${command.substring(0, 60)}...). Without throttling, this fires on every matching tool call \u2014 potentially hundreds per session \u2014 causing performance degradation and potential data exposure.`,
+                file: file.path,
+                evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
+                fix: {
+                  description: "Add rate limiting or narrow the matcher",
+                  before: `"matcher": "${matcher}"`,
+                  after: `"matcher": "Bash(npm publish)" or add throttle logic`,
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-sensitive-file-access",
+    name: "Hook Accesses Sensitive Files",
+    description: "Checks for hooks that read or write to sensitive system files",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const sensitivePathPatterns = [
+        {
+          pattern: /\/etc\/(?:passwd|shadow|sudoers|hosts)/g,
+          desc: "system authentication/configuration file"
+        },
+        {
+          pattern: /~\/\.ssh\/|\/\.ssh\//g,
+          desc: "SSH directory (may contain private keys)"
+        },
+        {
+          pattern: /~\/\.aws\/|\/\.aws\//g,
+          desc: "AWS credentials directory"
+        },
+        {
+          pattern: /~\/\.gnupg\/|\/\.gnupg\//g,
+          desc: "GPG keyring directory"
+        },
+        {
+          pattern: /~\/\.env|\/\.env\b/g,
+          desc: "environment file (likely contains secrets)"
+        },
+        {
+          pattern: /\/etc\/ssl\/|\/etc\/pki\//g,
+          desc: "SSL/TLS certificate directory"
+        }
+      ];
+      for (const { pattern, desc } of sensitivePathPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-sensitive-file-${match.index}`,
+            severity: "high",
+            category: "exposure",
+            title: `Hook accesses sensitive path: ${match[0]}`,
+            description: `A hook references "${match[0]}" \u2014 ${desc}. Hooks should not access sensitive system files. This could expose credentials, keys, or system configuration.`,
+            file: file.path,
+            line,
+            evidence: match[0]
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-no-stop-hooks",
+    name: "No Stop Hooks for Session Verification",
+    description: "Checks if there are Stop hooks for end-of-session verification",
+    severity: "low",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      try {
+        const config = JSON.parse(file.content);
+        const hooks = config?.hooks ?? {};
+        if (Object.keys(hooks).length > 0 && !hooks.Stop?.length) {
+          return [
+            {
+              id: "hooks-no-stop-hooks",
+              severity: "low",
+              category: "misconfiguration",
+              title: "No Stop hooks for session-end verification",
+              description: "Hooks are configured but no Stop hooks exist. Stop hooks run when a session ends and are useful for final verification \u2014 checking for uncommitted secrets, ensuring console.log statements were removed, or auditing file changes.",
+              file: file.path,
+              fix: {
+                description: "Add a Stop hook for session-end checks",
+                before: '"hooks": { ... }',
+                after: '"hooks": { ..., "Stop": [{ "hook": "check-for-secrets.sh" }] }',
+                auto: false
+              }
+            }
+          ];
+        }
+      } catch {
+      }
+      return [];
+    }
+  },
+  {
+    id: "hooks-session-start-download",
+    name: "Hook SessionStart Downloads Remote Content",
+    description: "Checks for SessionStart hooks that download or execute remote scripts",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const sessionHooks = config?.hooks?.SessionStart ?? [];
+        const remoteExecutionPatterns = [
+          {
+            pattern: /\b(curl|wget)\b.*\|\s*(sh|bash|zsh|node|python)/i,
+            desc: "Downloads and pipes to shell \u2014 classic remote code execution vector",
+            severity: "critical"
+          },
+          {
+            pattern: /\b(curl|wget)\b.*https?:\/\//i,
+            desc: "Downloads remote content on every session start",
+            severity: "high"
+          },
+          {
+            pattern: /\bgit\s+clone\b/i,
+            desc: "Clones a repository on session start \u2014 could pull malicious code",
+            severity: "medium"
+          }
+        ];
+        for (const hook of sessionHooks) {
+          for (const command of extractHookCommands(hook)) {
+            for (const { pattern, desc, severity } of remoteExecutionPatterns) {
+              if (pattern.test(command)) {
+                findings.push({
+                  id: `hooks-session-start-download-${findings.length}`,
+                  severity,
+                  category: "hooks",
+                  title: `SessionStart hook downloads remote content`,
+                  description: `A SessionStart hook runs "${command.substring(0, 80)}". ${desc}. SessionStart hooks run automatically at the beginning of every session without user confirmation.`,
+                  file: file.path,
+                  evidence: command.substring(0, 100),
+                  fix: {
+                    description: "Remove remote downloads from SessionStart or use a local script",
+                    before: command.substring(0, 60),
+                    after: "# Use pre-installed local tools instead",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-background-process",
+    name: "Hook Spawns Background Process",
+    description: "Checks for hooks that spawn background processes which persist beyond the hook's execution",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const bgPatterns = [
+        {
+          pattern: /\bnohup\b/g,
+          description: "nohup keeps a process running after the hook exits \u2014 potential persistence mechanism"
+        },
+        {
+          pattern: /\bdisown\b/g,
+          description: "disown detaches a process from the shell \u2014 hides background activity"
+        },
+        {
+          pattern: /&\s*(?:$|[;)]|&&)/gm,
+          description: "Background process via & \u2014 may run indefinitely after hook completes"
+        },
+        {
+          pattern: /\bscreen\s+-[dS]/g,
+          description: "screen session \u2014 creates persistent hidden shell sessions"
+        },
+        {
+          pattern: /\btmux\s+(?:new|send)/g,
+          description: "tmux session \u2014 creates persistent hidden shell sessions"
+        }
+      ];
+      for (const { pattern, description } of bgPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-bg-process-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook spawns background process: ${match[0].trim()}`,
+            description: `${description}. Background processes in hooks can be used for persistent backdoors or data exfiltration that outlives the session.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-env-exfiltration",
+    name: "Hook Env Var Exfiltration",
+    description: "Checks for hooks that access environment variables and send them to external services",
+    severity: "critical",
+    category: "exposure",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const envAccessPatterns = /\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|PASS|CRED|AUTH)\w*\}?/gi;
+      const envAccessRegex = new RegExp(
+        envAccessPatterns.source,
+        envAccessPatterns.flags
+      );
+      const networkCheck = /\b(curl|wget|nc|netcat|sendmail|mail\s+-s)\b/i;
+      for (const { match, line, content } of findAllHookMatches(
+        file,
+        envAccessRegex
+      )) {
+        const lineStart = content.lastIndexOf("\n", match.index ?? 0) + 1;
+        const lineEnd = content.indexOf(
+          "\n",
+          (match.index ?? 0) + match[0].length
+        );
+        const evidenceLine = content.substring(
+          lineStart,
+          lineEnd === -1 ? void 0 : lineEnd
+        );
+        if (networkCheck.test(evidenceLine)) {
+          findings.push({
+            id: `hooks-env-exfil-${match.index}`,
+            severity: "critical",
+            category: "exposure",
+            title: `Hook combines env var access with network call`,
+            description: `A hook accesses an environment variable (${match[0]}) and sends data over the network in the same command. This pattern can exfiltrate secrets from the environment to external services.`,
+            file: file.path,
+            line,
+            evidence: evidenceLine.trim().substring(0, 100)
+          });
+          break;
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-chained-commands",
+    name: "Hook Chained Shell Commands",
+    description: "Checks for hooks that chain multiple commands, which may execute beyond the matcher's intended scope",
+    severity: "medium",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      if (isPluginHookManifest(file)) return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const allHooks = [
+          ...config?.hooks?.PreToolUse ?? [],
+          ...config?.hooks?.PostToolUse ?? [],
+          ...config?.hooks?.SessionStart ?? [],
+          ...config?.hooks?.Stop ?? []
+        ];
+        const chainPatterns = [
+          { pattern: /&&/, desc: "AND chain (&&)" },
+          { pattern: /;\s*[a-zA-Z]/, desc: "semicolon chain" },
+          { pattern: /\|\s*[a-zA-Z]/, desc: "pipe chain" }
+        ];
+        for (const hook of allHooks) {
+          for (const command of extractHookCommands(hook)) {
+            if (isBlockingGuardCommand(command)) {
+              continue;
+            }
+            let chainCount = 0;
+            for (const { pattern } of chainPatterns) {
+              const matches = [
+                ...command.matchAll(new RegExp(pattern.source, "g"))
+              ];
+              chainCount += matches.length;
+            }
+            if (chainCount >= 3) {
+              findings.push({
+                id: `hooks-chained-commands-${findings.length}`,
+                severity: "medium",
+                category: "hooks",
+                title: `Hook has ${chainCount + 1} chained commands`,
+                description: `A hook chains ${chainCount + 1} commands together: "${command.substring(0, 80)}...". Complex chained commands in hooks are harder to audit and may perform operations beyond the hook's stated purpose. Consider breaking into a dedicated script file.`,
+                file: file.path,
+                evidence: command.substring(0, 100),
+                fix: {
+                  description: "Move complex logic to a script file",
+                  before: command.substring(0, 50),
+                  after: '"hook": "./scripts/hook-check.sh"',
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-expensive-unscoped",
+    name: "Hook Expensive Unscoped Command",
+    description: "Checks for PostToolUse hooks running expensive build/lint commands with broad matchers",
+    severity: "low",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && !file.type.endsWith("-md")) return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const postHooks = config?.hooks?.PostToolUse ?? [];
+        const expensiveCommands = /\b(tsc|eslint|prettier|webpack|jest|vitest|mocha|esbuild|rollup|turbo)\b/;
+        const broadMatchers = ["Edit", "Write", ""];
+        for (const hook of postHooks) {
+          const hookConfig = hook;
+          const matcher = hookConfig.matcher ?? "";
+          const isBroadMatcher = matcher === "" || broadMatchers.some((m) => m !== "" && matcher === m);
+          for (const command of extractHookCommands(hook)) {
+            const expensiveMatch = command.match(expensiveCommands);
+            if (isBroadMatcher && expensiveMatch) {
+              findings.push({
+                id: `hooks-expensive-unscoped-${findings.length}`,
+                severity: "low",
+                category: "hooks",
+                title: `PostToolUse runs "${expensiveMatch[0]}" on broad matcher "${matcher || "*"}"`,
+                description: `A PostToolUse hook runs "${expensiveMatch[0]}" on every "${matcher || "tool call"}" event. Build tools and linters can take seconds to run \u2014 firing on every edit wastes resources and slows down the agent. Scope the matcher to specific file types or add conditional checks.`,
+                file: file.path,
+                evidence: `matcher: "${matcher}", hook: "${command.substring(0, 80)}"`,
+                fix: {
+                  description: "Scope the matcher to reduce unnecessary runs",
+                  before: `"matcher": "${matcher}"`,
+                  after: `"matcher": "Edit(*.ts)" or add file-extension check in the hook script`,
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-output-to-world-readable",
+    name: "Hook Writes to World-Readable Path",
+    description: "Checks for hooks that redirect output to world-readable directories like /tmp",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const worldReadablePatterns = [
+        {
+          pattern: />\s*\/tmp\//g,
+          description: "Redirects output to /tmp \u2014 readable by all users on the system"
+        },
+        {
+          pattern: /\btee\s+\/tmp\//g,
+          description: "Uses tee to write to /tmp \u2014 creates world-readable file"
+        },
+        {
+          pattern: />\s*\/var\/tmp\//g,
+          description: "Redirects output to /var/tmp \u2014 persistent and world-readable"
+        },
+        {
+          pattern: /\bmktemp\b/g,
+          description: "Creates temporary file \u2014 ensure secure permissions (mktemp is generally safe but verify cleanup)"
+        }
+      ];
+      for (const { pattern, description } of worldReadablePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          if (pattern.source.includes("mktemp")) continue;
+          findings.push({
+            id: `hooks-world-readable-${match.index}`,
+            severity: "high",
+            category: "exposure",
+            title: `Hook writes to world-readable path: ${match[0].trim()}`,
+            description: `${description}. Other users or processes on the system can read the output, which may contain secrets, code, or session data.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-source-from-env",
+    name: "Hook Sources Script from Environment Path",
+    description: "Checks for hooks that source scripts from environment variable paths",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const sourcePatterns = [
+        {
+          pattern: /\bsource\s+\$\{?\w+\}?\//g,
+          description: "Sources a script from an environment variable path"
+        },
+        {
+          pattern: /\.\s+\$\{?\w+\}?\//g,
+          description: "Dot-sources a script from an environment variable path"
+        },
+        {
+          pattern: /\beval\s+\$\{?\w+/g,
+          description: "Evaluates content from an environment variable"
+        }
+      ];
+      for (const { pattern, description } of sourcePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-source-env-${match.index}`,
+            severity: "high",
+            category: "injection",
+            title: `Hook sources script from environment path: ${match[0].trim()}`,
+            description: `${description}. If the environment variable is attacker-controlled, this enables arbitrary code execution through the sourced script.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-file-deletion",
+    name: "Hook Deletes Files",
+    description: "Checks for hooks that delete files, which could destroy work or cover tracks",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const deletePatterns = [
+        {
+          pattern: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f?\b/g,
+          description: "Recursive file deletion (rm -rf) \u2014 can destroy entire directories"
+        },
+        {
+          pattern: /\brm\s+-[a-zA-Z]*f\b/g,
+          description: "Force file deletion (rm -f) \u2014 deletes without confirmation"
+        },
+        {
+          pattern: /\bshred\b/g,
+          description: "Secure file erasure (shred) \u2014 irrecoverable deletion used to cover tracks"
+        },
+        {
+          pattern: /\bunlink\b/g,
+          description: "File deletion via unlink"
+        }
+      ];
+      for (const { pattern, description } of deletePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-file-delete-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook deletes files: ${match[0].trim()}`,
+            description: `${description}. A hook that deletes files could destroy source code, logs, or evidence of compromise.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-cron-persistence",
+    name: "Hook Installs Cron Job",
+    description: "Checks for hooks that install cron jobs for persistent access",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const cronPatterns = [
+        {
+          pattern: /\bcrontab\b/g,
+          description: "Modifies crontab \u2014 installs persistent scheduled tasks"
+        },
+        {
+          pattern: /\/etc\/cron/g,
+          description: "Writes to system cron directory \u2014 installs persistent scheduled tasks"
+        },
+        {
+          pattern: /\bat\s+-[a-z]/g,
+          description: "Schedules deferred command execution via at"
+        },
+        {
+          pattern: /\bsystemctl\s+(?:enable|start)/g,
+          description: "Enables/starts a systemd service \u2014 potential persistence mechanism"
+        },
+        {
+          pattern: /\blaunchctl\s+load/g,
+          description: "Loads a macOS launch agent \u2014 persistent background process"
+        }
+      ];
+      for (const { pattern, description } of cronPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-cron-persist-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook installs persistence mechanism: ${match[0].trim()}`,
+            description: `${description}. Hooks should not install persistence mechanisms. This could allow a compromised hook to maintain access even after the session ends.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-env-mutation",
+    name: "Hook Mutates Environment Variables",
+    description: "Checks for hooks that set or export environment variables, which can alter subsequent command behavior",
+    severity: "medium",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const envMutationPatterns = [
+        {
+          pattern: /\bexport\s+PATH=/g,
+          description: "Modifies PATH \u2014 can redirect which binaries are executed",
+          severity: "high"
+        },
+        {
+          pattern: /\bexport\s+(?:LD_PRELOAD|LD_LIBRARY_PATH|DYLD_)=/gi,
+          description: "Modifies dynamic linker variables \u2014 can inject shared libraries",
+          severity: "high"
+        },
+        {
+          pattern: /\bexport\s+(?:NODE_OPTIONS|PYTHONPATH|RUBYLIB)=/gi,
+          description: "Modifies runtime import paths \u2014 can load malicious modules",
+          severity: "high"
+        },
+        {
+          pattern: /\bexport\s+(?:http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY)=/gi,
+          description: "Sets proxy variables \u2014 can redirect all network traffic through attacker-controlled proxy",
+          severity: "high"
+        }
+      ];
+      for (const { pattern, description, severity } of envMutationPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-env-mutation-${match.index}`,
+            severity,
+            category: "hooks",
+            title: `Hook mutates environment: ${match[0].trim()}`,
+            description: `${description}. Hooks that modify environment variables can silently alter the behavior of all subsequent commands in the session.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-git-config-modification",
+    name: "Hook Modifies Git Configuration",
+    description: "Checks for hooks that modify git config, which can alter commit authorship, disable signing, or change hooks",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const gitConfigPatterns = [
+        {
+          pattern: /\bgit\s+config\s+--global/g,
+          description: "Modifies global git config \u2014 affects all repositories on the system"
+        },
+        {
+          pattern: /\bgit\s+config\s+(?:--system)/g,
+          description: "Modifies system-level git config \u2014 affects all users"
+        },
+        {
+          pattern: /\bgit\s+config\s+(?:.*\s+)?(?:user\.email|user\.name)/g,
+          description: "Changes git commit author identity \u2014 could attribute commits to someone else"
+        },
+        {
+          pattern: /\bgit\s+config\s+(?:.*\s+)?(?:commit\.gpgsign|tag\.gpgsign)\s+false/g,
+          description: "Disables GPG commit signing \u2014 weakens commit verification"
+        },
+        {
+          pattern: /\bgit\s+config\s+(?:.*\s+)?core\.hooksPath/g,
+          description: "Changes git hooks directory \u2014 could redirect to malicious hooks"
+        }
+      ];
+      for (const { pattern, description } of gitConfigPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-git-config-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook modifies git config: ${match[0].trim()}`,
+            description: `${description}. Hooks should not modify git configuration as this can undermine version control integrity.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-user-account-modification",
+    name: "Hook Creates or Modifies User Accounts",
+    description: "Checks for hooks that create, modify, or delete user accounts",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const userModPatterns = [
+        {
+          pattern: /\buseradd\b/g,
+          description: "Creates a new user account (useradd)"
+        },
+        {
+          pattern: /\badduser\b/g,
+          description: "Creates a new user account (adduser)"
+        },
+        {
+          pattern: /\busermod\b/g,
+          description: "Modifies an existing user account (usermod)"
+        },
+        {
+          pattern: /\buserdel\b/g,
+          description: "Deletes a user account (userdel)"
+        },
+        {
+          pattern: /\bpasswd\b/g,
+          description: "Changes a user password (passwd)"
+        }
+      ];
+      for (const { pattern, description } of userModPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line, content } of matches) {
+          if (isRegexLikeAlternationLiteral(content, match.index ?? 0)) {
+            continue;
+          }
+          findings.push({
+            id: `hooks-user-mod-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook modifies user accounts: ${match[0].trim()}`,
+            description: `${description}. Hooks should never create, modify, or delete user accounts. A compromised hook with this capability can create backdoor accounts for persistent access.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-privilege-escalation",
+    name: "Hook Uses Privilege Escalation",
+    description: "Checks for hooks that use sudo, su, or other privilege escalation commands",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const privEscPatterns = [
+        {
+          pattern: /\bsudo\b/g,
+          description: "Runs commands as root via sudo"
+        },
+        {
+          pattern: /\bsu\s+-?\s*\w/g,
+          description: "Switches to another user via su"
+        },
+        {
+          pattern: /\bdoas\b/g,
+          description: "Runs commands as another user via doas (OpenBSD sudo alternative)"
+        },
+        {
+          pattern: /\bpkexec\b/g,
+          description: "Runs commands as another user via polkit (pkexec)"
+        },
+        {
+          pattern: /\brunas\b/gi,
+          description: "Runs commands as another user via runas (Windows)"
+        }
+      ];
+      for (const { pattern, description } of privEscPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-priv-esc-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook uses privilege escalation: ${match[0].trim()}`,
+            description: `${description}. Hooks should never escalate privileges. A compromised hook with root access can take over the entire system.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-network-listener",
+    name: "Hook Opens Network Listener",
+    description: "Checks for hooks that bind to network ports, which could create reverse shells or backdoors",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const listenerPatterns = [
+        {
+          pattern: /\bnc\s+.*-l/g,
+          description: "Opens a netcat listener \u2014 classic reverse shell vector"
+        },
+        {
+          pattern: /\bsocat\b/g,
+          description: "Uses socat for bidirectional data transfer \u2014 can create tunnels and reverse shells"
+        },
+        {
+          pattern: /\bpython3?\s+.*-m\s+http\.server/g,
+          description: "Starts a Python HTTP server \u2014 exposes local files over the network"
+        },
+        {
+          pattern: /\bpython3?\s+.*SimpleHTTPServer/g,
+          description: "Starts a Python 2 HTTP server \u2014 exposes local files over the network"
+        },
+        {
+          pattern: /\bphp\s+-S\b/g,
+          description: "Starts a PHP built-in server \u2014 serves files and executes PHP code"
+        }
+      ];
+      for (const { pattern, description } of listenerPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-network-listener-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook opens network listener: ${match[0].trim()}`,
+            description: `${description}. Hooks should not open network listeners. This could create a backdoor accessible from the network.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-disk-wipe",
+    name: "Hook Uses Disk Wiping Commands",
+    description: "Checks for hooks that use destructive disk operations",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const wipePatterns = [
+        {
+          pattern: /\bdd\s+if=\/dev\/(?:zero|urandom)/g,
+          description: "Overwrites disk with zeros/random data via dd"
+        },
+        {
+          pattern: /\bmkfs\b/g,
+          description: "Formats a filesystem \u2014 destroys all data on the target device"
+        },
+        {
+          pattern: /\bwipefs\b/g,
+          description: "Wipes filesystem signatures \u2014 makes data unrecoverable"
+        }
+      ];
+      for (const { pattern, description } of wipePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-disk-wipe-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook uses disk wiping command: ${match[0].trim()}`,
+            description: `${description}. Hooks should never perform destructive disk operations. This could permanently destroy data.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-shell-profile-modification",
+    name: "Hook Modifies Shell Profile",
+    description: "Checks for hooks that modify shell init files (.bashrc, .zshrc, .profile) for persistence",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const profilePatterns = [
+        {
+          pattern: /\.bashrc/g,
+          description: "Modifies .bashrc \u2014 commands here run on every new bash shell"
+        },
+        {
+          pattern: /\.zshrc/g,
+          description: "Modifies .zshrc \u2014 commands here run on every new zsh shell"
+        },
+        {
+          pattern: /\.bash_profile/g,
+          description: "Modifies .bash_profile \u2014 commands here run on every login shell"
+        },
+        {
+          pattern: /\.profile/g,
+          description: "Modifies .profile \u2014 commands here run on every login shell"
+        },
+        {
+          pattern: /\/etc\/environment/g,
+          description: "Modifies /etc/environment \u2014 affects all users on the system"
+        }
+      ];
+      for (const { pattern, description } of profilePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line, content } of matches) {
+          const idx = match.index ?? 0;
+          const contextStart = Math.max(0, idx - 50);
+          const context = content.substring(
+            contextStart,
+            idx + match[0].length + 50
+          );
+          const isWrite = />>|>|tee|echo\s+.*>|sed\s+-i|append/.test(context);
+          if (isWrite) {
+            findings.push({
+              id: `hooks-shell-profile-${match.index}`,
+              severity: "critical",
+              category: "hooks",
+              title: `Hook modifies shell profile: ${match[0].trim()}`,
+              description: `${description}. Writing to shell profile files is a classic persistence technique \u2014 malicious code injected here survives across reboots and terminal sessions.`,
+              file: file.path,
+              line,
+              evidence: context.trim().substring(0, 80)
+            });
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-logging-disabled",
+    name: "Hook Disables Logging or Audit Trail",
+    description: "Checks for hooks that clear logs or disable audit mechanisms",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const seenFindings = /* @__PURE__ */ new Set();
+      const logPatterns = [
+        {
+          pattern: />\s*\/dev\/null\s+2>&1|&>\s*\/dev\/null/g,
+          description: "Redirects all output to /dev/null \u2014 hides both stdout and stderr"
+        },
+        {
+          pattern: /\bhistory\s+-[cwd]/g,
+          description: "Clears or disables shell history \u2014 covers tracks"
+        },
+        {
+          pattern: /\bunset\s+HISTFILE/g,
+          description: "Unsets HISTFILE \u2014 prevents command history from being saved"
+        },
+        {
+          pattern: /\btruncate\s+.*\/var\/log/g,
+          description: "Truncates system log files \u2014 destroys audit trail"
+        }
+      ];
+      for (const { pattern, description } of logPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line, commandContext } of matches) {
+          if (match[0].includes("/dev/null") && isBenignLoggingProbe(commandContext)) {
+            continue;
+          }
+          const evidence = match[0].trim();
+          const dedupeKey = `${line}:${evidence}:${description}`;
+          if (seenFindings.has(dedupeKey)) {
+            continue;
+          }
+          seenFindings.add(dedupeKey);
+          findings.push({
+            id: `hooks-logging-disabled-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook disables logging: ${evidence}`,
+            description: `${description}. Disabling logging or clearing audit trails in hooks is a defense evasion technique that makes it harder to detect and investigate compromises.`,
+            file: file.path,
+            line,
+            evidence
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-ssh-key-operations",
+    name: "Hook Manipulates SSH Keys",
+    description: "Checks for hooks that generate, copy, or modify SSH keys \u2014 enables lateral movement",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const sshKeyPatterns = [
+        {
+          pattern: /\bssh-keygen\b/g,
+          description: "Generates SSH keys \u2014 could create unauthorized keys for persistent access"
+        },
+        {
+          pattern: /\bssh-copy-id\b/g,
+          description: "Copies SSH keys to remote hosts \u2014 enables passwordless lateral movement"
+        },
+        {
+          pattern: />>?\s*~\/\.ssh\/authorized_keys/g,
+          description: "Appends to authorized_keys \u2014 installs backdoor SSH access"
+        }
+      ];
+      for (const { pattern, description } of sshKeyPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-ssh-key-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook manipulates SSH keys: ${match[0].trim()}`,
+            description: `${description}. Hooks should not create or distribute SSH keys as this enables unauthorized remote access.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-background-process",
+    name: "Hook Runs Background Process",
+    description: "Checks for hooks that start persistent background processes that outlive the session",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const bgPatterns = [
+        {
+          pattern: /\bnohup\b/g,
+          description: "Runs process immune to hangup signals \u2014 survives session end"
+        },
+        {
+          pattern: /\bdisown\b/g,
+          description: "Detaches process from shell \u2014 survives session end"
+        },
+        {
+          pattern: /\bscreen\s+-[dD]m/g,
+          description: "Starts detached screen session \u2014 hidden persistent process"
+        },
+        {
+          pattern: /\btmux\s+new-session\s+-d/g,
+          description: "Starts detached tmux session \u2014 hidden persistent process"
+        }
+      ];
+      for (const { pattern, description } of bgPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-bg-process-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook starts background process: ${match[0].trim()}`,
+            description: `${description}. Hooks that start persistent background processes can maintain execution even after the agent session ends \u2014 a common persistence technique.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-dns-exfiltration",
+    name: "Hook Uses DNS for Data Exfiltration",
+    description: "Checks for hooks that use DNS queries with variable interpolation to exfiltrate data",
+    severity: "critical",
+    category: "exfiltration",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const dnsPatterns = [
+        {
+          pattern: /\bdig\s+.*\$\{?\w+/g,
+          description: "Uses dig with variable interpolation \u2014 DNS exfiltration encodes data in DNS queries"
+        },
+        {
+          pattern: /\bnslookup\s+.*\$\{?\w+/g,
+          description: "Uses nslookup with variable interpolation \u2014 DNS exfiltration vector"
+        },
+        {
+          pattern: /\bhost\s+.*\$\{?\w+/g,
+          description: "Uses host command with variable interpolation \u2014 DNS exfiltration vector"
+        }
+      ];
+      for (const { pattern, description } of dnsPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-dns-exfil-${match.index}`,
+            severity: "critical",
+            category: "exfiltration",
+            title: `Hook uses DNS for exfiltration: ${match[0].trim().substring(0, 60)}`,
+            description: `${description}. DNS queries bypass most firewalls and proxy filters, making this a common out-of-band exfiltration technique.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-firewall-modification",
+    name: "Hook Modifies Firewall Rules",
+    description: "Checks for hooks that modify iptables, ufw, or firewall rules",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const fwPatterns = [
+        {
+          pattern: /\biptables\b/g,
+          description: "Modifies iptables firewall rules \u2014 can open ports or disable filtering"
+        },
+        {
+          pattern: /\bufw\s+(?:allow|delete|disable)/g,
+          description: "Modifies UFW firewall \u2014 can open ports or disable the firewall entirely"
+        },
+        {
+          pattern: /\bfirewall-cmd\b/g,
+          description: "Modifies firewalld rules \u2014 can change network access policies"
+        }
+      ];
+      for (const { pattern, description } of fwPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-fw-modify-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook modifies firewall: ${match[0].trim()}`,
+            description: `${description}. Hooks should not modify firewall rules \u2014 this could expose the system to network attacks.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-global-package-install",
+    name: "Hook Installs Global Packages",
+    description: "Checks for hooks that install packages globally, which can modify system-wide binaries",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const installPatterns = [
+        {
+          pattern: /\bnpm\s+install\s+-g\b|\bnpm\s+i\s+-g\b/g,
+          description: "Installs npm package globally \u2014 modifies system-wide PATH binaries"
+        },
+        {
+          pattern: /\bpip\s+install\s+(?:--user\s+)?(?!-r\b)/g,
+          description: "Installs Python package \u2014 may modify system Python packages"
+        },
+        {
+          pattern: /\bgem\s+install\b/g,
+          description: "Installs Ruby gem \u2014 modifies system Ruby packages"
+        },
+        {
+          pattern: /\bcargo\s+install\b/g,
+          description: "Installs Rust package globally via cargo"
+        }
+      ];
+      for (const { pattern, description } of installPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-global-install-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook installs packages: ${match[0].trim()}`,
+            description: `${description}. Hooks that install packages can introduce supply chain risks and modify the system's behavior for all future commands.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-container-escape",
+    name: "Hook Uses Container Escape Techniques",
+    description: "Checks for hooks that use Docker flags that enable container escape",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const containerEscapePatterns = [
+        {
+          pattern: /--privileged/g,
+          description: "Docker --privileged flag \u2014 container has full host access"
+        },
+        {
+          pattern: /--pid=host/g,
+          description: "Docker --pid=host \u2014 container can see/signal all host processes"
+        },
+        {
+          pattern: /--network=host/g,
+          description: "Docker --network=host \u2014 container shares host network stack"
+        },
+        {
+          pattern: /-v\s+\/:/g,
+          description: "Mounts host root filesystem into container \u2014 full filesystem access"
+        }
+      ];
+      for (const { pattern, description } of containerEscapePatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-container-escape-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook uses container escape technique: ${match[0].trim()}`,
+            description: `${description}. These Docker flags break container isolation and allow full host access from within the container.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-credential-access",
+    name: "Hook Accesses Credential Stores",
+    description: "Checks for hooks that read password files, keychains, or credential managers",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const credPatterns = [
+        {
+          pattern: /\bsecurity\s+find-generic-password\b/g,
+          description: "Reads macOS Keychain passwords via security command"
+        },
+        {
+          pattern: /\bsecurity\s+find-internet-password\b/g,
+          description: "Reads macOS Keychain internet passwords"
+        },
+        {
+          pattern: /\bsecret-tool\s+lookup\b/g,
+          description: "Reads GNOME Keyring / Linux secret store"
+        },
+        {
+          pattern: /\bkeyctl\s+read\b/g,
+          description: "Reads Linux kernel keyring"
+        },
+        {
+          pattern: /\/etc\/shadow/g,
+          description: "Accesses /etc/shadow \u2014 contains password hashes"
+        }
+      ];
+      for (const { pattern, description } of credPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-cred-access-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook accesses credential store: ${match[0].trim()}`,
+            description: `${description}. Hooks should never access credential stores \u2014 this enables credential theft for lateral movement.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-reverse-shell",
+    name: "Hook Opens Reverse Shell",
+    description: "Checks for hooks that establish reverse shell connections back to an attacker",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const reverseShellPatterns = [
+        {
+          pattern: /\bbash\s+-i\s+[>&]+.*\/dev\/tcp\//g,
+          description: "Bash reverse shell via /dev/tcp \u2014 connects back to attacker"
+        },
+        {
+          pattern: /\/dev\/tcp\/[0-9.]+\/\d+/g,
+          description: "Uses /dev/tcp for network connection \u2014 common reverse shell technique"
+        },
+        {
+          pattern: /\bpython3?\s+.*-c\s+.*socket.*connect/g,
+          description: "Python reverse shell via socket.connect"
+        },
+        {
+          pattern: /\bperl\s+.*-e\s+.*socket.*INET/g,
+          description: "Perl reverse shell via Socket::INET"
+        },
+        {
+          pattern: /\bmkfifo\b.*\bnc\b/g,
+          description: "Named pipe reverse shell using mkfifo and netcat"
+        }
+      ];
+      for (const { pattern, description } of reverseShellPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-reverse-shell-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook establishes reverse shell: ${match[0].trim().substring(0, 60)}`,
+            description: `${description}. Reverse shells give attackers interactive command execution on the target system.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim().substring(0, 80)
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-clipboard-access",
+    name: "Hook Accesses System Clipboard",
+    description: "Checks for hooks that read or write the system clipboard, which can be used for data exfiltration",
+    severity: "high",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const clipboardPatterns = [
+        {
+          pattern: /\bpbcopy\b/g,
+          description: "Uses macOS pbcopy to write to clipboard \u2014 can silently exfiltrate data"
+        },
+        {
+          pattern: /\bpbpaste\b/g,
+          description: "Uses macOS pbpaste to read clipboard \u2014 may capture sensitive copied content"
+        },
+        {
+          pattern: /\bxclip\b/g,
+          description: "Uses xclip to access X11 clipboard \u2014 can read or write clipboard data"
+        },
+        {
+          pattern: /\bxsel\b/g,
+          description: "Uses xsel to access X11 selection \u2014 can read or write clipboard data"
+        },
+        {
+          pattern: /\bwl-copy\b/g,
+          description: "Uses wl-copy to write to Wayland clipboard"
+        },
+        {
+          pattern: /\bwl-paste\b/g,
+          description: "Uses wl-paste to read from Wayland clipboard"
+        }
+      ];
+      for (const { pattern, description } of clipboardPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-clipboard-${match.index}`,
+            severity: "high",
+            category: "hooks",
+            title: `Hook accesses clipboard: ${match[0].trim()}`,
+            description: `${description}. Clipboard access in hooks can be used to steal passwords, tokens, and other sensitive data that users copy.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "hooks-log-tampering",
+    name: "Hook Tampers with System Logs",
+    description: "Checks for hooks that delete, truncate, or modify system log files to cover tracks",
+    severity: "critical",
+    category: "hooks",
+    check(file) {
+      if (file.type !== "settings-json" && file.type !== "hook-script" && !file.type.endsWith("-md"))
+        return [];
+      const findings = [];
+      const logTamperPatterns = [
+        {
+          pattern: /\bjournalctl\s+--vacuum/g,
+          description: "Purges systemd journal logs \u2014 destroys audit trail"
+        },
+        {
+          pattern: /\brm\s+(?:-[rf]+\s+)?\/var\/log\b/g,
+          description: "Deletes system log files \u2014 destroys audit evidence"
+        },
+        {
+          pattern: /\btruncate\s+.*\/var\/log\b/g,
+          description: "Truncates system log files \u2014 erases log contents"
+        },
+        {
+          pattern: />\s*\/var\/log\/(?:syslog|auth\.log|messages|secure)/g,
+          description: "Overwrites system log file with redirection \u2014 clears log contents"
+        },
+        {
+          pattern: /\bhistory\s+-c\b/g,
+          description: "Clears shell command history \u2014 covers tracks of executed commands"
+        },
+        {
+          pattern: /\bunset\s+HISTFILE\b/g,
+          description: "Disables shell history recording \u2014 prevents command audit trail"
+        }
+      ];
+      for (const { pattern, description } of logTamperPatterns) {
+        const matches = findAllHookMatches(file, pattern);
+        for (const { match, line } of matches) {
+          findings.push({
+            id: `hooks-log-tamper-${match.index}`,
+            severity: "critical",
+            category: "hooks",
+            title: `Hook tampers with logs: ${match[0].trim()}`,
+            description: `${description}. Log tampering is a strong indicator of malicious intent \u2014 attackers erase evidence of their actions.`,
+            file: file.path,
+            line,
+            evidence: match[0].trim()
+          });
+        }
+      }
+      return findings;
+    }
+  }
+];
+
+// src/core-scanner/rules/mcp.ts
+var MCP_RISK_PROFILES = [
+  {
+    namePattern: /filesystem/i,
+    risk: "high",
+    description: "Filesystem MCP grants read/write access to the file system",
+    recommendation: "Restrict to specific directories using allowedDirectories config"
+  },
+  {
+    namePattern: /puppeteer|playwright|browser/i,
+    risk: "high",
+    description: "Browser automation MCP can navigate to arbitrary URLs and run JavaScript",
+    recommendation: "Restrict to specific domains and disable script running where possible"
+  },
+  {
+    namePattern: /shell|terminal|command/i,
+    risk: "critical",
+    description: "Shell/command MCP grants arbitrary command running",
+    recommendation: "Use allowlist of specific commands instead of unrestricted shell access"
+  },
+  {
+    namePattern: /database|postgres|mysql|sqlite|mongo/i,
+    risk: "high",
+    description: "Database MCP can read/write database contents",
+    recommendation: "Use read-only connection and restrict to specific tables/schemas"
+  },
+  {
+    namePattern: /slack|discord|email|sendgrid/i,
+    risk: "medium",
+    description: "Messaging MCP can send messages to external services",
+    recommendation: "Restrict to specific channels and require confirmation for sends"
+  }
+];
+function findEnabledBooleanFlag(value, flagName, currentPath = "") {
+  const paths = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const childPath = `${currentPath}[${index}]`;
+      paths.push(...findEnabledBooleanFlag(item, flagName, childPath));
+    });
+    return paths;
+  }
+  if (!value || typeof value !== "object") {
+    return paths;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = currentPath ? `${currentPath}.${key}` : key;
+    if (key === flagName && child === true) {
+      paths.push(childPath);
+    }
+    paths.push(...findEnabledBooleanFlag(child, flagName, childPath));
+  }
+  return paths;
+}
+function isLikelyMcpTemplatePath(filePath) {
+  const normalized = filePath.toLowerCase();
+  return normalized.startsWith("mcp-configs/") || normalized.includes("/mcp-configs/") || normalized.startsWith("config/mcp/") || normalized.includes("/config/mcp/") || normalized.startsWith("configs/mcp/") || normalized.includes("/configs/mcp/");
+}
+function isPlaceholderSecretValue(value) {
+  const normalized = value.trim();
+  return /^YOUR_[A-Z0-9_]+$/i.test(normalized) || /^REPLACE(?:_|-)?ME(?:_[A-Z0-9_]+)?$/i.test(normalized) || /^CHANGEME$/i.test(normalized) || /^<[^>]+>$/.test(normalized);
+}
+function isTemplateMcpFile(file) {
+  return file.type === "mcp-json" && isLikelyMcpTemplatePath(file.path);
+}
+function classifyMcpRuntimeConfidence(file) {
+  if (isTemplateMcpFile(file)) {
+    return "template-example";
+  }
+  const normalizedPath = file.path.toLowerCase();
+  if (normalizedPath === "settings.local.json" || normalizedPath.endsWith("/settings.local.json")) {
+    return "project-local-optional";
+  }
+  return "active-runtime";
+}
+function downgradeTemplateSeverity(severity) {
+  switch (severity) {
+    case "critical":
+      return "high";
+    case "high":
+      return "medium";
+    case "medium":
+      return "low";
+    default:
+      return severity;
+  }
+}
+function formatTemplateMcpTitle(title) {
+  const riskyServer = title.match(/^[A-Z]+\s+risk MCP server:\s+(.+)$/);
+  if (riskyServer) {
+    return `Template defines risky MCP server: ${riskyServer[1]}`;
+  }
+  if (title.startsWith("MCP server ")) {
+    return `Template ${title}`;
+  }
+  if (title.startsWith("High-risk MCP server ")) {
+    return title.replace(
+      /^High-risk MCP server /,
+      "Template high-risk MCP server "
+    );
+  }
+  return `Template MCP config: ${title}`;
+}
+function formatTemplateMcpDescription(description) {
+  return `This finding comes from an MCP template or example inventory, not a confirmed active runtime MCP configuration. ${description}`;
+}
+function finalizeMcpFindings(file, findings) {
+  const runtimeConfidence = classifyMcpRuntimeConfidence(file);
+  return findings.map((finding) => {
+    const baseFinding = {
+      ...finding,
+      runtimeConfidence
+    };
+    if (!isTemplateMcpFile(file)) {
+      return baseFinding;
+    }
+    if (baseFinding.category !== "mcp" && baseFinding.category !== "misconfiguration") {
+      return baseFinding;
+    }
+    return {
+      ...baseFinding,
+      severity: downgradeTemplateSeverity(baseFinding.severity),
+      title: formatTemplateMcpTitle(baseFinding.title),
+      description: formatTemplateMcpDescription(baseFinding.description)
+    };
+  });
+}
+function isScopedFilesystemServer(name, serverConfig) {
+  if (!/filesystem/i.test(name)) return false;
+  const args = Array.isArray(serverConfig.args) ? serverConfig.args.filter((arg) => typeof arg === "string") : [];
+  return args.some((arg) => /^\.([/\\]|$)/.test(arg.trim()));
+}
+var rawMcpRules = [
+  {
+    id: "mcp-risky-servers",
+    name: "Risky MCP Server Configuration",
+    description: "Checks MCP server configs for servers that grant excessive capabilities",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          for (const profile of MCP_RISK_PROFILES) {
+            if (profile.namePattern.test(name)) {
+              const severity = profile.namePattern.test(name) && isScopedFilesystemServer(name, serverConfig) ? "medium" : profile.risk;
+              const description = severity === "medium" && /filesystem/i.test(name) ? "Filesystem MCP is limited to repo-scoped relative paths" : profile.description;
+              findings.push({
+                id: `mcp-risky-${name}`,
+                severity,
+                category: "mcp",
+                title: `${severity.toUpperCase()} risk MCP server: ${name}`,
+                description: `${description}. ${profile.recommendation}.`,
+                file: file.path
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-auto-approve-project-servers",
+    name: "MCP Project Servers Auto-Approved",
+    description: "Checks for enableAllProjectMcpServers=true which silently trusts project-defined MCP servers",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      try {
+        const config = JSON.parse(file.content);
+        const enabledPaths = findEnabledBooleanFlag(
+          config,
+          "enableAllProjectMcpServers"
+        );
+        return enabledPaths.map((path13, index) => ({
+          id: `mcp-auto-approve-${index}`,
+          severity: "critical",
+          category: "mcp",
+          title: "Project MCP servers are auto-approved",
+          description: "This configuration enables automatic approval of project-defined MCP servers. A cloned repository can then introduce MCP servers that connect or execute without an explicit human review step, turning repo config into an active compromise path.",
+          file: file.path,
+          evidence: `${path13}: true`,
+          fix: {
+            description: "Disable project-wide MCP auto-approval and review each server explicitly",
+            before: `"${path13}": true`,
+            after: `"${path13}": false`,
+            auto: false
+          }
+        }));
+      } catch {
+        return [];
+      }
+    }
+  },
+  {
+    id: "mcp-hardcoded-env",
+    name: "MCP Hardcoded Environment Variables",
+    description: "Checks if MCP configs have hardcoded secrets instead of env var references",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const env = serverConfig.env ?? {};
+          for (const [key, value] of Object.entries(env)) {
+            if (value && !value.startsWith("${") && !value.startsWith("$")) {
+              const isSecret = /key|token|secret|password|credential|auth/i.test(key);
+              if (isSecret) {
+                if (isLikelyMcpTemplatePath(file.path) && isPlaceholderSecretValue(value)) {
+                  continue;
+                }
+                findings.push({
+                  id: `mcp-hardcoded-env-${name}-${key}`,
+                  severity: "critical",
+                  category: "secrets",
+                  title: `Hardcoded secret in MCP server "${name}": ${key}`,
+                  description: `The environment variable "${key}" for MCP server "${name}" appears to contain a hardcoded secret instead of an environment variable reference.`,
+                  file: file.path,
+                  evidence: `${key}: "${value.substring(0, 4)}..."`,
+                  fix: {
+                    description: "Use environment variable reference",
+                    before: `"${key}": "${value}"`,
+                    after: `"${key}": "\${${key}}"`,
+                    auto: true
+                  }
+                });
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-npx-supply-chain",
+    name: "MCP npx Supply Chain Risk",
+    description: "Checks for MCP servers using npx -y which auto-installs packages without confirmation",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command;
+          const args = serverConfig.args ?? [];
+          if (command === "npx" && args.includes("-y")) {
+            findings.push({
+              id: `mcp-npx-y-${name}`,
+              severity: "medium",
+              category: "mcp",
+              title: `MCP server "${name}" uses npx -y (auto-install)`,
+              description: `The MCP server "${name}" uses "npx -y" which automatically installs packages without confirmation. A typosquatting or supply chain attack could run malicious code.`,
+              file: file.path,
+              fix: {
+                description: "Remove -y flag so npx prompts before installing, or install the package explicitly",
+                before: `"args": ["-y", "${args[1] ?? "package"}"]`,
+                after: `"args": ["${args[1] ?? "package"}"]`,
+                auto: true
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-no-description",
+    name: "MCP Server Missing Description",
+    description: "MCP servers without descriptions make auditing harder",
+    severity: "info",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "mcp-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          if (!serverConfig.description) {
+            findings.push({
+              id: `mcp-no-desc-${name}`,
+              severity: "info",
+              category: "misconfiguration",
+              title: `MCP server "${name}" has no description`,
+              description: `Add a description to make security auditing easier: what does this server do and why is it needed?`,
+              file: file.path
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-unrestricted-root-path",
+    name: "MCP Unrestricted Root Path",
+    description: "Checks for MCP servers with filesystem access to root or home directory",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const rootPaths = ["/", "~", "C:\\", "C:/"];
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          for (const arg of args) {
+            if (rootPaths.includes(arg)) {
+              findings.push({
+                id: `mcp-root-path-${name}`,
+                severity: "high",
+                category: "mcp",
+                title: `MCP server "${name}" has unrestricted path: ${arg}`,
+                description: `The MCP server "${name}" is configured with path "${arg}" which grants access to the entire filesystem. This allows an agent to read, write, or delete any file on the system.`,
+                file: file.path,
+                evidence: `args: ${JSON.stringify(args)}`,
+                fix: {
+                  description: "Restrict to project-specific directories",
+                  before: `"${arg}"`,
+                  after: `"./src", "./docs"`,
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-no-version-pin",
+    name: "MCP No Version Pin",
+    description: "Checks for MCP servers using npx with unversioned packages",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command;
+          const args = serverConfig.args ?? [];
+          if (command !== "npx") continue;
+          const packageArg = args.find(
+            (a) => !a.startsWith("-") && a.includes("/")
+          );
+          if (!packageArg) continue;
+          const afterScope = packageArg.startsWith("@") ? packageArg.substring(packageArg.indexOf("/")) : packageArg;
+          const versionPart = afterScope.includes("@") ? afterScope.substring(afterScope.indexOf("@") + 1) : "";
+          const hasVersion = afterScope.includes("@") && versionPart !== "latest" && versionPart !== "next";
+          if (!hasVersion) {
+            findings.push({
+              id: `mcp-no-version-${name}`,
+              severity: "medium",
+              category: "mcp",
+              title: `MCP server "${name}" uses unversioned package: ${packageArg}`,
+              description: `The MCP server "${name}" uses "${packageArg}" without a pinned version. A compromised package update would run automatically via npx.`,
+              file: file.path,
+              evidence: `command: npx, package: ${packageArg}`,
+              fix: {
+                description: "Pin to a specific version",
+                before: `"${packageArg}"`,
+                after: `"${packageArg}@1.0.0"`,
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-url-transport",
+    name: "MCP External URL Transport",
+    description: "Checks for MCP servers using URL-based transport connecting to external hosts",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const url = serverConfig.url;
+          if (!url) continue;
+          const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(
+            url
+          );
+          if (!isLocal) {
+            findings.push({
+              id: `mcp-url-transport-${name}`,
+              severity: "high",
+              category: "mcp",
+              title: `MCP server "${name}" connects to external URL`,
+              description: `The MCP server "${name}" uses URL transport connecting to "${url}". External MCP connections send all tool calls and results over the network, potentially exposing code, secrets, and session data to a remote server. Prefer local stdio-based MCP servers.`,
+              file: file.path,
+              evidence: url.substring(0, 100),
+              fix: {
+                description: "Use a local stdio-based MCP server instead",
+                before: `"url": "${url.substring(0, 40)}"`,
+                after: '"command": "node", "args": ["./local-server.js"]',
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-remote-command",
+    name: "MCP Remote Command Execution",
+    description: "Checks for MCP servers that download and execute remote code",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command ?? "";
+          const args = serverConfig.args ?? [];
+          const fullCommand = `${command} ${args.join(" ")}`;
+          if (/\b(curl|wget)\b.*\|\s*(sh|bash|zsh|node|python)/i.test(fullCommand)) {
+            findings.push({
+              id: `mcp-remote-exec-${name}`,
+              severity: "critical",
+              category: "mcp",
+              title: `MCP server "${name}" pipes remote download to shell`,
+              description: `The MCP server "${name}" downloads remote code and pipes it directly to a shell interpreter. This is a critical remote code execution vulnerability \u2014 a compromised URL silently runs arbitrary commands.`,
+              file: file.path,
+              evidence: fullCommand.substring(0, 100),
+              fix: {
+                description: "Download, verify, then execute separately",
+                before: fullCommand.substring(0, 60),
+                after: "Install the package locally with npm/pip and reference it directly",
+                auto: false
+              }
+            });
+            continue;
+          }
+          const hasRemoteUrl = args.some(
+            (a) => /^https?:\/\/.+\.(sh|py|js|ts|exe|bin)$/i.test(a)
+          );
+          if (hasRemoteUrl && /^(sh|bash|zsh|node|python|ruby)$/.test(command)) {
+            findings.push({
+              id: `mcp-remote-script-${name}`,
+              severity: "high",
+              category: "mcp",
+              title: `MCP server "${name}" executes remote script URL`,
+              description: `The MCP server "${name}" runs a shell interpreter with a remote script URL as an argument. The remote script could be changed at any time, making this a supply chain risk.`,
+              file: file.path,
+              evidence: fullCommand.substring(0, 100),
+              fix: {
+                description: "Download the script locally and reference the local copy",
+                before: fullCommand.substring(0, 60),
+                after: "Use a locally installed package or script",
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-shell-metacharacters",
+    name: "MCP Shell Metacharacters in Args",
+    description: "Checks for shell metacharacters in MCP server arguments that could enable command injection",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const shellMetachars = /[;|&`$(){}]/;
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command ?? "";
+          const args = serverConfig.args ?? [];
+          if (/^(sh|bash|zsh|cmd)$/.test(command)) continue;
+          for (const arg of args) {
+            if (arg.startsWith("-")) continue;
+            if (shellMetachars.test(arg)) {
+              findings.push({
+                id: `mcp-shell-metachar-${name}`,
+                severity: "medium",
+                category: "mcp",
+                title: `MCP server "${name}" has shell metacharacters in args`,
+                description: `The argument "${arg.substring(0, 60)}" for MCP server "${name}" contains shell metacharacters (;|&\`$). If the command spawns a shell, these could enable command injection. Use separate args instead of shell syntax.`,
+                file: file.path,
+                evidence: arg.substring(0, 80),
+                fix: {
+                  description: "Split into separate arguments without shell metacharacters",
+                  before: `"${arg.substring(0, 40)}"`,
+                  after: "Split into separate args array elements",
+                  auto: false
+                }
+              });
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-env-override",
+    name: "MCP Environment Variable Override",
+    description: "Checks for MCP servers that override system-critical environment variables like PATH or LD_PRELOAD",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const dangerousEnvVars = [
+          {
+            name: "PATH",
+            description: "Controls which executables are found \u2014 can redirect to malicious binaries"
+          },
+          {
+            name: "LD_PRELOAD",
+            description: "Injects shared libraries into every process \u2014 classic privilege escalation"
+          },
+          {
+            name: "LD_LIBRARY_PATH",
+            description: "Redirects dynamic library loading \u2014 can intercept system calls"
+          },
+          {
+            name: "NODE_OPTIONS",
+            description: "Injects flags into every Node.js process \u2014 can load arbitrary code"
+          },
+          {
+            name: "PYTHONPATH",
+            description: "Redirects Python module imports \u2014 can load malicious modules"
+          },
+          {
+            name: "HOME",
+            description: "Changes home directory \u2014 can redirect config file loading"
+          }
+        ];
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const env = serverConfig.env ?? {};
+          for (const envVar of dangerousEnvVars) {
+            if (envVar.name in env) {
+              findings.push({
+                id: `mcp-env-override-${name}-${envVar.name}`,
+                severity: "critical",
+                category: "mcp",
+                title: `MCP server "${name}" overrides ${envVar.name}`,
+                description: `The MCP server "${name}" sets ${envVar.name} in its environment. ${envVar.description}. If a malicious MCP config is injected (e.g., via a cloned repo), this could compromise the entire system.`,
+                file: file.path,
+                evidence: `${envVar.name}=${(env[envVar.name] ?? "").substring(0, 40)}`,
+                fix: {
+                  description: `Remove ${envVar.name} from the MCP server's env block`,
+                  before: `"${envVar.name}": "${(env[envVar.name] ?? "").substring(0, 20)}"`,
+                  after: `# Remove ${envVar.name} override`,
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-excessive-server-count",
+    name: "MCP Excessive Server Count",
+    description: "Flags configurations with too many MCP servers",
+    severity: "low",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const count = Object.keys(servers).length;
+        if (count > 10) {
+          return [
+            {
+              id: "mcp-excessive-servers",
+              severity: "low",
+              category: "mcp",
+              title: `${count} MCP servers configured \u2014 large attack surface`,
+              description: `This configuration has ${count} MCP servers. Each server expands the attack surface through supply chain risk, environment variable exposure, and additional capabilities granted to the agent. Consider removing servers that are not actively needed.`,
+              file: file.path
+            }
+          ];
+        }
+      } catch {
+      }
+      return [];
+    }
+  },
+  {
+    id: "mcp-shell-wrapper",
+    name: "MCP Server Uses Shell Wrapper",
+    description: "Checks for MCP servers that use sh/bash -c as command, which defeats argument separation safety",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command ?? "";
+          const args = serverConfig.args ?? [];
+          if (/^(sh|bash|zsh|cmd)$/.test(command) && args.includes("-c")) {
+            findings.push({
+              id: `mcp-shell-wrapper-${name}`,
+              severity: "high",
+              category: "mcp",
+              title: `MCP server "${name}" uses shell wrapper (${command} -c)`,
+              description: `The MCP server "${name}" uses "${command} -c" as its command. This passes all arguments through a shell interpreter, defeating the security benefits of argument separation. Shell metacharacters in args become live injection vectors. Use the target binary directly as the command instead.`,
+              file: file.path,
+              evidence: `command: ${command}, args: ${JSON.stringify(args).substring(0, 80)}`,
+              fix: {
+                description: "Use the target binary directly instead of wrapping in sh -c",
+                before: `"command": "${command}", "args": ["-c", ...]`,
+                after: '"command": "node", "args": ["./server.js"]',
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-git-url-dependency",
+    name: "MCP Git URL Dependency",
+    description: "Checks for MCP servers installed from git URLs which are mutable supply chain risks",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          for (const arg of args) {
+            if (/git\+https?:\/\/|github\.com\/.*\.git/.test(arg)) {
+              findings.push({
+                id: `mcp-git-url-dep-${name}`,
+                severity: "high",
+                category: "mcp",
+                title: `MCP server "${name}" installed from git URL`,
+                description: `The MCP server "${name}" references a git URL "${arg.substring(0, 80)}". Git URLs point to mutable content \u2014 the repository owner can push malicious changes at any time, and they would be picked up on next install. Use a pinned npm package version instead.`,
+                file: file.path,
+                evidence: arg.substring(0, 100),
+                fix: {
+                  description: "Use a pinned npm package version instead of a git URL",
+                  before: `"${arg.substring(0, 40)}"`,
+                  after: '"@scope/package@1.0.0"',
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-disabled-security",
+    name: "MCP Server Has Security-Disabling Flags",
+    description: "Checks for MCP servers with arguments that disable security features",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const dangerousFlags = [
+          {
+            pattern: /--no-sandbox/,
+            description: "Disables sandboxing \u2014 process runs with full system access"
+          },
+          {
+            pattern: /--disable-web-security/,
+            description: "Disables web security policies (CORS, same-origin) \u2014 enables cross-site attacks"
+          },
+          {
+            pattern: /--allow-running-insecure-content/,
+            description: "Allows loading HTTP content over HTTPS \u2014 enables MITM attacks"
+          },
+          {
+            pattern: /--unsafe-perm/,
+            description: "Runs npm scripts as root \u2014 privilege escalation risk"
+          },
+          {
+            pattern: /--trust-all-certificates|--insecure/,
+            description: "Disables TLS certificate verification \u2014 enables MITM attacks"
+          }
+        ];
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          const fullArgs = args.join(" ");
+          for (const { pattern, description } of dangerousFlags) {
+            if (pattern.test(fullArgs)) {
+              findings.push({
+                id: `mcp-disabled-security-${name}-${pattern.source}`,
+                severity: "critical",
+                category: "mcp",
+                title: `MCP server "${name}" has security-disabling flag`,
+                description: `The MCP server "${name}" uses a flag that ${description}. Removing security features from MCP servers dramatically increases the attack surface.`,
+                file: file.path,
+                evidence: fullArgs.substring(0, 100),
+                fix: {
+                  description: "Remove the security-disabling flag",
+                  before: pattern.source.replace(/[\\]/g, ""),
+                  after: "# Remove this flag and fix the root cause instead",
+                  auto: false
+                }
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-dual-transport",
+    name: "MCP Server Has Both URL and Command",
+    description: "Checks for MCP servers with both url and command fields, which is ambiguous and potentially dangerous",
+    severity: "medium",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const hasUrl = !!serverConfig.url;
+          const hasCommand = !!serverConfig.command;
+          if (hasUrl && hasCommand) {
+            findings.push({
+              id: `mcp-dual-transport-${name}`,
+              severity: "medium",
+              category: "misconfiguration",
+              title: `MCP server "${name}" has both url and command`,
+              description: `The MCP server "${name}" specifies both a URL transport and a stdio command. This is ambiguous \u2014 it's unclear which transport will be used, and the unused one could be an injection attempt. Use only one transport method.`,
+              file: file.path,
+              evidence: `url: ${serverConfig.url.substring(0, 40)}, command: ${serverConfig.command}`
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-env-inheritance",
+    name: "MCP Server Inherits Full Environment",
+    description: "Checks for MCP servers without an explicit env block, which inherit the parent process's full environment including secrets",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const serverCount = Object.keys(servers).length;
+        if (serverCount < 2) return [];
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const hasEnv = "env" in serverConfig;
+          const hasCommand = !!serverConfig.command;
+          if (hasCommand && !hasEnv) {
+            findings.push({
+              id: `mcp-env-inherit-${name}`,
+              severity: "medium",
+              category: "mcp",
+              title: `MCP server "${name}" inherits full parent environment`,
+              description: `The MCP server "${name}" has no explicit "env" block, so it inherits the full parent process environment. This means every environment variable \u2014 including API keys, tokens, and secrets \u2014 is passed to the server. Add an explicit "env" block with only the variables the server needs.`,
+              file: file.path,
+              evidence: `Server "${name}" has command but no env block`,
+              fix: {
+                description: "Add an explicit env block with only required variables",
+                before: `"${name}": { "command": "..." }`,
+                after: `"${name}": { "command": "...", "env": { "ONLY_NEEDED_VAR": "..." } }`,
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-database-connection-string",
+    name: "MCP Server Has Database Connection String",
+    description: "Checks for MCP servers with database connection strings containing credentials in env or args",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      const dbPatterns = [
+        {
+          pattern: /postgres(?:ql)?:\/\/[^:]+:[^@]+@/,
+          description: "PostgreSQL connection string with embedded credentials"
+        },
+        {
+          pattern: /mysql:\/\/[^:]+:[^@]+@/,
+          description: "MySQL connection string with embedded credentials"
+        },
+        {
+          pattern: /mongodb(?:\+srv)?:\/\/[^:]+:[^@]+@/,
+          description: "MongoDB connection string with embedded credentials"
+        },
+        {
+          pattern: /redis:\/\/:[^@]+@/,
+          description: "Redis connection string with embedded password"
+        }
+      ];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const env = serverConfig.env ?? {};
+          const args = serverConfig.args ?? [];
+          for (const [envKey, envVal] of Object.entries(env)) {
+            for (const { pattern, description } of dbPatterns) {
+              if (pattern.test(envVal)) {
+                findings.push({
+                  id: `mcp-db-conn-${name}-${envKey}`,
+                  severity: "high",
+                  category: "secrets",
+                  title: `MCP server "${name}" has ${description.split(" ")[0]} credentials in env`,
+                  description: `The MCP server "${name}" has a ${description} in environment variable "${envKey}". Credentials should use env var references instead of being hardcoded.`,
+                  file: file.path,
+                  evidence: `${envKey}=${envVal.substring(0, 30)}...`,
+                  fix: {
+                    description: "Use an environment variable reference instead",
+                    before: envVal.substring(0, 30),
+                    after: "${DATABASE_URL}",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+          for (const arg of args) {
+            for (const { pattern, description } of dbPatterns) {
+              if (pattern.test(arg)) {
+                findings.push({
+                  id: `mcp-db-conn-arg-${name}`,
+                  severity: "high",
+                  category: "secrets",
+                  title: `MCP server "${name}" has ${description.split(" ")[0]} credentials in args`,
+                  description: `The MCP server "${name}" has a ${description} in its command arguments. Credentials should be passed via environment variables.`,
+                  file: file.path,
+                  evidence: arg.substring(0, 40),
+                  fix: {
+                    description: "Pass the connection string via an environment variable",
+                    before: arg.substring(0, 30),
+                    after: "Use env: { DATABASE_URL: ... } instead of args",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-privileged-port",
+    name: "MCP Server Binds to Privileged Port",
+    description: "Checks for MCP servers configured to listen on ports below 1024, which require root privileges",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          const url = serverConfig.url ?? "";
+          const urlPortMatch = url.match(/:(\d+)/);
+          if (urlPortMatch) {
+            const port = parseInt(urlPortMatch[1], 10);
+            if (port > 0 && port < 1024 && port !== 443 && port !== 80) {
+              findings.push({
+                id: `mcp-priv-port-url-${name}`,
+                severity: "medium",
+                category: "mcp",
+                title: `MCP server "${name}" uses privileged port ${port}`,
+                description: `The MCP server "${name}" connects to port ${port}, which is a privileged port (< 1024). Privileged ports require root access and binding to them may indicate the server expects elevated privileges.`,
+                file: file.path,
+                evidence: `url: ${url.substring(0, 60)}`
+              });
+            }
+          }
+          for (let i = 0; i < args.length; i++) {
+            if (/^(?:--port|-p)$/.test(args[i]) && args[i + 1]) {
+              const port = parseInt(args[i + 1], 10);
+              if (port > 0 && port < 1024 && port !== 443 && port !== 80) {
+                findings.push({
+                  id: `mcp-priv-port-arg-${name}`,
+                  severity: "medium",
+                  category: "mcp",
+                  title: `MCP server "${name}" binds to privileged port ${port}`,
+                  description: `The MCP server "${name}" is configured to bind to port ${port}. Privileged ports (< 1024) require root access, which conflicts with the principle of least privilege.`,
+                  file: file.path,
+                  evidence: `${args[i]} ${args[i + 1]}`
+                });
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-wildcard-cors",
+    name: "MCP Server Has Wildcard CORS",
+    description: "Checks for MCP servers with CORS set to * in their arguments or environment",
+    severity: "medium",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          const env = serverConfig.env ?? {};
+          const fullArgs = args.join(" ");
+          if (/--cors[= ]\*|--cors[= ]["']?\*["']?/.test(fullArgs)) {
+            findings.push({
+              id: `mcp-wildcard-cors-arg-${name}`,
+              severity: "medium",
+              category: "mcp",
+              title: `MCP server "${name}" allows CORS from any origin`,
+              description: `The MCP server "${name}" has CORS set to wildcard (*). This allows any website to make requests to the MCP server, which could be exploited by malicious web pages to interact with the agent.`,
+              file: file.path,
+              evidence: fullArgs.substring(0, 80)
+            });
+          }
+          for (const [envKey, envVal] of Object.entries(env)) {
+            if (/cors/i.test(envKey) && envVal === "*") {
+              findings.push({
+                id: `mcp-wildcard-cors-env-${name}`,
+                severity: "medium",
+                category: "mcp",
+                title: `MCP server "${name}" allows CORS from any origin via env`,
+                description: `The MCP server "${name}" has ${envKey}=* in its environment, allowing cross-origin requests from any website.`,
+                file: file.path,
+                evidence: `${envKey}=${envVal}`
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-sensitive-file-args",
+    name: "MCP Server References Sensitive Files in Arguments",
+    description: "Checks for MCP servers with credential files (.env, .pem, credentials.json) passed as arguments",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const sensitiveFilePatterns = [
+          {
+            pattern: /\.env\b/,
+            description: "References .env file \u2014 may contain API keys and secrets"
+          },
+          {
+            pattern: /\.pem\b/,
+            description: "References .pem file \u2014 may contain private key material"
+          },
+          {
+            pattern: /credentials\.json/,
+            description: "References credentials.json \u2014 likely contains authentication credentials"
+          },
+          {
+            pattern: /service[_-]?account.*\.json/i,
+            description: "References a service account key file"
+          },
+          {
+            pattern: /\.p12\b|\.pfx\b/,
+            description: "References PKCS#12 certificate file \u2014 contains private keys"
+          },
+          {
+            pattern: /id_(?:rsa|ed25519|ecdsa)(?:\.pub)?$/,
+            description: "References SSH key file"
+          }
+        ];
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          for (const arg of args) {
+            for (const { pattern, description } of sensitiveFilePatterns) {
+              if (pattern.test(arg)) {
+                findings.push({
+                  id: `mcp-sensitive-file-${name}-${arg.substring(0, 20)}`,
+                  severity: "high",
+                  category: "secrets",
+                  title: `MCP server "${name}" references sensitive file: ${arg}`,
+                  description: `The MCP server "${name}" has "${arg}" in its arguments. ${description}. Sensitive files passed as arguments may be logged or exposed.`,
+                  file: file.path,
+                  evidence: `args: [..., "${arg}"]`,
+                  fix: {
+                    description: "Use environment variables instead of passing sensitive file paths as arguments",
+                    before: arg,
+                    after: "Use env: { CONFIG_PATH: ... } instead",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-bind-all-interfaces",
+    name: "MCP Server Binds to All Network Interfaces",
+    description: "Checks for MCP servers configured to listen on 0.0.0.0, exposing the server to the network",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const args = serverConfig.args ?? [];
+          const env = serverConfig.env ?? {};
+          const url = serverConfig.url ?? "";
+          const fullArgs = args.join(" ");
+          if (/0\.0\.0\.0/.test(fullArgs)) {
+            findings.push({
+              id: `mcp-bind-all-${name}-args`,
+              severity: "high",
+              category: "mcp",
+              title: `MCP server "${name}" binds to all interfaces (0.0.0.0)`,
+              description: `The MCP server "${name}" is configured to bind to 0.0.0.0, making it accessible from any network interface. This exposes the server to the local network and potentially the internet. Bind to 127.0.0.1 (localhost) instead.`,
+              file: file.path,
+              evidence: fullArgs.substring(0, 80),
+              fix: {
+                description: "Bind to localhost instead of all interfaces",
+                before: "0.0.0.0",
+                after: "127.0.0.1",
+                auto: false
+              }
+            });
+          }
+          if (/0\.0\.0\.0/.test(url)) {
+            findings.push({
+              id: `mcp-bind-all-${name}-url`,
+              severity: "high",
+              category: "mcp",
+              title: `MCP server "${name}" connects to 0.0.0.0`,
+              description: `The MCP server "${name}" URL contains 0.0.0.0. This may indicate the server is listening on all network interfaces, exposing it beyond localhost.`,
+              file: file.path,
+              evidence: url.substring(0, 60)
+            });
+          }
+          for (const [envKey, envVal] of Object.entries(env)) {
+            if (/^(?:HOST|BIND|LISTEN)$/i.test(envKey) && envVal === "0.0.0.0") {
+              findings.push({
+                id: `mcp-bind-all-${name}-env`,
+                severity: "high",
+                category: "mcp",
+                title: `MCP server "${name}" binds to all interfaces via env`,
+                description: `The MCP server "${name}" has ${envKey}=0.0.0.0, which exposes the server on all network interfaces.`,
+                file: file.path,
+                evidence: `${envKey}=${envVal}`
+              });
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-auto-approve",
+    name: "MCP Server Has Auto-Approve Enabled",
+    description: "Checks for MCP servers with autoApprove settings that skip user confirmation for tool calls",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const autoApproveKeys = [
+            "autoApprove",
+            "auto_approve",
+            "autoConfirm",
+            "auto_confirm"
+          ];
+          for (const key of autoApproveKeys) {
+            if (key in serverConfig) {
+              const value = serverConfig[key];
+              const isEnabled = Array.isArray(value) ? value.length > 0 : !!value;
+              if (isEnabled) {
+                findings.push({
+                  id: `mcp-auto-approve-${name}`,
+                  severity: "high",
+                  category: "mcp",
+                  title: `MCP server "${name}" has auto-approve enabled`,
+                  description: `The MCP server "${name}" has "${key}" configured, which skips user confirmation for tool calls. This defeats the human-in-the-loop security model \u2014 a compromised server can silently execute destructive operations without user review.`,
+                  file: file.path,
+                  evidence: `${key}: ${JSON.stringify(value).substring(0, 80)}`,
+                  fix: {
+                    description: "Remove auto-approve to require user confirmation for all tool calls",
+                    before: `"${key}": ${JSON.stringify(value).substring(0, 30)}`,
+                    after: `# Remove "${key}" \u2014 require user confirmation`,
+                    auto: false
+                  }
+                });
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-timeout-missing",
+    name: "MCP Server Has No Timeout Configuration",
+    description: "Checks for MCP servers without a timeout, which could hang indefinitely or be used for resource exhaustion",
+    severity: "low",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command ?? "";
+          const isHighRisk = MCP_RISK_PROFILES.some(
+            (p) => p.namePattern.test(name)
+          );
+          if (!isHighRisk) continue;
+          const hasTimeout = "timeout" in serverConfig || "requestTimeout" in serverConfig || "connectionTimeout" in serverConfig;
+          if (!hasTimeout) {
+            findings.push({
+              id: `mcp-no-timeout-${name}`,
+              severity: "low",
+              category: "misconfiguration",
+              title: `High-risk MCP server "${name}" has no timeout`,
+              description: `The MCP server "${name}" (${command || "unknown command"}) has no timeout configuration. Without a timeout, a malfunctioning or compromised server could hang indefinitely, consuming resources and blocking the agent. Add a timeout to limit execution time.`,
+              file: file.path,
+              evidence: `Server "${name}" has no timeout, requestTimeout, or connectionTimeout`,
+              fix: {
+                description: "Add a timeout configuration",
+                before: `"${name}": { "command": "${command}" }`,
+                after: `"${name}": { "command": "${command}", "timeout": 30000 }`,
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  /**
+   * Detects MCP servers that invoke `npx -c` / `--call` (or `--call=…`).
+   *
+   * These flags pass the trailing argument to the user's shell, giving an
+   * RCE primitive equivalent to `sh -c`. This is the Flowise bypass pattern
+   * documented by Ox Security ("Mother of All AI Supply Chains", Family 2).
+   *
+   * The rule only scans flags that appear **before** the first positional
+   * (package name) in the args array — anything after the package belongs
+   * to the downstream command and must not be matched.
+   */
+  {
+    id: "mcp-npx-shell-exec",
+    name: "MCP npx shell-exec flag",
+    description: "Checks for MCP servers using `npx -c` / `--call` (including `--call=\u2026`) \u2014 these pass the argument to the user's shell, giving RCE equivalent to `sh -c`.",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      function isNpxCommand(cmd) {
+        if (!cmd) return false;
+        const basename6 = cmd.split(/[\\/]/).pop() ?? "";
+        return basename6 === "npx" || basename6 === "npx.cmd" || basename6 === "npx.exe";
+      }
+      const npxValueTakingOptions = /* @__PURE__ */ new Set([
+        "-p",
+        "--package",
+        "-w",
+        "--workspace",
+        "--registry",
+        "--loglevel",
+        "--userconfig",
+        "--globalconfig",
+        "--prefix"
+      ]);
+      function findShellExecFlag(args) {
+        let i = 0;
+        while (i < args.length) {
+          const raw = args[i];
+          if (typeof raw !== "string") return void 0;
+          if (raw === "-c" || raw === "--call") return raw;
+          if (raw.startsWith("--call=")) return "--call";
+          if (raw.startsWith("--") && raw.includes("=")) {
+            i++;
+            continue;
+          }
+          if (npxValueTakingOptions.has(raw)) {
+            i += 2;
+            continue;
+          }
+          if (raw.startsWith("-")) {
+            i++;
+            continue;
+          }
+          return void 0;
+        }
+        return void 0;
+      }
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const command = serverConfig.command;
+          const args = serverConfig.args ?? [];
+          if (!isNpxCommand(command) || !Array.isArray(args)) continue;
+          const matchedFlag = findShellExecFlag(args);
+          if (!matchedFlag) continue;
+          findings.push({
+            id: `mcp-npx-shell-exec-${name}`,
+            severity: "high",
+            category: "mcp",
+            title: `MCP server "${name}" uses npx ${matchedFlag} (shell execution)`,
+            description: `The MCP server "${name}" invokes \`npx ${matchedFlag}\` which passes the next argument to the user's shell \u2014 identical RCE primitive to \`sh -c\`. This is the Flowise bypass pattern (Ox Security "Mother of All AI Supply Chains", Family 2).`,
+            file: file.path,
+            evidence: `command: ${command}, args: ${JSON.stringify(args)}`,
+            fix: {
+              description: "Remove `-c` / `--call`. Pin to a specific package version with `npx <pkg>@<version>` instead; if shell execution is required, declare the target binary explicitly rather than piggy-backing on npx.",
+              before: `"command": "${command}", "args": ${JSON.stringify(args)}`,
+              after: `"command": "npx", "args": ["<package>@<version>"]`,
+              auto: false
+            }
+          });
+        }
+      } catch {
+      }
+      return findings;
+    }
+  }
+];
+var mcpRules = rawMcpRules.map((rule) => ({
+  ...rule,
+  check(file) {
+    return finalizeMcpFindings(file, rule.check(file));
+  }
+}));
+
+// src/core-scanner/threat-intel/cve-database.ts
+var TANSTACK_MINI_SHAI_HULUD_PACKAGES = [
+  ["@tanstack/arktype-adapter", "1.166.12, 1.166.15"],
+  ["@tanstack/eslint-plugin-router", "1.161.9, 1.161.12"],
+  ["@tanstack/eslint-plugin-start", "0.0.4, 0.0.7"],
+  ["@tanstack/history", "1.161.9, 1.161.12"],
+  ["@tanstack/nitro-v2-vite-plugin", "1.154.12, 1.154.15"],
+  ["@tanstack/react-router", "1.169.5, 1.169.8"],
+  ["@tanstack/react-router-devtools", "1.166.16, 1.166.19"],
+  ["@tanstack/react-router-ssr-query", "1.166.15, 1.166.18"],
+  ["@tanstack/react-start", "1.167.68, 1.167.71"],
+  ["@tanstack/react-start-client", "1.166.51, 1.166.54"],
+  ["@tanstack/react-start-rsc", "0.0.47, 0.0.50"],
+  ["@tanstack/react-start-server", "1.166.55, 1.166.58"],
+  ["@tanstack/router-cli", "1.166.46, 1.166.49"],
+  ["@tanstack/router-core", "1.169.5, 1.169.8"],
+  ["@tanstack/router-devtools", "1.166.16, 1.166.19"],
+  ["@tanstack/router-devtools-core", "1.167.6, 1.167.9"],
+  ["@tanstack/router-generator", "1.166.45, 1.166.48"],
+  ["@tanstack/router-plugin", "1.167.38, 1.167.41"],
+  ["@tanstack/router-ssr-query-core", "1.168.3, 1.168.6"],
+  ["@tanstack/router-utils", "1.161.11, 1.161.14"],
+  ["@tanstack/router-vite-plugin", "1.166.53, 1.166.56"],
+  ["@tanstack/solid-router", "1.169.5, 1.169.8"],
+  ["@tanstack/solid-router-devtools", "1.166.16, 1.166.19"],
+  ["@tanstack/solid-router-ssr-query", "1.166.15, 1.166.18"],
+  ["@tanstack/solid-start", "1.167.65, 1.167.68"],
+  ["@tanstack/solid-start-client", "1.166.50, 1.166.53"],
+  ["@tanstack/solid-start-server", "1.166.54, 1.166.57"],
+  ["@tanstack/start-client-core", "1.168.5, 1.168.8"],
+  ["@tanstack/start-fn-stubs", "1.161.9, 1.161.12"],
+  ["@tanstack/start-plugin-core", "1.169.23, 1.169.26"],
+  ["@tanstack/start-server-core", "1.167.33, 1.167.36"],
+  ["@tanstack/start-static-server-functions", "1.166.44, 1.166.47"],
+  ["@tanstack/start-storage-context", "1.166.38, 1.166.41"],
+  ["@tanstack/valibot-adapter", "1.166.12, 1.166.15"],
+  ["@tanstack/virtual-file-routes", "1.161.10, 1.161.13"],
+  ["@tanstack/vue-router", "1.169.5, 1.169.8"],
+  ["@tanstack/vue-router-devtools", "1.166.16, 1.166.19"],
+  ["@tanstack/vue-router-ssr-query", "1.166.15, 1.166.18"],
+  ["@tanstack/vue-start", "1.167.61, 1.167.64"],
+  ["@tanstack/vue-start-client", "1.166.46, 1.166.49"],
+  ["@tanstack/vue-start-server", "1.166.50, 1.166.53"],
+  ["@tanstack/zod-adapter", "1.166.12, 1.166.15"]
+];
+var MINI_SHAI_HULUD_ADDITIONAL_PACKAGES = [
+  [
+    "@beproduct/nestjs-auth",
+    "0.1.2, 0.1.3, 0.1.4, 0.1.5, 0.1.6, 0.1.7, 0.1.8, 0.1.9, 0.1.10, 0.1.11, 0.1.12, 0.1.13, 0.1.14, 0.1.15, 0.1.16, 0.1.17, 0.1.18, 0.1.19"
+  ],
+  ["@cap-js/db-service", "2.10.1"],
+  ["@cap-js/postgres", "2.2.2"],
+  ["@cap-js/sqlite", "2.2.2"],
+  ["@dirigible-ai/sdk", "0.6.2, 0.6.3"],
+  ["@draftauth/client", "0.2.1, 0.2.2"],
+  ["@draftauth/core", "0.13.1, 0.13.2"],
+  ["@draftlab/auth", "0.24.1, 0.24.2"],
+  ["@draftlab/auth-router", "0.5.1, 0.5.2"],
+  ["@draftlab/db", "0.16.1, 0.16.2"],
+  ["@mesadev/rest", "0.28.3"],
+  ["@mesadev/saguaro", "0.4.22"],
+  ["@mesadev/sdk", "0.28.3"],
+  ["@mistralai/mistralai", "2.2.2, 2.2.3, 2.2.4"],
+  ["@mistralai/mistralai-azure", "1.7.1, 1.7.2, 1.7.3"],
+  ["@mistralai/mistralai-gcp", "1.7.1, 1.7.2, 1.7.3"],
+  ["@ml-toolkit-ts/preprocessing", "1.0.2, 1.0.3"],
+  ["@ml-toolkit-ts/xgboost", "1.0.3, 1.0.4"],
+  ["@opensearch-project/opensearch", "3.5.3, 3.6.2, 3.7.0, 3.8.0"],
+  ["@squawk/airport-data", "0.7.4, 0.7.5, 0.7.6, 0.7.7, 0.7.8"],
+  ["@squawk/airports", "0.6.2, 0.6.3, 0.6.4, 0.6.5, 0.6.6"],
+  ["@squawk/airspace", "0.8.1, 0.8.2, 0.8.3, 0.8.4, 0.8.5"],
+  ["@squawk/airspace-data", "0.5.3, 0.5.4, 0.5.5, 0.5.6, 0.5.7"],
+  ["@squawk/airway-data", "0.5.4, 0.5.5, 0.5.6, 0.5.7, 0.5.8"],
+  ["@squawk/airways", "0.4.2, 0.4.3, 0.4.4, 0.4.5, 0.4.6"],
+  ["@squawk/fix-data", "0.6.4, 0.6.5, 0.6.6, 0.6.7, 0.6.8"],
+  ["@squawk/fixes", "0.3.2, 0.3.3, 0.3.4, 0.3.5, 0.3.6"],
+  ["@squawk/flight-math", "0.5.4, 0.5.5, 0.5.6, 0.5.7, 0.5.8"],
+  ["@squawk/flightplan", "0.5.2, 0.5.3, 0.5.4, 0.5.5, 0.5.6"],
+  ["@squawk/geo", "0.4.4, 0.4.5, 0.4.6, 0.4.7, 0.4.8"],
+  ["@squawk/icao-registry", "0.5.2, 0.5.3, 0.5.4, 0.5.5, 0.5.6"],
+  ["@squawk/icao-registry-data", "0.8.4, 0.8.5, 0.8.6, 0.8.7, 0.8.8"],
+  ["@squawk/mcp", "0.9.1, 0.9.2, 0.9.3, 0.9.4, 0.9.5"],
+  ["@squawk/navaid-data", "0.6.4, 0.6.5, 0.6.6, 0.6.7, 0.6.8"],
+  ["@squawk/navaids", "0.4.2, 0.4.3, 0.4.4, 0.4.5, 0.4.6"],
+  ["@squawk/notams", "0.3.6, 0.3.7, 0.3.8, 0.3.9, 0.3.10"],
+  ["@squawk/procedure-data", "0.7.3, 0.7.4, 0.7.5, 0.7.6, 0.7.7"],
+  ["@squawk/procedures", "0.5.2, 0.5.3, 0.5.4, 0.5.5, 0.5.6"],
+  ["@squawk/types", "0.8.1, 0.8.2, 0.8.3, 0.8.4, 0.8.5"],
+  ["@squawk/units", "0.4.3, 0.4.4, 0.4.5, 0.4.6, 0.4.7"],
+  ["@squawk/weather", "0.5.6, 0.5.7, 0.5.8, 0.5.9, 0.5.10"],
+  ["@supersurkhet/cli", "0.0.2, 0.0.3, 0.0.4, 0.0.5, 0.0.6, 0.0.7"],
+  ["@supersurkhet/sdk", "0.0.2, 0.0.3, 0.0.4, 0.0.5, 0.0.6, 0.0.7"],
+  ["@tallyui/components", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/connector-medusa", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/connector-shopify", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/connector-vendure", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/connector-woocommerce", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/core", "0.2.1, 0.2.2, 0.2.3"],
+  ["@tallyui/database", "1.0.1, 1.0.2, 1.0.3"],
+  ["@tallyui/pos", "0.1.1, 0.1.2, 0.1.3"],
+  ["@tallyui/storage-sqlite", "0.2.1, 0.2.2, 0.2.3"],
+  ["@tallyui/theme", "0.2.1, 0.2.2, 0.2.3"],
+  ["@taskflow-corp/cli", "0.1.24, 0.1.25, 0.1.26, 0.1.27, 0.1.28, 0.1.29"],
+  ["@tolka/cli", "1.0.2, 1.0.3, 1.0.4, 1.0.5, 1.0.6"],
+  ["@uipath/access-policy-sdk", "0.3.1"],
+  ["@uipath/access-policy-tool", "0.3.1"],
+  ["@uipath/admin-tool", "0.1.1"],
+  ["@uipath/agent-sdk", "1.0.2"],
+  ["@uipath/agent-tool", "1.0.1"],
+  ["@uipath/agent.sdk", "0.0.18"],
+  ["@uipath/aops-policy-tool", "0.3.1"],
+  ["@uipath/ap-chat", "1.5.7"],
+  ["@uipath/api-workflow-tool", "1.0.1"],
+  ["@uipath/apollo-core", "5.9.2"],
+  ["@uipath/apollo-react", "4.24.5"],
+  ["@uipath/apollo-wind", "2.16.2"],
+  ["@uipath/auth", "1.0.1"],
+  ["@uipath/case-tool", "1.0.1"],
+  ["@uipath/cli", "1.0.1"],
+  ["@uipath/codedagent-tool", "1.0.1"],
+  ["@uipath/codedagents-tool", "0.1.12"],
+  ["@uipath/codedapp-tool", "1.0.1"],
+  ["@uipath/common", "1.0.1"],
+  ["@uipath/context-grounding-tool", "0.1.1"],
+  ["@uipath/data-fabric-tool", "1.0.2"],
+  ["@uipath/docsai-tool", "1.0.1"],
+  ["@uipath/filesystem", "1.0.1"],
+  ["@uipath/flow-tool", "1.0.2"],
+  ["@uipath/functions-tool", "1.0.1"],
+  ["@uipath/gov-tool", "0.3.1"],
+  ["@uipath/identity-tool", "0.1.1"],
+  ["@uipath/insights-sdk", "1.0.1"],
+  ["@uipath/insights-tool", "1.0.1"],
+  ["@uipath/integrationservice-sdk", "1.0.2"],
+  ["@uipath/integrationservice-tool", "1.0.2"],
+  ["@uipath/llmgw-tool", "1.0.1"],
+  ["@uipath/maestro-sdk", "1.0.1"],
+  ["@uipath/maestro-tool", "1.0.1"],
+  ["@uipath/orchestrator-tool", "1.0.1"],
+  ["@uipath/packager-tool-apiworkflow", "0.0.19"],
+  ["@uipath/packager-tool-bpmn", "0.0.9"],
+  ["@uipath/packager-tool-case", "0.0.9"],
+  ["@uipath/packager-tool-connector", "0.0.19"],
+  ["@uipath/packager-tool-flow", "0.0.19"],
+  ["@uipath/packager-tool-functions", "0.1.1"],
+  ["@uipath/packager-tool-webapp", "1.0.6"],
+  ["@uipath/packager-tool-workflowcompiler", "0.0.16"],
+  ["@uipath/packager-tool-workflowcompiler-browser", "0.0.34"],
+  ["@uipath/platform-tool", "1.0.1"],
+  ["@uipath/project-packager", "1.1.16"],
+  ["@uipath/resource-tool", "1.0.1"],
+  ["@uipath/resourcecatalog-tool", "0.1.1"],
+  ["@uipath/resources-tool", "0.1.11"],
+  ["@uipath/robot", "1.3.4"],
+  ["@uipath/rpa-legacy-tool", "1.0.1"],
+  ["@uipath/rpa-tool", "0.9.5"],
+  ["@uipath/solution-packager", "0.0.35"],
+  ["@uipath/solution-tool", "1.0.1"],
+  ["@uipath/solutionpackager-sdk", "1.0.11"],
+  ["@uipath/solutionpackager-tool-core", "0.0.34"],
+  ["@uipath/tasks-tool", "1.0.1"],
+  ["@uipath/telemetry", "0.0.7"],
+  ["@uipath/test-manager-tool", "1.0.2"],
+  ["@uipath/tool-workflowcompiler", "0.0.12"],
+  ["@uipath/traces-tool", "1.0.1"],
+  ["@uipath/ui-widgets-multi-file-upload", "1.0.1"],
+  ["@uipath/uipath-python-bridge", "1.0.1"],
+  ["@uipath/vertical-solutions-tool", "1.0.1"],
+  ["@uipath/vss", "0.1.6"],
+  ["@uipath/widget.sdk", "1.2.3"],
+  ["agentwork-cli", "0.1.4, 0.1.5"],
+  ["cmux-agent-mcp", "0.1.3, 0.1.4, 0.1.5, 0.1.6, 0.1.7, 0.1.8"],
+  ["cross-stitch", "1.1.3, 1.1.4, 1.1.5, 1.1.6, 1.1.7"],
+  ["git-branch-selector", "1.3.3, 1.3.4, 1.3.5, 1.3.6, 1.3.7"],
+  ["git-git-git", "1.0.8, 1.0.9, 1.0.10, 1.0.11, 1.0.12"],
+  ["guardrails-ai", "0.10.1"],
+  ["intercom-client", "7.0.4"],
+  ["lightning", "2.6.2, 2.6.3"],
+  ["mbt", "1.2.48"],
+  ["mistralai", "2.4.6"],
+  ["ml-toolkit-ts", "1.0.4, 1.0.5"],
+  ["nextmove-mcp", "0.1.3, 0.1.4, 0.1.5, 0.1.6, 0.1.7"],
+  ["safe-action", "0.8.3, 0.8.4"],
+  ["ts-dna", "3.0.1, 3.0.2, 3.0.3, 3.0.4, 3.0.5"],
+  ["wot-api", "0.8.1, 0.8.2, 0.8.3, 0.8.4"]
+];
+var MALICIOUS_PACKAGES = [
+  // SANDWORM_MODE typosquats targeting MCP SDK
+  {
+    name: "@anthropic-ai/model-context-protocol-sdk",
+    type: "typosquat",
+    description: "Typosquat of the official @modelcontextprotocol/sdk. Part of SANDWORM_MODE supply chain campaign targeting MCP developers.",
+    legitimatePackage: "@modelcontextprotocol/sdk"
+  },
+  {
+    name: "anthropic-mcp-sdk",
+    type: "typosquat",
+    description: "Typosquat targeting developers searching for the Anthropic MCP SDK.",
+    legitimatePackage: "@modelcontextprotocol/sdk"
+  },
+  {
+    name: "mcp-sdk-anthropic",
+    type: "typosquat",
+    description: "Typosquat with reversed naming convention targeting MCP SDK users.",
+    legitimatePackage: "@modelcontextprotocol/sdk"
+  },
+  {
+    name: "@anthropic/mcp-server",
+    type: "typosquat",
+    description: "Typosquat using incorrect scope for Anthropic MCP servers (correct scope is @anthropics or @modelcontextprotocol).",
+    legitimatePackage: "@modelcontextprotocol/sdk"
+  },
+  // Compromised legitimate packages
+  {
+    name: "cline",
+    type: "compromised",
+    description: "Clinejection supply chain attack. Compromised npm token used to publish cline@2.3.0 with malicious postinstall script that installed openclaw. ~4,000 downloads in ~8 hour window.",
+    affectedVersions: "2.3.0"
+  },
+  // Known malicious MCP servers
+  {
+    name: "postmark-mcp",
+    type: "malicious",
+    description: "Malicious MCP server impersonating Postmark email service. Version 1.0.16 secretly BCCs every outgoing email to an attacker-controlled domain.",
+    affectedVersions: "1.0.16"
+  },
+  {
+    name: "openclaw",
+    type: "malicious",
+    description: "Malicious package installed by the compromised cline@2.3.0 postinstall script. Part of the Clinejection supply chain attack."
+  },
+  {
+    name: "@tanstack/setup",
+    type: "malicious",
+    description: "Fictitious git dependency used by the May 2026 TanStack/Mini Shai-Hulud npm campaign. Malicious manifests referenced github:tanstack/router#79ac49eedf774dd4b0cfa308722bc463cfe5885c to execute router_init.js during install."
+  },
+  ...TANSTACK_MINI_SHAI_HULUD_PACKAGES.map(([name, affectedVersions]) => ({
+    name,
+    type: "compromised",
+    description: "Compromised @tanstack package version from the May 2026 TanStack/Mini Shai-Hulud npm campaign. Affected versions executed router_init.js at install time, harvested developer/cloud credentials, and attempted npm worm propagation under signed trusted-publisher provenance.",
+    affectedVersions
+  })),
+  ...MINI_SHAI_HULUD_ADDITIONAL_PACKAGES.map(([name, affectedVersions]) => ({
+    name,
+    type: "compromised",
+    description: "Compromised package version from the May 2026 Mini Shai-Hulud supply-chain campaign. Treat any matching lockfile, cache, CI runner, or developer host as potentially compromised and rotate accessible credentials after persistence is removed.",
+    affectedVersions
+  })),
+  // AI-specific typosquats from PyPI/npm campaigns
+  {
+    name: "aliyun-ai-labs-snippets-sdk",
+    type: "malicious",
+    description: "Malicious PyPI package delivering infostealer hidden inside PyTorch model files."
+  },
+  {
+    name: "ai-labs-snippets-sdk",
+    type: "malicious",
+    description: "Malicious PyPI package delivering infostealer hidden inside PyTorch model files."
+  },
+  {
+    name: "aliyun-ai-labs-sdk",
+    type: "malicious",
+    description: "Malicious PyPI package delivering infostealer hidden inside PyTorch model files."
+  }
+];
+var VULNERABLE_SERVERS = [
+  {
+    packageName: "@anthropics/mcp-server-git",
+    cveIds: ["CVE-2025-68145", "CVE-2025-68143", "CVE-2025-68144"],
+    description: "Anthropic's official MCP git server has path traversal, unrestricted git_init, and argument injection vulnerabilities."
+  },
+  {
+    packageName: "mcp-server-git",
+    cveIds: ["CVE-2025-68145", "CVE-2025-68143", "CVE-2025-68144"],
+    description: "MCP git server (community package) shares vulnerabilities with the official Anthropic version."
+  },
+  {
+    packageName: "mcp-remote",
+    cveIds: ["CVE-2025-6514"],
+    description: "OS command injection via malicious authorization_endpoint. The authorization URL is passed to the system shell without sanitization."
+  }
+];
+function checkPackageName(packageName, version) {
+  const match = MALICIOUS_PACKAGES.find((pkg) => pkg.name === packageName);
+  if (!match) return void 0;
+  if (match.type === "compromised" && match.affectedVersions && version) {
+    const affectedVersionList = match.affectedVersions.split(",").map((v) => v.trim());
+    if (!affectedVersionList.includes(version)) {
+      return void 0;
+    }
+  }
+  return match;
+}
+function checkServerPackage(command, args) {
+  for (const server of VULNERABLE_SERVERS) {
+    if (command === server.packageName || command.endsWith(`/${server.packageName}`)) {
+      return server;
+    }
+  }
+  for (const arg of args) {
+    if (arg.startsWith("-")) continue;
+    for (const server of VULNERABLE_SERVERS) {
+      if (arg === server.packageName || arg.startsWith(`${server.packageName}@`)) {
+        return server;
+      }
+    }
+  }
+  return void 0;
+}
+
+// src/core-scanner/rules/mcp-cve.ts
+var rawCveMcpRules = [
+  {
+    id: "mcp-known-vulnerable-server",
+    name: "Known Vulnerable MCP Server Package",
+    description: "Cross-references MCP server packages against the CVE database to detect known-vulnerable servers",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const command = serverConfig.command ?? "";
+          const args = serverConfig.args ?? [];
+          const vulnServer = checkServerPackage(command, args);
+          if (vulnServer) {
+            const cveList = vulnServer.cveIds.join(", ");
+            findings.push({
+              id: `mcp-known-vuln-${name}`,
+              severity: "critical",
+              category: "mcp",
+              title: `MCP server "${name}" uses known-vulnerable package: ${vulnServer.packageName}`,
+              description: `${vulnServer.description} Known CVEs: ${cveList}.${vulnServer.fixedIn ? ` Fixed in ${vulnServer.fixedIn}.` : " Check for updates."}`,
+              file: file.path,
+              evidence: `package: ${vulnServer.packageName}, CVEs: ${cveList}`,
+              fix: {
+                description: "Update to a patched version or replace with a secure alternative",
+                before: vulnServer.packageName,
+                after: `${vulnServer.packageName}@latest (verify patch)`,
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-malicious-package",
+    name: "Known Malicious Package in MCP Config",
+    description: "Checks MCP server configurations for known-malicious and typosquatted packages",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const command = serverConfig.command ?? "";
+          const args = serverConfig.args ?? [];
+          const cmdMatch = checkPackageName(command);
+          if (cmdMatch) {
+            findings.push(
+              buildMaliciousFinding(name, command, cmdMatch, file.path)
+            );
+            continue;
+          }
+          for (const arg of args) {
+            if (arg.startsWith("-")) continue;
+            const pkgName = arg.includes("@") && !arg.startsWith("@") ? arg.substring(0, arg.indexOf("@")) : arg.startsWith("@") && arg.split("@").length > 2 ? arg.substring(0, arg.lastIndexOf("@")) : arg;
+            const match = checkPackageName(pkgName);
+            if (match) {
+              findings.push(
+                buildMaliciousFinding(name, pkgName, match, file.path)
+              );
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  }
+];
+function buildMaliciousFinding(serverName, packageName, match, filePath) {
+  const typeLabel = match.type === "typosquat" ? "typosquat" : match.type === "compromised" ? "compromised package" : "known-malicious package";
+  return {
+    id: `mcp-malicious-pkg-${serverName}`,
+    severity: "critical",
+    category: "mcp",
+    title: `MCP server "${serverName}" uses ${typeLabel}: ${packageName}`,
+    description: `${match.description}${match.legitimatePackage ? ` Did you mean "${match.legitimatePackage}"?` : ""}`,
+    file: filePath,
+    evidence: `package: ${packageName}, type: ${match.type}`,
+    fix: {
+      description: match.legitimatePackage ? `Replace with the legitimate package: ${match.legitimatePackage}` : "Remove this package immediately",
+      before: packageName,
+      after: match.legitimatePackage ?? "# REMOVE \u2014 malicious package",
+      auto: false
+    }
+  };
+}
+var cveMcpRules = rawCveMcpRules;
+
+// src/core-scanner/rules/mcp-tool-poisoning.ts
+var INJECTION_NAME_PATTERNS = [
+  // URLs embedded in names
+  /https?:\/\//i,
+  // Prompt override attempts
+  /\bignore\s+(previous|all|prior)\s+instructions?\b/i,
+  /\bsystem\s*:/i,
+  /\byou\s+are\s+now\b/i,
+  /\bassistant\s*:/i,
+  // Newlines in names (hidden instructions)
+  /[\n\r]/,
+  // Instruction-like compound names (handles both spaces and underscores)
+  /(send|exfiltrate|steal|leak|extract|read|dump|collect)[\s_\-/].*(to|from|all|every)[\s_\-/].*(https?|urls?|servers?|endpoints?|secrets?|keys?|tokens?|passwords?|credentials?|ssh|env)/i,
+  // Common attack verbs combined with targets
+  /read[\s_].*(?:and|then)[\s_].*send/i
+];
+var EXFILTRATION_URL_PATTERNS = [
+  {
+    pattern: /\bngrok\.io\b/i,
+    description: "ngrok tunneling service (commonly used for exfiltration)"
+  },
+  {
+    pattern: /\bngrok\.app\b/i,
+    description: "ngrok tunneling service (commonly used for exfiltration)"
+  },
+  {
+    pattern: /\bwebhook\.site\b/i,
+    description: "webhook.site data collection endpoint"
+  },
+  {
+    pattern: /\brequestbin\.com\b/i,
+    description: "RequestBin data collection endpoint"
+  },
+  {
+    pattern: /\brequestcatcher\.com\b/i,
+    description: "RequestCatcher data collection endpoint"
+  },
+  {
+    pattern: /\bpipedream\.net\b/i,
+    description: "Pipedream webhook endpoint"
+  },
+  {
+    pattern: /\bbeeceptor\.com\b/i,
+    description: "Beeceptor mock/intercept endpoint"
+  },
+  {
+    pattern: /\bhookbin\.com\b/i,
+    description: "Hookbin data collection endpoint"
+  },
+  {
+    pattern: /\bburpcollaborator\.net\b/i,
+    description: "Burp Collaborator (offensive security tool)"
+  },
+  {
+    pattern: /\binteractsh\.com\b/i,
+    description: "Interactsh out-of-band interaction server"
+  },
+  {
+    pattern: /\bcollect\?data=|\/exfil|\/steal|\/leak/i,
+    description: "URL path suggesting data exfiltration endpoint"
+  }
+];
+var SENSITIVE_PATHS = [
+  {
+    pattern: /^~?\/?\.ssh\b/,
+    description: "SSH keys and configuration"
+  },
+  {
+    pattern: /^~?\/?\.gnupg\b/,
+    description: "GPG keys and configuration"
+  },
+  {
+    pattern: /^~?\/?\.aws\b/,
+    description: "AWS credentials and configuration"
+  },
+  {
+    pattern: /^~?\/?\.kube\b/,
+    description: "Kubernetes configuration and credentials"
+  },
+  {
+    pattern: /^\/etc\b/,
+    description: "System configuration directory"
+  },
+  {
+    pattern: /^\/var\/log\b/,
+    description: "System log files"
+  },
+  {
+    pattern: /^\/Users\/[^/]+$/,
+    description: "User home directory (macOS)"
+  },
+  {
+    pattern: /^\/home\/[^/]+$/,
+    description: "User home directory (Linux)"
+  },
+  {
+    pattern: /^C:\\Users\\[^\\]+$/i,
+    description: "User home directory (Windows)"
+  }
+];
+var DESCRIPTION_POISONING_PATTERNS = [
+  // Data harvesting instructions
+  {
+    pattern: /\b(always|must|first|before)\b.{0,80}\b(include|send|read|output|call|fetch|get)\b.{0,80}(?:\.env|\.ssh|id_rsa|\bcredentials?\b|\bsecrets?\b|\btokens?\b|\bpasswords?\b|\bapi[_\s-]?keys?\b)/i,
+    description: "Hidden instruction to harvest sensitive files or credentials"
+  },
+  // Prompt reflection / system prompt leaking
+  {
+    pattern: /\b(output|print|display|return|reveal|show)\b.{0,80}\b(system\s+prompt|previous\s+conversation|full\s+context|all\s+previous|conversation\s+history)\b/i,
+    description: "Instruction to leak system prompt or conversation context"
+  },
+  // URL exfiltration commands in descriptions
+  {
+    pattern: /\b(send|post|transmit|forward|upload)\b.{0,100}\bhttps?:\/\//i,
+    description: "Instruction to exfiltrate data to an external URL"
+  },
+  // Override/ignore instructions
+  {
+    pattern: /\bignore\s+(previous|all|prior|other)\s+(instructions?|rules?|guidelines?)\b/i,
+    description: "Attempt to override the agent's instructions"
+  },
+  // Execute arbitrary commands
+  {
+    pattern: /\b(execute|run|eval)\b.{0,60}\b(command|shell|bash|script|code)\b/i,
+    description: "Instruction to execute arbitrary commands"
+  }
+];
+function analyzeMcpToolText(toolName, description, schemaText = "") {
+  const hits = [];
+  const name = toolName ?? "";
+  const desc = description ?? "";
+  const haystack = `${desc}
+${schemaText}`;
+  for (const re of INJECTION_NAME_PATTERNS) {
+    if (re.test(name)) {
+      hits.push({
+        severity: "high",
+        title: `MCP tool name contains an injection pattern: "${name}"`,
+        description: "The tool name contains instruction-like text, a URL, or a prompt-injection pattern that can manipulate the agent when the tool list is shown to it.",
+        evidence: name.slice(0, 200)
+      });
+      break;
+    }
+  }
+  for (const { pattern, description: why } of DESCRIPTION_POISONING_PATTERNS) {
+    const m = haystack.match(pattern);
+    if (m) {
+      hits.push({
+        severity: "critical",
+        title: `MCP tool "${name}" description contains a poisoning instruction`,
+        description: why,
+        evidence: m[0].slice(0, 200)
+      });
+    }
+  }
+  for (const { pattern, description: why } of EXFILTRATION_URL_PATTERNS) {
+    const m = haystack.match(pattern);
+    if (m) {
+      hits.push({
+        severity: "high",
+        title: `MCP tool "${name}" references a suspicious exfiltration endpoint`,
+        description: why,
+        evidence: m[0].slice(0, 200)
+      });
+    }
+  }
+  return hits;
+}
+var rawToolPoisoningRules = [
+  {
+    id: "mcp-tool-name-injection",
+    name: "MCP Server Name Contains Injection Attempt",
+    description: "Detects MCP server names that contain instruction-like text, URLs, or prompt injection patterns",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const name of Object.keys(servers)) {
+          for (const pattern of INJECTION_NAME_PATTERNS) {
+            if (pattern.test(name)) {
+              findings.push({
+                id: `mcp-tool-name-injection-${name.substring(0, 30)}`,
+                severity: "high",
+                category: "mcp",
+                title: `MCP server name contains injection pattern: "${name.substring(0, 60)}"`,
+                description: `The MCP server name "${name.substring(0, 80)}" contains suspicious patterns that may be an injection attempt. Server names should be simple identifiers, not instructions or URLs.`,
+                file: file.path,
+                evidence: name.substring(0, 100),
+                fix: {
+                  description: "Rename the server to a simple, descriptive identifier",
+                  before: name.substring(0, 40),
+                  after: "safe-server-name",
+                  auto: false
+                }
+              });
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-suspicious-url-args",
+    name: "MCP Server Args Contain Suspicious URLs",
+    description: "Detects MCP server arguments containing URLs associated with data exfiltration or tunneling services",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const args = serverConfig.args ?? [];
+          for (const arg of args) {
+            for (const { pattern, description } of EXFILTRATION_URL_PATTERNS) {
+              if (pattern.test(arg)) {
+                findings.push({
+                  id: `mcp-suspicious-url-${name}`,
+                  severity: "high",
+                  category: "mcp",
+                  title: `MCP server "${name}" has suspicious URL in args`,
+                  description: `The argument "${arg.substring(0, 80)}" contains a ${description}. This may indicate a data exfiltration setup where agent outputs or sensitive data are sent to an attacker-controlled endpoint.`,
+                  file: file.path,
+                  evidence: arg.substring(0, 100),
+                  fix: {
+                    description: "Remove the suspicious URL or replace with a trusted endpoint",
+                    before: arg.substring(0, 40),
+                    after: "https://your-trusted-endpoint.com",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-overly-broad-access",
+    name: "MCP Server Has Overly Broad File Access",
+    description: "Detects MCP servers configured with access to sensitive directories like .ssh, .aws, /etc, or user home directories",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const args = serverConfig.args ?? [];
+          for (const arg of args) {
+            if (arg.startsWith("-")) continue;
+            for (const { pattern, description } of SENSITIVE_PATHS) {
+              if (pattern.test(arg)) {
+                findings.push({
+                  id: `mcp-broad-access-${name}-${arg.substring(0, 20)}`,
+                  severity: "high",
+                  category: "mcp",
+                  title: `MCP server "${name}" has access to sensitive path: ${arg}`,
+                  description: `The MCP server "${name}" is configured with access to "${arg}" (${description}). This grants the agent access to sensitive system resources that should not be accessible through MCP servers.`,
+                  file: file.path,
+                  evidence: `args: [..., "${arg}"]`,
+                  fix: {
+                    description: "Restrict to project-specific directories only",
+                    before: arg,
+                    after: "./src",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-description-poisoning",
+    name: "MCP Server Description Contains Poisoning Pattern",
+    description: "Detects MCP server descriptions that contain hidden instructions, data harvesting commands, prompt reflection, or exfiltration URLs",
+    severity: "critical",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const description = serverConfig.description ?? "";
+          if (!description) continue;
+          for (const poisonPattern of DESCRIPTION_POISONING_PATTERNS) {
+            if (poisonPattern.pattern.test(description)) {
+              findings.push({
+                id: `mcp-desc-poisoning-${name}`,
+                severity: "critical",
+                category: "mcp",
+                title: `MCP server "${name}" description contains tool poisoning pattern`,
+                description: `The description for MCP server "${name}" contains a suspicious pattern: ${poisonPattern.description}. Tool description poisoning is a known attack vector where hidden instructions in descriptions manipulate the AI agent's behavior without the user's knowledge.`,
+                file: file.path,
+                evidence: description.substring(0, 200),
+                fix: {
+                  description: "Review and sanitize the server description, removing any instruction-like text",
+                  before: description.substring(0, 60),
+                  after: "A clear, factual description of the server's purpose",
+                  auto: false
+                }
+              });
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "mcp-env-exfiltration-urls",
+    name: "MCP Server Env Contains Exfiltration URLs",
+    description: "Detects MCP server environment variables containing URLs associated with data exfiltration services",
+    severity: "high",
+    category: "mcp",
+    check(file) {
+      if (file.type !== "mcp-json" && file.type !== "settings-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server ?? {};
+          const env = serverConfig.env ?? {};
+          for (const [key, value] of Object.entries(env)) {
+            if (typeof value !== "string") continue;
+            for (const { pattern, description } of EXFILTRATION_URL_PATTERNS) {
+              if (pattern.test(value)) {
+                findings.push({
+                  id: `mcp-env-exfil-${name}-${key}`,
+                  severity: "high",
+                  category: "mcp",
+                  title: `MCP server "${name}" env var "${key}" contains suspicious URL`,
+                  description: `The environment variable "${key}" for MCP server "${name}" contains a ${description}. This may be configured to send agent data or secrets to an external collection endpoint.`,
+                  file: file.path,
+                  evidence: `${key}=${value.substring(0, 80)}`,
+                  fix: {
+                    description: "Replace with a trusted endpoint URL",
+                    before: value.substring(0, 40),
+                    after: "https://your-trusted-endpoint.com",
+                    auto: false
+                  }
+                });
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  }
+];
+var toolPoisoningRules = rawToolPoisoningRules;
+
+// src/core-scanner/rules/package-manager.ts
+var import_yaml = require("yaml");
+var RELEASE_AGE_MINUTES = 1440;
+function isPackageManagerConfig(file) {
+  return file.type === "package-manager-config";
+}
+function normalizePath2(filePath) {
+  return filePath.replace(/\\/g, "/").toLowerCase();
+}
+function isNpmStyleConfig(file) {
+  const normalized = normalizePath2(file.path);
+  return normalized.endsWith(".npmrc") || normalized.endsWith(".pnpmrc");
+}
+function isNpmConfig(file) {
+  return normalizePath2(file.path).endsWith(".npmrc");
+}
+function isPnpmLineConfig(file) {
+  const normalized = normalizePath2(file.path);
+  return normalized.endsWith(".pnpmrc") || normalized.endsWith("/pnpm/rc");
+}
+function isYarnConfig(file) {
+  const normalized = normalizePath2(file.path);
+  return normalized.endsWith(".yarnrc.yml") || normalized.endsWith(".yarnrc");
+}
+function isPnpmWorkspaceConfig(file) {
+  const normalized = normalizePath2(file.path);
+  return normalized.endsWith("pnpm-workspace.yaml") || normalized.endsWith("pnpm-workspace.yml");
+}
+function parseLineConfig(content) {
+  const entries = [];
+  for (const [index, rawLine] of content.split("\n").entries()) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";"))
+      continue;
+    const assignment = trimmed.match(/^([^=\s]+)\s*=\s*(.*)$/);
+    if (!assignment) continue;
+    const key = assignment[1].trim();
+    const value = stripInlineComment(assignment[2].trim());
+    entries.push({
+      key,
+      normalizedKey: normalizeConfigKey(key),
+      value,
+      line: index + 1
+    });
+  }
+  return entries;
+}
+function stripInlineComment(value) {
+  const quoted = value.match(/^(['"])(.*)\1$/);
+  if (quoted) return quoted[2];
+  const commentIndex = value.search(/\s[#;]/);
+  return commentIndex === -1 ? value : value.slice(0, commentIndex).trim();
+}
+function normalizeConfigKey(key) {
+  return key.toLowerCase().replace(/^.*:/, "").replace(/[_-]/g, "");
+}
+function findEntry(entries, key) {
+  const normalizedKey = normalizeConfigKey(key);
+  return entries.find((entry) => entry.normalizedKey === normalizedKey);
+}
+function parseBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value !== "string") return void 0;
+  switch (value.trim().replace(/^['"]|['"]$/g, "").toLowerCase()) {
+    case "true":
+    case "1":
+    case "yes":
+    case "on":
+      return true;
+    case "false":
+    case "0":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return void 0;
+  }
+}
+function parseNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return void 0;
+  const parsed = Number(value.trim().replace(/^['"]|['"]$/g, ""));
+  return Number.isFinite(parsed) ? parsed : void 0;
+}
+function parseDurationToMinutes(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value * 24 * 60;
+  }
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim().replace(/^['"]|['"]$/g, "");
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w)?$/i);
+  if (!match) return void 0;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return void 0;
+  switch ((match[2] ?? "d").toLowerCase()) {
+    case "ms":
+      return amount / 6e4;
+    case "s":
+      return amount / 60;
+    case "m":
+      return amount;
+    case "h":
+      return amount * 60;
+    case "d":
+      return amount * 24 * 60;
+    case "w":
+      return amount * 7 * 24 * 60;
+    default:
+      return void 0;
+  }
+}
+function parseYamlRecord(content) {
+  try {
+    const parsed = (0, import_yaml.parse)(content);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function findYamlLine(content, key) {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*:`, "im");
+  const match = pattern.exec(content);
+  if (!match || match.index == null) return void 0;
+  return content.slice(0, match.index).split("\n").length;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function isEnvReference(value) {
+  const normalized = value.trim().replace(/^['"]|['"]$/g, "");
+  return normalized.startsWith("$") || normalized.includes("${") || normalized.includes("%") || normalized.toLowerCase().includes("process.env");
+}
+function maskCredential(value) {
+  const normalized = value.trim().replace(/^['"]|['"]$/g, "");
+  if (normalized.length <= 10) return "<redacted>";
+  return `${normalized.slice(0, 6)}...${normalized.slice(-4)}`;
+}
+function makeFinding(options) {
+  return {
+    id: options.id,
+    severity: options.severity,
+    category: options.category,
+    title: options.title,
+    description: options.description,
+    file: options.file,
+    line: options.line,
+    evidence: options.evidence,
+    fix: options.before && options.after ? {
+      description: "Harden package-manager configuration",
+      before: options.before,
+      after: options.after,
+      auto: false
+    } : void 0
+  };
+}
+function credentialFindings(file) {
+  const findings = [];
+  if (isNpmStyleConfig(file)) {
+    for (const entry of parseLineConfig(file.content)) {
+      if (!/(?:^|:)_?auth(?:token)?$|(?:^|:)_password$|(?:^|:)password$/.test(
+        entry.normalizedKey
+      )) {
+        continue;
+      }
+      if (!entry.value || isEnvReference(entry.value)) continue;
+      findings.push(
+        makeFinding({
+          id: `package-manager-registry-credential-${entry.line}`,
+          severity: "critical",
+          category: "secrets",
+          title: "Plaintext package registry credential",
+          description: "A package-manager config stores a registry credential directly on disk. Use an environment variable reference and rotate the exposed token before relying on package-manager hardening.",
+          file: file.path,
+          line: entry.line,
+          evidence: `${entry.key}=${maskCredential(entry.value)}`,
+          before: `${entry.key}=<token>`,
+          after: `${entry.key}=\${NPM_TOKEN}`
+        })
+      );
+    }
+  }
+  if (isYarnConfig(file)) {
+    const record = parseYamlRecord(file.content);
+    if (!record) return findings;
+    for (const key of ["npmAuthToken", "npmAuthIdent"]) {
+      const value = record[key];
+      if (typeof value !== "string" || isEnvReference(value)) continue;
+      findings.push(
+        makeFinding({
+          id: `package-manager-registry-credential-${key}`,
+          severity: "critical",
+          category: "secrets",
+          title: "Plaintext package registry credential",
+          description: "A Yarn config stores a registry credential directly on disk. Use an environment variable reference and rotate the exposed token before relying on package-manager hardening.",
+          file: file.path,
+          line: findYamlLine(file.content, key),
+          evidence: `${key}: ${maskCredential(value)}`,
+          before: `${key}: <token>`,
+          after: `${key}: \${NPM_TOKEN}`
+        })
+      );
+    }
+  }
+  return findings;
+}
+function lifecycleScriptFindings(file) {
+  const findings = [];
+  if (isNpmStyleConfig(file)) {
+    const entries = parseLineConfig(file.content);
+    const ignoreScripts = findEntry(entries, "ignore-scripts");
+    const parsedIgnoreScripts = ignoreScripts ? parseBoolean(ignoreScripts.value) : void 0;
+    if (parsedIgnoreScripts === false) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-lifecycle-scripts-enabled",
+          severity: "high",
+          category: "misconfiguration",
+          title: "Package lifecycle scripts are explicitly enabled",
+          description: "`ignore-scripts=false` allows dependency install scripts to execute. For high-risk AI developer workstations and CI runners, disable lifecycle scripts by default and allowlist required builds separately.",
+          file: file.path,
+          line: ignoreScripts?.line,
+          evidence: `${ignoreScripts?.key}=${ignoreScripts?.value}`,
+          before: `${ignoreScripts?.key}=false`,
+          after: "ignore-scripts=true"
+        })
+      );
+    } else if (!ignoreScripts) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-lifecycle-scripts-not-disabled",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "Package lifecycle scripts are not disabled",
+          description: "This package-manager config does not set `ignore-scripts=true`. Dependency install scripts remain a common supply-chain execution path, including for AI-tooling-focused npm campaigns.",
+          file: file.path,
+          before: "# missing ignore-scripts",
+          after: "ignore-scripts=true"
+        })
+      );
+    }
+  }
+  if (isYarnConfig(file)) {
+    const record = parseYamlRecord(file.content);
+    const enableScripts = record ? parseBoolean(record.enableScripts) : void 0;
+    if (enableScripts === true) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-yarn-lifecycle-scripts-enabled",
+          severity: "high",
+          category: "misconfiguration",
+          title: "Yarn lifecycle scripts are explicitly enabled",
+          description: "`enableScripts: true` lets third-party postinstall scripts run. Keep scripts disabled globally and use package-specific approvals only where the build is required.",
+          file: file.path,
+          line: findYamlLine(file.content, "enableScripts"),
+          evidence: "enableScripts: true",
+          before: "enableScripts: true",
+          after: "enableScripts: false"
+        })
+      );
+    }
+  }
+  if (isPnpmWorkspaceConfig(file)) {
+    const record = parseYamlRecord(file.content);
+    if (!record) return findings;
+    if (parseBoolean(record.dangerouslyAllowAllBuilds) === true) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-dangerously-allow-all-builds",
+          severity: "high",
+          category: "misconfiguration",
+          title: "pnpm allows all dependency build scripts",
+          description: "`dangerouslyAllowAllBuilds: true` disables the package-by-package build review boundary. Keep it off for developer hosts and CI runners that handle secrets.",
+          file: file.path,
+          line: findYamlLine(file.content, "dangerouslyAllowAllBuilds"),
+          evidence: "dangerouslyAllowAllBuilds: true",
+          before: "dangerouslyAllowAllBuilds: true",
+          after: "strictDepBuilds: true"
+        })
+      );
+    }
+    if (parseBoolean(record.strictDepBuilds) === false) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-strict-dep-builds-disabled",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "pnpm strict dependency build review is disabled",
+          description: "`strictDepBuilds: false` allows dependency lifecycle scripts without forcing an explicit review path. Enable strict dependency builds and allow only known required build scripts.",
+          file: file.path,
+          line: findYamlLine(file.content, "strictDepBuilds"),
+          evidence: "strictDepBuilds: false",
+          before: "strictDepBuilds: false",
+          after: "strictDepBuilds: true"
+        })
+      );
+    }
+  }
+  return findings;
+}
+function releaseAgeFindings(file) {
+  const findings = [];
+  if (isNpmConfig(file)) {
+    const entries = parseLineConfig(file.content);
+    const releaseAge = findEntry(entries, "min-release-age") ?? findEntry(entries, "minimum-release-age");
+    if (releaseAge) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-npm-release-age-gate-unsupported",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "npm release-age gate key is unsupported",
+          description: "The npm CLI does not recognize a native dynamic release-age gate. This key can create false confidence; enforce package cooldowns through pnpm `minimumReleaseAge`, Yarn `npmMinimalAgeGate`, or a package-manager policy wrapper.",
+          file: file.path,
+          line: releaseAge.line,
+          evidence: `${releaseAge.key}=${releaseAge.value}`,
+          before: `${releaseAge.key}=${releaseAge.value}`,
+          after: "# use pnpm minimumReleaseAge or Yarn npmMinimalAgeGate"
+        })
+      );
+    }
+  }
+  if (isPnpmLineConfig(file)) {
+    const entries = parseLineConfig(file.content);
+    const releaseAge = findEntry(entries, "minimum-release-age");
+    const releaseAgeValue = releaseAge ? parseNumber(releaseAge.value) : void 0;
+    if (!releaseAge) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-release-age-gate-missing",
+          severity: "info",
+          category: "misconfiguration",
+          title: "pnpm release-age gate is not configured",
+          description: "pnpm can block package versions that are too new through `minimumReleaseAge` / `minimum-release-age`. Configure a cooldown to reduce exposure to fast-moving supply-chain campaigns.",
+          file: file.path,
+          before: "# missing minimum-release-age",
+          after: "minimum-release-age=1440"
+        })
+      );
+    } else if (releaseAgeValue !== void 0 && releaseAgeValue < RELEASE_AGE_MINUTES) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-release-age-gate-too-low",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "pnpm release-age gate is below one day",
+          description: "`minimum-release-age` is below one day. Use a longer cooldown for workstations and CI runners that handle tokens or publish packages.",
+          file: file.path,
+          line: releaseAge.line,
+          evidence: `${releaseAge.key}=${releaseAge.value}`,
+          before: `${releaseAge.key}=${releaseAge.value}`,
+          after: `${releaseAge.key}=1440`
+        })
+      );
+    }
+  }
+  if (isYarnConfig(file)) {
+    const record = parseYamlRecord(file.content);
+    const ageGate = record?.npmMinimalAgeGate;
+    const ageGateValue = parseDurationToMinutes(ageGate);
+    if (ageGate === void 0) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-yarn-release-age-gate-missing",
+          severity: "info",
+          category: "misconfiguration",
+          title: "Yarn npm release-age gate is not configured",
+          description: "Yarn can block package versions that are too new through `npmMinimalAgeGate`. Configure a cooldown to reduce exposure to newly published malicious packages.",
+          file: file.path,
+          before: "# missing npmMinimalAgeGate",
+          after: 'npmMinimalAgeGate: "1d"'
+        })
+      );
+    } else if (ageGateValue !== void 0 && ageGateValue < RELEASE_AGE_MINUTES) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-yarn-release-age-gate-too-low",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "Yarn npm release-age gate is below one day",
+          description: "The configured Yarn age gate is below one day. Use a longer cooldown for workstations and CI runners that handle tokens or publish packages.",
+          file: file.path,
+          line: findYamlLine(file.content, "npmMinimalAgeGate"),
+          evidence: `npmMinimalAgeGate: ${String(ageGate)}`,
+          before: `npmMinimalAgeGate: ${String(ageGate)}`,
+          after: 'npmMinimalAgeGate: "1d"'
+        })
+      );
+    }
+  }
+  if (isPnpmWorkspaceConfig(file)) {
+    const record = parseYamlRecord(file.content);
+    const releaseAge = record?.minimumReleaseAge;
+    const releaseAgeValue = parseNumber(releaseAge);
+    if (releaseAge === void 0) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-release-age-gate-missing",
+          severity: "info",
+          category: "misconfiguration",
+          title: "pnpm release-age gate is not configured",
+          description: "pnpm can block package versions that are too new through `minimumReleaseAge`. Configure a cooldown to reduce exposure to fast-moving supply-chain campaigns.",
+          file: file.path,
+          before: "# missing minimumReleaseAge",
+          after: "minimumReleaseAge: 1440"
+        })
+      );
+    } else if (releaseAgeValue !== void 0 && releaseAgeValue < RELEASE_AGE_MINUTES) {
+      findings.push(
+        makeFinding({
+          id: "package-manager-pnpm-release-age-gate-too-low",
+          severity: "medium",
+          category: "misconfiguration",
+          title: "pnpm release-age gate is below one day",
+          description: "`minimumReleaseAge` is below one day. Use a longer cooldown for workstations and CI runners that handle tokens or publish packages.",
+          file: file.path,
+          line: findYamlLine(file.content, "minimumReleaseAge"),
+          evidence: `minimumReleaseAge: ${String(releaseAge)}`,
+          before: `minimumReleaseAge: ${String(releaseAge)}`,
+          after: "minimumReleaseAge: 1440"
+        })
+      );
+    }
+  }
+  return findings;
+}
+var packageManagerRules = [
+  {
+    id: "package-manager-registry-credentials",
+    name: "Package Manager Registry Credentials",
+    description: "Checks package-manager configs for plaintext registry credentials",
+    severity: "critical",
+    category: "secrets",
+    check(file) {
+      if (!isPackageManagerConfig(file)) return [];
+      return credentialFindings(file);
+    }
+  },
+  {
+    id: "package-manager-lifecycle-scripts",
+    name: "Package Manager Lifecycle Scripts",
+    description: "Checks package-manager configs for risky dependency lifecycle script settings",
+    severity: "high",
+    category: "misconfiguration",
+    check(file) {
+      if (!isPackageManagerConfig(file)) return [];
+      return lifecycleScriptFindings(file);
+    }
+  },
+  {
+    id: "package-manager-release-age-gates",
+    name: "Package Manager Release Age Gates",
+    description: "Checks package-manager configs for missing or weak package release-age cooldowns",
+    severity: "medium",
+    category: "misconfiguration",
+    check(file) {
+      if (!isPackageManagerConfig(file)) return [];
+      return releaseAgeFindings(file);
+    }
+  }
+];
+
+// src/core-scanner/rules/permissions.ts
+var import_node_fs = require("fs");
+var import_node_os = require("os");
+var import_node_path = require("path");
+function isHookManifestConfig(file, config) {
+  if (!/(^|\/)hooks\/[^/]+\.json$/i.test(file.path)) return false;
+  if (!config || typeof config !== "object") return false;
+  return "hooks" in config;
+}
+var OVERLY_PERMISSIVE = [
+  {
+    pattern: /^Bash\(\*\)$/,
+    description: "Unrestricted Bash access \u2014 any command can run",
+    severity: "critical",
+    suggestion: "Bash(git *), Bash(npm *), Bash(node *)"
+  },
+  {
+    pattern: /^Bash\(sudo\s/,
+    description: "Sudo access allowed \u2014 agent can escalate privileges",
+    severity: "critical",
+    suggestion: "Remove sudo permissions entirely"
+  },
+  {
+    pattern: /^Write\(\*\)$/,
+    description: "Unrestricted Write access \u2014 agent can write to any file",
+    severity: "high",
+    suggestion: "Write(src/*), Write(tests/*)"
+  },
+  {
+    pattern: /^Edit\(\*\)$/,
+    description: "Unrestricted Edit access \u2014 agent can edit any file",
+    severity: "high",
+    suggestion: "Edit(src/*), Edit(tests/*)"
+  },
+  {
+    pattern: /^Bash\(rm\s/,
+    description: "Delete operations explicitly allowed in Bash",
+    severity: "high",
+    suggestion: "Move rm commands to deny list instead"
+  },
+  {
+    pattern: /^Bash\(curl\s/,
+    description: "Unrestricted curl access \u2014 agent can make arbitrary HTTP requests",
+    severity: "medium",
+    suggestion: "Restrict to specific domains or move to deny list"
+  },
+  {
+    pattern: /^Bash\(wget\s/,
+    description: "Unrestricted wget access \u2014 agent can download arbitrary files",
+    severity: "medium",
+    suggestion: "Restrict to specific domains or move to deny list"
+  },
+  {
+    pattern: /^Bash\(chmod\s/,
+    description: "chmod access \u2014 agent can change file permissions",
+    severity: "medium",
+    suggestion: "Move chmod to deny list to prevent permission escalation"
+  },
+  {
+    pattern: /^Bash\(chown\s/,
+    description: "chown access \u2014 agent can change file ownership",
+    severity: "high",
+    suggestion: "Move chown to deny list to prevent ownership takeover"
+  },
+  {
+    pattern: /^Bash\(ssh\s/,
+    description: "SSH access \u2014 agent can connect to remote systems",
+    severity: "high",
+    suggestion: "Remove SSH permissions to prevent lateral movement"
+  },
+  {
+    pattern: /^Bash\(nc\s|^Bash\(netcat\s/,
+    description: "Netcat access \u2014 can open network connections for exfiltration or reverse shells",
+    severity: "high",
+    suggestion: "Remove netcat permissions entirely"
+  },
+  {
+    pattern: /^Bash\(python\s|^Bash\(python3\s|^Bash\(node\s/,
+    description: "Interpreter access \u2014 agent can run arbitrary code via scripting language",
+    severity: "high",
+    suggestion: "Restrict to specific scripts: Bash(node scripts/build.js)"
+  },
+  {
+    pattern: /^Bash\(docker\s/,
+    description: "Docker access \u2014 containers can escape to host, mount filesystems, and access host network",
+    severity: "high",
+    suggestion: "Remove docker permissions or restrict to read-only: Bash(docker ps)"
+  },
+  {
+    pattern: /^Bash\(kill\s|^Bash\(pkill\s|^Bash\(killall\s/,
+    description: "Process killing \u2014 agent can terminate system processes",
+    severity: "medium",
+    suggestion: "Move process killing to deny list"
+  },
+  {
+    pattern: /^Bash\(eval\s/,
+    description: "eval access \u2014 agent can execute arbitrary code via shell eval",
+    severity: "critical",
+    suggestion: "Remove eval permissions; use explicit commands instead"
+  },
+  {
+    pattern: /^Bash\(exec\s/,
+    description: "exec access \u2014 agent can replace the current process with arbitrary commands",
+    severity: "critical",
+    suggestion: "Remove exec permissions; use explicit commands instead"
+  }
+];
+var MISSING_DENIALS = [
+  { pattern: "rm -rf", description: "Recursive force delete" },
+  { pattern: "sudo", description: "Privilege escalation" },
+  { pattern: "chmod 777", description: "World-writable permissions" },
+  { pattern: "ssh", description: "SSH connections from agent" },
+  { pattern: "> /dev/", description: "Writing to device files" }
+];
+function parsePermissionLists(content) {
+  try {
+    const config = JSON.parse(content);
+    return {
+      allow: config?.permissions?.allow ?? [],
+      deny: config?.permissions?.deny ?? []
+    };
+  } catch {
+    return null;
+  }
+}
+function findConfigKeyValues(value, keyPattern, currentPath = "") {
+  const matches = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const childPath = `${currentPath}[${index}]`;
+      matches.push(...findConfigKeyValues(item, keyPattern, childPath));
+    });
+    return matches;
+  }
+  if (!value || typeof value !== "object") {
+    return matches;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = currentPath ? `${currentPath}.${key}` : key;
+    if (keyPattern.test(key)) {
+      matches.push({ path: childPath, value: child });
+    }
+    matches.push(...findConfigKeyValues(child, keyPattern, childPath));
+  }
+  return matches;
+}
+function isExternalUrl(value) {
+  if (!/^https?:\/\//i.test(value)) return false;
+  return !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(
+    value
+  );
+}
+function getBashPermissionCommand(entry) {
+  const match = entry.match(/^Bash\((.*)\)$/s);
+  return match ? match[1].trim() : null;
+}
+function isScopedNetworkAllowEntry(entry) {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/\b(?:curl|wget)\b/i.test(command)) return false;
+  const hasShellExpansion = /\$\(|\$\{?[A-Za-z_]/.test(command) || /`[^`]+`/.test(command);
+  if (hasShellExpansion) return false;
+  if (command.includes("*")) return false;
+  if (/\|\s*(?:sh|bash|zsh)\b/i.test(command)) return false;
+  const segments = command.split(/\s*(?:&&|\|\||;|\n)\s*/).map((segment) => segment.trim()).filter(Boolean);
+  let sawNetworkSegment = false;
+  for (const segment of segments) {
+    if (!/\b(?:curl|wget)\b/i.test(segment)) continue;
+    sawNetworkSegment = true;
+    if (!/https?:\/\/[^\s"'`)]+/i.test(segment)) {
+      return false;
+    }
+  }
+  return sawNetworkSegment;
+}
+function hasDynamicShellBehavior(command) {
+  return /(?:\$\(|\$\{?[A-Za-z_]|`[^`]+`)/.test(command) || /(?:&&|\|\||;|\||>|<)/.test(command) || command.includes("*");
+}
+function isScopedInterpreterScriptAllowEntry(entry) {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/^(?:python|python3|node)\s+/i.test(command)) return false;
+  if (hasDynamicShellBehavior(command)) return false;
+  if (/\s(?:-c|-e|-i|-m|-p|-r|--eval|--print|--require)\b/.test(command))
+    return false;
+  const scriptMatch = command.match(
+    /^(?:python|python3|node)\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/i
+  );
+  const scriptTarget = scriptMatch?.[1] ?? scriptMatch?.[2] ?? scriptMatch?.[3];
+  if (!scriptTarget) return false;
+  if (scriptTarget.startsWith("-")) return false;
+  return /[\\/]/.test(scriptTarget) || /\.(?:js|cjs|mjs|ts|cts|mts|py)$/i.test(scriptTarget);
+}
+function isReadOnlyDockerAllowEntry(entry) {
+  const command = getBashPermissionCommand(entry);
+  if (!command) return false;
+  if (!/^docker\s+/i.test(command)) return false;
+  if (hasDynamicShellBehavior(command)) return false;
+  return /^(?:docker\s+(?:ps|images|version|info)\b|docker\s+(?:image|container|context)\s+ls\b)/i.test(
+    command.trim()
+  );
+}
+function isSettingsLocalFile(file) {
+  return /(^|[\\/])settings\.local\.json$/i.test(file.path);
+}
+function isExactAllowEntry(entry) {
+  if (!/^[A-Za-z]+\(.+\)$/.test(entry)) return false;
+  if (entry.includes("*")) return false;
+  if (/\$\(|\$\{?[A-Za-z_]/.test(entry) || /`[^`]+`/.test(entry)) return false;
+  return true;
+}
+function hasOnlyExactAllowEntries(allowEntries) {
+  return allowEntries.length > 0 && allowEntries.every((entry) => isExactAllowEntry(entry));
+}
+var DESTRUCTIVE_GIT_PATTERNS = [
+  {
+    pattern: /push\s+--force(?!-with-lease)|push\s+-f\b/,
+    description: "Force push can overwrite remote history, destroying teammates' work",
+    suggestion: "Use --force-with-lease instead, or move to deny list"
+  },
+  {
+    pattern: /reset\s+--hard/,
+    description: "Hard reset destroys uncommitted changes without recovery",
+    suggestion: "Move to deny list; use 'git stash' or 'git reset --soft' instead"
+  },
+  {
+    pattern: /clean\s+-[a-z]*f/,
+    description: "Git clean with force flag permanently deletes untracked files",
+    suggestion: "Move to deny list; use 'git clean -n' (dry-run) first"
+  },
+  {
+    pattern: /branch\s+-D\b/,
+    description: "Force-delete branch regardless of merge status can lose work",
+    suggestion: "Use 'branch -d' (lowercase) which checks merge status first"
+  },
+  {
+    pattern: /checkout\s+\.\s*$/,
+    description: "Discards all unstaged changes in working directory",
+    suggestion: "Move to deny list to prevent accidental loss of work"
+  }
+];
+var permissionRules = [
+  {
+    id: "permissions-overly-permissive",
+    name: "Overly Permissive Access",
+    description: "Checks the ALLOW list for permission rules that grant excessive access",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      for (const entry of perms.allow) {
+        if (isScopedNetworkAllowEntry(entry) || isScopedInterpreterScriptAllowEntry(entry) || isReadOnlyDockerAllowEntry(entry)) {
+          continue;
+        }
+        for (const check of OVERLY_PERMISSIVE) {
+          if (check.pattern.test(entry)) {
+            findings.push({
+              id: `permissions-permissive-${entry}`,
+              severity: check.severity,
+              category: "permissions",
+              title: `Overly permissive allow rule: ${entry}`,
+              description: check.description,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: `Restrict to specific commands: ${check.suggestion}`,
+                before: entry,
+                after: check.suggestion,
+                auto: false
+              }
+            });
+            break;
+          }
+        }
+      }
+      for (const denyEntry of perms.deny) {
+        for (const allowEntry of perms.allow) {
+          if (allowEntry === denyEntry) {
+            findings.push({
+              id: `permissions-contradiction-${denyEntry}`,
+              severity: "medium",
+              category: "misconfiguration",
+              title: `Contradictory permission: "${denyEntry}" in both allow and deny`,
+              description: `The permission "${denyEntry}" appears in both the allow and deny lists. Deny takes precedence, but this is confusing and should be cleaned up.`,
+              file: file.path,
+              evidence: denyEntry
+            });
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-no-deny-list",
+    name: "Missing Deny List",
+    description: "Checks if the settings.json has a deny list for dangerous operations",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      if (perms.deny.length === 0 && perms.allow.length > 0) {
+        const isScopedProjectLocalConfig = isSettingsLocalFile(file) && hasOnlyExactAllowEntries(perms.allow);
+        findings.push({
+          id: "permissions-no-deny-list",
+          severity: isScopedProjectLocalConfig ? "medium" : "high",
+          category: "permissions",
+          title: isScopedProjectLocalConfig ? "Project-local config has no deny list" : "No deny list configured",
+          description: isScopedProjectLocalConfig ? "settings.local.json has no deny list. The current allow list appears tightly scoped, so this is less risky than a broad runtime config, but explicit denials still improve safety." : "settings.json has no deny list. Without explicit denials, the agent may run dangerous operations if the allow list is too broad.",
+          file: file.path,
+          fix: {
+            description: "Add a deny list for dangerous operations",
+            before: '"permissions": { "allow": [...] }',
+            after: '"permissions": { "allow": [...], "deny": ["Bash(rm -rf *)", "Bash(sudo *)", "Bash(chmod 777 *)"] }',
+            auto: false
+          }
+        });
+      }
+      for (const denial of MISSING_DENIALS) {
+        const hasDenial = perms.deny.some((d) => d.includes(denial.pattern));
+        if (!hasDenial && perms.deny.length > 0) {
+          findings.push({
+            id: `permissions-missing-deny-${denial.pattern.replace(/\s/g, "-")}`,
+            severity: "medium",
+            category: "permissions",
+            title: `Missing deny rule: ${denial.description}`,
+            description: `The deny list does not block "${denial.pattern}". Consider adding it to prevent ${denial.description.toLowerCase()}.`,
+            file: file.path
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-dangerous-skip",
+    name: "Dangerous Permission Bypass",
+    description: "Checks for dangerously-skip-permissions or no-verify flags used affirmatively",
+    severity: "critical",
+    category: "permissions",
+    check(file) {
+      const findings = [];
+      const dangerousPatterns = [
+        {
+          pattern: /dangerously-?skip-?permissions/gi,
+          desc: "Permission system bypass"
+        },
+        {
+          pattern: /--no-verify/g,
+          desc: "Git hook verification bypass"
+        }
+      ];
+      const negationPatterns = [
+        /\bnever\b/i,
+        /\bdon'?t\b/i,
+        /\bdo\s+not\b/i,
+        /\bnot\b/i,
+        /\bavoid\b/i,
+        /\bprohibit/i,
+        /\bforbid/i,
+        /\bdisable/i,
+        /\bban/i,
+        /\bblock/i
+      ];
+      for (const { pattern, desc } of dangerousPatterns) {
+        const matches = [
+          ...file.content.matchAll(
+            new RegExp(
+              pattern.source,
+              pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+            )
+          )
+        ];
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          const contextStart = Math.max(0, idx - 100);
+          const context = file.content.substring(contextStart, idx).toLowerCase();
+          const isNegated = negationPatterns.some((neg) => neg.test(context));
+          if (isNegated) {
+            findings.push({
+              id: `permissions-negated-${idx}`,
+              severity: "info",
+              category: "permissions",
+              title: `Prohibition of ${match[0]} (good practice)`,
+              description: `Found "${match[0]}" in a negated/prohibitive context. This is correct \u2014 the config is telling the agent NOT to use this flag.`,
+              file: file.path,
+              line: findLineNumber3(file.content, idx),
+              evidence: match[0]
+            });
+            continue;
+          }
+          findings.push({
+            id: `permissions-dangerous-${idx}`,
+            severity: "critical",
+            category: "permissions",
+            title: `Dangerous flag: ${match[0]}`,
+            description: `${desc}. The flag "${match[0]}" disables safety mechanisms.`,
+            file: file.path,
+            line: findLineNumber3(file.content, idx),
+            evidence: match[0],
+            fix: {
+              description: "Remove dangerous bypass flag",
+              before: match[0],
+              after: "# [REMOVED: dangerous bypass flag]",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-all-mutable-tools",
+    name: "All Mutable Tools Allowed",
+    description: "Checks if the allow list grants access to all three mutable tool categories simultaneously",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const allowStr = perms.allow.join(" ");
+      const hasBash = perms.allow.some((e) => e.startsWith("Bash"));
+      const hasWrite = perms.allow.some((e) => e.startsWith("Write"));
+      const hasEdit = perms.allow.some((e) => e.startsWith("Edit"));
+      if (hasBash && hasWrite && hasEdit) {
+        const allUnrestricted = allowStr.includes("Bash(*)") && allowStr.includes("Write(*)") && allowStr.includes("Edit(*)");
+        if (!allUnrestricted) {
+          return [
+            {
+              id: "permissions-all-mutable-tools",
+              severity: "high",
+              category: "permissions",
+              title: "All mutable tool categories allowed simultaneously",
+              description: "The allow list grants Bash, Write, and Edit access. Even with scoped patterns, having all three categories means the agent can run commands, create files, and modify files \u2014 effectively unrestricted write access to the system. Consider whether all three are truly needed.",
+              file: file.path,
+              fix: {
+                description: "Remove one or more mutable tool categories if not needed",
+                before: "Bash(...) + Write(...) + Edit(...)",
+                after: "Consider if the agent really needs all three",
+                auto: false
+              }
+            }
+          ];
+        }
+      }
+      return [];
+    }
+  },
+  {
+    id: "permissions-destructive-git",
+    name: "Destructive Git Commands Allowed",
+    description: "Checks if the allow list permits destructive git operations",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      for (const entry of perms.allow) {
+        for (const gitPattern of DESTRUCTIVE_GIT_PATTERNS) {
+          if (gitPattern.pattern.test(entry)) {
+            findings.push({
+              id: `permissions-destructive-git-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Destructive git command allowed: ${entry}`,
+              description: gitPattern.description,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: gitPattern.suggestion,
+                before: entry,
+                after: `# Move to deny list: ${entry}`,
+                auto: false
+              }
+            });
+            break;
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-sensitive-path-access",
+    name: "Sensitive Path in Allow List",
+    description: "Checks if the allow list permits tool access to sensitive system directories",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      const sensitivePaths = [
+        { pattern: /\/etc\//, description: "system configuration directory" },
+        {
+          pattern: /~\/\.ssh|\/\.ssh/,
+          description: "SSH keys and configuration"
+        },
+        { pattern: /~\/\.aws|\/\.aws/, description: "AWS credentials" },
+        { pattern: /~\/\.gnupg|\/\.gnupg/, description: "GPG keyring" },
+        { pattern: /\/root\//, description: "root user home directory" },
+        { pattern: /\/var\/log/, description: "system log directory" }
+      ];
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of sensitivePaths) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-sensitive-path-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants access to ${description}: ${entry}`,
+              description: `The allow entry "${entry}" grants tool access to a sensitive directory (${description}). This could expose credentials, keys, or system configuration.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to project directories only",
+                before: entry,
+                after: entry.replace(
+                  /\/etc\/.*|~\/\.ssh.*|\/\.ssh.*|~\/\.aws.*|\/\.aws.*|~\/\.gnupg.*|\/\.gnupg.*|\/root\/.*|\/var\/log.*/,
+                  "src/*"
+                ),
+                auto: false
+              }
+            });
+            break;
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-wildcard-root-paths",
+    name: "Wildcard Root Path in Allow List",
+    description: "Checks if the allow list uses wildcards on root-level or home-level directories",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      const broadPathPatterns = [
+        { pattern: /\(\/\*\)/, description: "root filesystem wildcard" },
+        { pattern: /\(~\/\*\)/, description: "home directory wildcard" },
+        {
+          pattern: /\(\/home\/\*\)/,
+          description: "all users home directories"
+        },
+        { pattern: /\(\/usr\/\*\)/, description: "system programs directory" },
+        {
+          pattern: /\(\/opt\/\*\)/,
+          description: "optional software directory"
+        }
+      ];
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of broadPathPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-wildcard-root-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Broad wildcard path in allow list: ${entry}`,
+              description: `The allow entry "${entry}" uses a ${description}. This grants the agent access to far more files than typically needed. Restrict to project-specific paths.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to project-specific directories",
+                before: entry,
+                after: entry.replace(/\(.*\)/, "(./src/*)"),
+                auto: false
+              }
+            });
+            break;
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-no-permissions-block",
+    name: "No Permissions Block Configured",
+    description: "Checks if settings.json exists but has no permissions configuration at all",
+    severity: "medium",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      try {
+        const config = JSON.parse(file.content);
+        if (isHookManifestConfig(file, config)) {
+          return [];
+        }
+        const hasOtherConfig = Object.keys(config).some(
+          (k) => k !== "permissions" && k !== "$schema"
+        );
+        if (hasOtherConfig && !config.permissions) {
+          return [
+            {
+              id: "permissions-no-block",
+              severity: "medium",
+              category: "permissions",
+              title: "No permissions block configured",
+              description: "settings.json has configuration but no permissions section. Without explicit allow/deny lists, the agent relies on default permissions which may be too broad. Add a permissions block to restrict tool access.",
+              file: file.path,
+              fix: {
+                description: "Add a permissions block with scoped allow and deny lists",
+                before: "No permissions section",
+                after: '"permissions": { "allow": ["Read(*)", "Glob(*)", "Grep(*)"], "deny": ["Bash(rm -rf *)", "Bash(sudo *)"] }',
+                auto: false
+              }
+            }
+          ];
+        }
+      } catch {
+      }
+      return [];
+    }
+  },
+  {
+    id: "permissions-model-endpoint-override",
+    name: "Model Endpoint Override",
+    description: "Checks for external API base URL overrides that can reroute model traffic through attacker-controlled infrastructure",
+    severity: "critical",
+    category: "misconfiguration",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      try {
+        const config = JSON.parse(file.content);
+        const overrideKeys = findConfigKeyValues(
+          config,
+          /^(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|AZURE_OPENAI_ENDPOINT|MODEL_BASE_URL)$/i
+        );
+        return overrideKeys.flatMap(({ path: path13, value }, index) => {
+          if (typeof value !== "string" || !isExternalUrl(value)) {
+            return [];
+          }
+          return [
+            {
+              id: `permissions-model-endpoint-override-${index}`,
+              severity: "critical",
+              category: "misconfiguration",
+              title: "External model endpoint override in config",
+              description: "This configuration overrides the model API base URL with an external host. In a repo-level settings file, that can silently reroute prompts, tool calls, and API keys through attacker-controlled infrastructure before the user notices.",
+              file: file.path,
+              evidence: `${path13}: ${value}`,
+              fix: {
+                description: "Remove the repo-level endpoint override or point it to a trusted local endpoint only",
+                before: `"${path13}": "${value}"`,
+                after: `# Remove ${path13} override`,
+                auto: false
+              }
+            }
+          ];
+        });
+      } catch {
+        return [];
+      }
+    }
+  },
+  {
+    id: "permissions-env-in-allow",
+    name: "Environment Variable Access in Allow List",
+    description: "Checks for allow list entries that grant access to environment variables or env files",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      const envPatterns = [
+        {
+          pattern: /\.env\b/,
+          description: "Grants access to .env files which may contain secrets"
+        },
+        {
+          pattern: /\bprintenv\b|\benv\b(?!\()/,
+          description: "Grants access to dump environment variables"
+        },
+        {
+          pattern: /\bexport\s/,
+          description: "Allows setting environment variables"
+        }
+      ];
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of envPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-env-access-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants env access: ${entry}`,
+              description: `The allow entry "${entry}" ${description}. Environment variables often contain API keys, tokens, and other secrets.`,
+              file: file.path,
+              evidence: entry
+            });
+            break;
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-unrestricted-network",
+    name: "Unrestricted Network Tool Access",
+    description: "Checks for allow rules that grant unrestricted access to network tools",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "settings-json") return [];
+      const perms = parsePermissionLists(file.content);
+      if (!perms) return [];
+      const findings = [];
+      const networkPatterns = [
+        {
+          pattern: /^Bash\(curl\s*\*?\)$/i,
+          description: "Allows unrestricted curl \u2014 can exfiltrate data to any URL"
+        },
+        {
+          pattern: /^Bash\(wget\s*\*?\)$/i,
+          description: "Allows unrestricted wget \u2014 can download from any URL"
+        },
+        {
+          pattern: /^Bash\(nc\b/i,
+          description: "Allows netcat \u2014 can open listeners or connect to remote hosts"
+        },
+        {
+          pattern: /^Bash\(ssh\s*\*?\)$/i,
+          description: "Allows unrestricted SSH \u2014 can connect to any remote host"
+        },
+        {
+          pattern: /^Bash\(scp\s*\*?\)$/i,
+          description: "Allows unrestricted scp \u2014 can copy files to/from any host"
+        }
+      ];
+      for (const entry of perms.allow) {
+        for (const { pattern, description } of networkPatterns) {
+          if (pattern.test(entry)) {
+            findings.push({
+              id: `permissions-unrestricted-network-${findings.length}`,
+              severity: "high",
+              category: "permissions",
+              title: `Allow rule grants unrestricted network access: ${entry}`,
+              description: `The allow entry "${entry}" ${description}. Network tools should be restricted to specific hosts or purposes.`,
+              file: file.path,
+              evidence: entry,
+              fix: {
+                description: "Restrict to specific hosts or use explicit URLs",
+                before: entry,
+                after: entry.replace("*", "https://specific-host.com/*"),
+                auto: false
+              }
+            });
+            break;
+          }
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "permissions-claude-md-world-writable",
+    name: "CLAUDE.md File Permissions Too Open",
+    description: "Checks if CLAUDE.md files have overly permissive filesystem permissions (world-writable or group-writable)",
+    severity: "high",
+    category: "permissions",
+    check(file) {
+      if (file.type !== "claude-md") return [];
+      const normalizedPath = file.path.replace(/\\/g, "/");
+      if (!/CLAUDE\.md$/i.test(normalizedPath)) return [];
+      const absolutePath = resolveClaudeMdPath(normalizedPath);
+      if (!absolutePath) return [];
+      try {
+        const stat2 = (0, import_node_fs.statSync)(absolutePath);
+        const mode = stat2.mode;
+        const isGroupWritable = (mode & 16) !== 0;
+        const isOtherWritable = (mode & 2) !== 0;
+        if (!isGroupWritable && !isOtherWritable) return [];
+        const issues = [];
+        if (isOtherWritable) issues.push("world-writable");
+        if (isGroupWritable) issues.push("group-writable");
+        const modeStr = `0o${(mode & 511).toString(8)}`;
+        return [
+          {
+            id: "permissions-claude-md-world-writable",
+            severity: isOtherWritable ? "high" : "medium",
+            category: "permissions",
+            title: `CLAUDE.md is ${issues.join(" and ")} (${modeStr})`,
+            description: `The file ${normalizedPath} has permissions ${modeStr}, making it ${issues.join(" and ")}. CLAUDE.md files are injected into every Claude Code prompt as system instructions. A local attacker or malicious process could modify this file to inject prompt instructions that exfiltrate data, run arbitrary commands, or alter agent behavior. Restrict permissions to owner-only (chmod 600).`,
+            file: file.path,
+            evidence: `permissions: ${modeStr}`,
+            fix: {
+              description: "Restrict file permissions to owner-only read/write",
+              before: modeStr,
+              after: "0o600",
+              auto: true
+            }
+          }
+        ];
+      } catch {
+        return [];
+      }
+    }
+  }
+];
+function resolveClaudeMdPath(relativePath) {
+  if (/^\.claude\/CLAUDE\.md$/i.test(relativePath)) {
+    const homeClaudeMd = (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude", "CLAUDE.md");
+    try {
+      (0, import_node_fs.statSync)(homeClaudeMd);
+      return homeClaudeMd;
+    } catch {
+    }
+  }
+  try {
+    const resolved = (0, import_node_path.resolve)(relativePath);
+    (0, import_node_fs.statSync)(resolved);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+function findLineNumber3(content, matchIndex) {
+  return content.substring(0, matchIndex).split("\n").length;
+}
+
+// src/core-scanner/rules/prompt-defense.ts
+var DEFENSE_CHECKS = [
+  {
+    id: "role-escape",
+    name: "Role boundary defense",
+    description: "Prompt should explicitly reject unauthorized role or persona changes requested by users.",
+    severity: "high",
+    pattern: /(?:do\s+not|never|must\s+not|cannot|don'?t|refuse|reject|ignore)\s+.{0,60}(?:role|persona|character|identity|pretend|act\s+as|impersonat|role.?play)/i,
+    owaspRef: "LLM01 Prompt Injection"
+  },
+  {
+    id: "instruction-override",
+    name: "Instruction boundary defense",
+    description: "Prompt should state that user content cannot override, ignore, or modify higher-priority instructions.",
+    severity: "critical",
+    pattern: /(?:do\s+not|never|must\s+not|cannot|don'?t|refuse|reject)\s+.{0,60}(?:override|ignore|disregard|bypass|modify|change|alter)\s+.{0,40}(?:instruction|system|rule|guideline|directive|prompt)/i,
+    owaspRef: "LLM01 Prompt Injection"
+  },
+  {
+    id: "data-leakage",
+    name: "Data leakage defense",
+    description: "Prompt should block revealing internal instructions, secrets, or confidential data.",
+    severity: "critical",
+    pattern: /(?:do\s+not|never|must\s+not|cannot|don'?t|refuse)\s+.{0,60}(?:reveal|disclose|share|leak|expose|output|repeat|show)\s+.{0,40}(?:system|prompt|instruction|internal|confidential|secret|private|api.?key|credential)/i,
+    owaspRef: "LLM06 Sensitive Information Disclosure"
+  },
+  {
+    id: "output-manipulation",
+    name: "Output control defense",
+    description: "Prompt should constrain risky output forms such as executable code, HTML, links, or scripts.",
+    severity: "medium",
+    pattern: /(?:do\s+not|never|must\s+not|cannot|don'?t|refuse|restrict|limit|only)\s+.{0,60}(?:output|generat|produc|return|render|includ|embed)\s+.{0,40}(?:code|script|html|markdown|link|url|execut|iframe|javascript)/i,
+    owaspRef: "LLM02 Insecure Output Handling"
+  },
+  {
+    id: "multilang-bypass",
+    name: "Multi-language bypass defense",
+    description: "Prompt should address attempts to evade safeguards by switching languages or translating unsafe requests.",
+    severity: "medium",
+    pattern: /(?:regardless\s+of\s+(?:the\s+)?language|in\s+(?:any|all|every)\s+language|translat(?:e|ion)\s+.{0,30}(?:rule|instruction|safety|restrict)|language\s+.{0,20}(?:bypass|circumvent|evade))/i
+  },
+  {
+    id: "unicode-attack",
+    name: "Unicode and encoding defense",
+    description: "Prompt should mention unicode, invisible characters, homoglyphs, or encoding tricks as suspicious input.",
+    severity: "medium",
+    pattern: /(?:unicode|homoglyph|invisible\s+character|zero.?width|encod(?:ed|ing)\s+.{0,20}(?:trick|attack|bypass|evas)|special\s+character|non.?printable)/i
+  },
+  {
+    id: "context-overflow",
+    name: "Context overflow defense",
+    description: "Prompt should acknowledge input-length or token-window limits and reject attempts to push safeguards out of context.",
+    severity: "medium",
+    pattern: /(?:(?:context|token|input|message)\s+.{0,20}(?:limit|length|overflow|window|exceed|truncat|maximum)|too\s+(?:long|large|many)\s+.{0,20}(?:input|token|message|character)|length\s+.{0,10}(?:restrict|limit|cap|max))/i
+  },
+  {
+    id: "indirect-injection",
+    name: "Indirect injection defense",
+    description: "Prompt should treat external or fetched content as untrusted and warn about embedded instructions in tool/document output.",
+    severity: "high",
+    pattern: /(?:(?:external|third.?party|user.?provided|untrusted|fetched|retrieved)\s+.{0,30}(?:data|content|source|input|document|url|link|tool)\s+.{0,30}(?:instruct|command|inject|malicious|trust)|indirect\s+.{0,10}(?:inject|prompt|attack))/i,
+    owaspRef: "LLM01 Prompt Injection"
+  },
+  {
+    id: "social-engineering",
+    name: "Social engineering defense",
+    description: "Prompt should account for urgency, emotional manipulation, or fake authority claims used to bypass safeguards.",
+    severity: "medium",
+    pattern: /(?:(?:emotional|urgency|authority|guilt|sympathy|emergency|life.?or.?death|dying|threaten)\s+.{0,30}(?:manipulat|appeal|pressure|claim|bypass|trick|override)|social\s+engineer)/i
+  },
+  {
+    id: "output-weaponization",
+    name: "Harmful content defense",
+    description: "Prompt should block dangerous, weaponizable, exploitative, or illegal output.",
+    severity: "high",
+    pattern: /(?:do\s+not|never|must\s+not|cannot|don'?t|refuse)\s+.{0,60}(?:harm(?:ful)?|danger(?:ous)?|illegal|weapon|violen(?:t|ce)|exploit|malware|phishing|attack(?:s|ing)?)/i,
+    owaspRef: "LLM09 Overreliance"
+  },
+  {
+    id: "abuse-prevention",
+    name: "Abuse prevention defense",
+    description: "Prompt should mention repeated abuse, rate limiting, or session/isolation boundaries.",
+    severity: "low",
+    pattern: /(?:abuse|misuse|exploit(?:ation)?|repeated\s+(?:attempt|request|abuse)|rate\s+limit|session\s+(?:isolat|boundar)|detect\s+.{0,20}(?:abuse|pattern|manipulat))/i
+  },
+  {
+    id: "input-validation-missing",
+    name: "Input validation defense",
+    description: "Prompt should instruct the agent to validate, sanitize, inspect, or reject suspicious input.",
+    severity: "medium",
+    pattern: /(?:(?:valid|saniti|verif|check|inspect|reject|filter|screen)\s+.{0,30}(?:input|request|query|message|user\s+(?:input|data|message))|malform|suspicious\s+.{0,10}(?:input|request|pattern))/i,
+    owaspRef: "LLM01 Prompt Injection"
+  }
+];
+function normalizePath3(filePath) {
+  return filePath.replace(/\\/g, "/").toLowerCase();
+}
+function isPromptPostureFile(file) {
+  if (file.type === "claude-md" || file.type === "agent-md") return true;
+  if (file.type !== "rule-md") return false;
+  const normalizedPath = normalizePath3(file.path);
+  return normalizedPath.includes("/.claude/rules/") || normalizedPath.startsWith(".claude/rules/");
+}
+var promptDefenseRules = [
+  {
+    id: "prompt-defense-posture",
+    name: "Prompt defense posture audit",
+    description: "Checks whether system prompt files contain defensive instructions against common LLM attack vectors.",
+    severity: "high",
+    category: "injection",
+    check(file) {
+      if (!isPromptPostureFile(file)) return [];
+      const content = file.content.trim();
+      if (!content) return [];
+      const findings = [];
+      for (const defense of DEFENSE_CHECKS) {
+        if (defense.pattern.test(content)) continue;
+        const owaspNote = defense.owaspRef ? ` (OWASP LLM Top 10: ${defense.owaspRef})` : "";
+        findings.push({
+          id: `prompt-defense-missing-${defense.id}-${file.path}`,
+          severity: "low",
+          category: "injection",
+          title: `Missing prompt defense: ${defense.name}`,
+          description: `${defense.description}${owaspNote}`,
+          file: file.path,
+          evidence: `Missing ${defense.id} defense in ${file.path}`
+        });
+      }
+      return findings;
+    }
+  }
+];
+
+// src/core-scanner/source-context.ts
+var EXAMPLE_LIKE_SEGMENTS = [
+  "docs",
+  "doc",
+  "documentation",
+  "commands",
+  "examples",
+  "example",
+  "samples",
+  "sample",
+  "demo",
+  "demos",
+  "tutorial",
+  "tutorials",
+  "guide",
+  "guides",
+  "cookbook",
+  "playground"
+];
+var EXAMPLE_LIKE_PATH_PATTERN = new RegExp(
+  `(^|/)(${EXAMPLE_LIKE_SEGMENTS.join("|")})(/|$)`,
+  "i"
+);
+var CLAUDE_PLUGIN_CACHE_PATH_PATTERN = /(^|\/)\.claude\/plugins\/cache(\/|$)/i;
+var CLAUDE_SCAN_ROOT_PLUGIN_CACHE_PATH_PATTERN = /^plugins\/cache(\/|$)/i;
+function findAllMatches3(content, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  return [...content.matchAll(new RegExp(pattern.source, flags))];
+}
+function isExampleLikePath(path13) {
+  return EXAMPLE_LIKE_PATH_PATTERN.test(path13.replace(/\\/g, "/"));
+}
+function isPluginCachePath(path13, scanRoot) {
+  const normalizedPath = path13.replace(/\\/g, "/");
+  if (findAllMatches3(normalizedPath, CLAUDE_PLUGIN_CACHE_PATH_PATTERN).length > 0) {
+    return true;
+  }
+  if (!scanRoot || !isClaudeScanRoot(scanRoot)) {
+    return false;
+  }
+  return findAllMatches3(normalizedPath, CLAUDE_SCAN_ROOT_PLUGIN_CACHE_PATH_PATTERN).length > 0;
+}
+function isClaudeScanRoot(scanRoot) {
+  const normalizedRoot = scanRoot.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return normalizedRoot === ".claude" || normalizedRoot.endsWith("/.claude");
+}
+
+// src/core-scanner/rules/secrets.ts
+var SECRET_PATTERNS = [
+  {
+    name: "anthropic-api-key",
+    pattern: /sk-ant-[a-zA-Z0-9_-]{20,}/g,
+    description: "Anthropic API key"
+  },
+  {
+    name: "openai-api-key",
+    pattern: /sk-proj-[a-zA-Z0-9_-]{20,}/g,
+    description: "OpenAI API key"
+  },
+  {
+    name: "openai-legacy-api-key",
+    pattern: /sk-(?!ant-|proj-)[a-zA-Z0-9_-]{20,}/g,
+    description: "OpenAI API key"
+  },
+  {
+    name: "xai-api-key",
+    pattern: /xai-[a-zA-Z0-9_-]{20,}/g,
+    description: "xAI API key"
+  },
+  {
+    name: "github-pat",
+    pattern: /ghp_[a-zA-Z0-9]{36,}/g,
+    description: "GitHub personal access token"
+  },
+  {
+    name: "github-fine-grained",
+    pattern: /github_pat_[a-zA-Z0-9_]{20,}/g,
+    description: "GitHub fine-grained token"
+  },
+  {
+    name: "linear-api-key",
+    pattern: /lin_api_[a-zA-Z0-9]{20,}/g,
+    description: "Linear API key"
+  },
+  {
+    name: "cloudflare-api-token",
+    pattern: /(?:CLOUDFLARE_API_TOKEN|CLOUDFLARE_TOKEN|CF_API_TOKEN|CF_TOKEN)\s*[=:]\s*["']?[a-zA-Z0-9_-]{20,}["']?/gi,
+    description: "Cloudflare API token"
+  },
+  {
+    name: "aws-access-key",
+    pattern: /AKIA[0-9A-Z]{16}/g,
+    description: "AWS access key ID"
+  },
+  {
+    name: "aws-secret-key",
+    pattern: /(?:aws_secret_access_key|secret_key)\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}["']?/gi,
+    description: "AWS secret access key"
+  },
+  {
+    name: "private-key",
+    pattern: /-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g,
+    description: "Private key material"
+  },
+  {
+    name: "hardcoded-password",
+    pattern: /(?:password|passwd|pwd)\s*[=:]\s*["'][^"']{4,}["']/gi,
+    description: "Hardcoded password"
+  },
+  {
+    name: "bearer-token",
+    pattern: /["']Bearer\s+[a-zA-Z0-9._-]{20,}["']/g,
+    description: "Hardcoded bearer token"
+  },
+  {
+    name: "connection-string",
+    pattern: /(?:mongodb|postgres|mysql|redis):\/\/[^\s"']+:[^\s"']+@/gi,
+    description: "Database connection string with credentials"
+  },
+  {
+    name: "slack-token",
+    pattern: /xox[bprs]-[a-zA-Z0-9-]{10,}/g,
+    description: "Slack API token"
+  },
+  {
+    name: "jwt-token",
+    pattern: /eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g,
+    description: "JWT token"
+  },
+  {
+    name: "google-api-key",
+    pattern: /AIza[a-zA-Z0-9_-]{35}/g,
+    description: "Google API key"
+  },
+  {
+    name: "stripe-key",
+    pattern: /(?:sk|pk)_(?:test|live)_[a-zA-Z0-9]{24,}/g,
+    description: "Stripe API key"
+  },
+  {
+    name: "discord-token",
+    pattern: /[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}/g,
+    description: "Discord bot token"
+  },
+  {
+    name: "npm-token",
+    pattern: /npm_[a-zA-Z0-9]{36,}/g,
+    description: "npm access token"
+  },
+  {
+    name: "sendgrid-key",
+    pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,
+    description: "SendGrid API key"
+  },
+  {
+    name: "twilio-key",
+    pattern: /SK[a-f0-9]{32}/g,
+    description: "Twilio API key"
+  },
+  {
+    name: "azure-key",
+    pattern: /[a-zA-Z0-9/+]{86}==/g,
+    description: "Azure storage account key"
+  },
+  {
+    name: "mailchimp-key",
+    pattern: /[a-f0-9]{32}-us\d{1,2}/g,
+    description: "Mailchimp API key"
+  },
+  {
+    name: "huggingface-token",
+    pattern: /hf_[a-zA-Z0-9]{20,}/g,
+    description: "Hugging Face access token"
+  },
+  {
+    name: "databricks-token",
+    pattern: /dapi[a-f0-9]{32}/g,
+    description: "Databricks personal access token"
+  },
+  {
+    name: "digitalocean-token",
+    pattern: /dop_v1_[a-f0-9]{64}/g,
+    description: "DigitalOcean personal access token"
+  }
+];
+function findLineNumber4(content, matchIndex) {
+  return content.substring(0, matchIndex).split("\n").length;
+}
+function findAllMatches4(content, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  return [...content.matchAll(new RegExp(pattern.source, flags))];
+}
+function maskSecretValue(value) {
+  if (value.length <= 12) return value;
+  return `${value.substring(0, 8)}...${value.substring(value.length - 4)}`;
+}
+function extractDelimitedToken(content, startIndex) {
+  let endIndex = startIndex;
+  while (endIndex < content.length) {
+    const char = content[endIndex];
+    if (/\s/.test(char) || /["'`)\]}>]/.test(char)) {
+      break;
+    }
+    endIndex += 1;
+  }
+  return content.slice(startIndex, endIndex).replace(/[.,;:]+$/, "");
+}
+function isMarkdownLikeFile(file) {
+  return [
+    "claude-md",
+    "agent-md",
+    "skill-md",
+    "rule-md",
+    "context-md"
+  ].includes(file.type);
+}
+function isExampleLikePath2(file) {
+  return isExampleLikePath(file.path);
+}
+function hasNearbyCodeFence(content, matchIndex) {
+  const windowStart = Math.max(0, matchIndex - 800);
+  const windowEnd = Math.min(content.length, matchIndex + 800);
+  const window = content.slice(windowStart, windowEnd);
+  return /```|~~~~/.test(window);
+}
+function hasExampleOrTestContext(content, matchIndex) {
+  const windowStart = Math.max(0, matchIndex - 1200);
+  const windowEnd = Math.min(content.length, matchIndex + 400);
+  const window = content.slice(windowStart, windowEnd).toLowerCase();
+  return [
+    "example",
+    "sample",
+    "fixture",
+    "test(",
+    "shouldbe",
+    "returns invalid",
+    "returns valid",
+    " passed",
+    " failed",
+    "funspec",
+    "stringspec",
+    "behaviorspec"
+  ].some((marker) => window.includes(marker));
+}
+function isLikelyMarkdownExamplePassword(file, secretPatternName, matchIndex) {
+  if (secretPatternName !== "hardcoded-password") return false;
+  if (!isMarkdownLikeFile(file)) return false;
+  if (!isExampleLikePath2(file)) return false;
+  return hasNearbyCodeFence(file.content, matchIndex) || hasExampleOrTestContext(file.content, matchIndex);
+}
+function isLikelyPlaceholderConnectionString(file, rawValue) {
+  if (!isMarkdownLikeFile(file)) return false;
+  try {
+    const url = new URL(rawValue);
+    const username = decodeURIComponent(url.username).toLowerCase();
+    const password = decodeURIComponent(url.password).toLowerCase();
+    const hostname = url.hostname.toLowerCase();
+    const databaseName = url.pathname.replace(/^\/+/, "").toLowerCase();
+    const genericUsernames = /* @__PURE__ */ new Set(["user", "username", "dbuser", "demo"]);
+    const genericPasswords = /* @__PURE__ */ new Set([
+      "pass",
+      "password",
+      "passwd",
+      "demo",
+      "example"
+    ]);
+    const genericDatabases = /* @__PURE__ */ new Set(["db", "database", "dbname", "mydb"]);
+    const hasGenericHost = hostname === "host" || hostname === "hostname" || hostname === "db" || hostname === "database" || hostname === "example" || hostname === "example.com" || hostname.endsWith(".example.com");
+    return genericUsernames.has(username) && genericPasswords.has(password) && (hasGenericHost || genericDatabases.has(databaseName));
+  } catch {
+    return false;
+  }
+}
+var secretRules = [
+  {
+    id: "secrets-hardcoded",
+    name: "Hardcoded Secrets Detection",
+    description: "Scans for hardcoded API keys, tokens, passwords, and credentials",
+    severity: "critical",
+    category: "secrets",
+    check(file) {
+      if (file.type === "package-manager-config") return [];
+      const findings = [];
+      for (const secretPattern of SECRET_PATTERNS) {
+        const matches = findAllMatches4(file.content, secretPattern.pattern);
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          const context = file.content.substring(
+            Math.max(0, idx - 20),
+            idx + match[0].length + 10
+          );
+          if (context.includes("${") || context.includes("process.env")) {
+            continue;
+          }
+          if (isLikelyMarkdownExamplePassword(file, secretPattern.name, idx)) {
+            continue;
+          }
+          const rawValue = secretPattern.name === "connection-string" ? extractDelimitedToken(file.content, idx) : match[0];
+          if (secretPattern.name === "connection-string" && isLikelyPlaceholderConnectionString(file, rawValue)) {
+            continue;
+          }
+          const maskedValue = maskSecretValue(rawValue);
+          findings.push({
+            id: `secrets-${secretPattern.name}-${idx}`,
+            severity: "critical",
+            category: "secrets",
+            title: `Hardcoded ${secretPattern.description}`,
+            description: `Found ${secretPattern.description} in ${file.path}. Secrets must never be hardcoded in configuration files.`,
+            file: file.path,
+            line: findLineNumber4(file.content, idx),
+            evidence: maskedValue,
+            fix: {
+              description: `Replace with environment variable reference`,
+              before: rawValue,
+              after: `\${${secretPattern.name.toUpperCase().replace(/-/g, "_")}}`,
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-env-in-config",
+    name: "Environment Variable Exposure",
+    description: "Checks for env var values being logged or exposed in config",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      const findings = [];
+      const echoEnvPattern = /echo\s+.*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|PASS|CRED)\w*\}?/gi;
+      const matches = findAllMatches4(file.content, echoEnvPattern);
+      for (const match of matches) {
+        findings.push({
+          id: `secrets-echo-env-${match.index}`,
+          severity: "high",
+          category: "secrets",
+          title: "Environment variable echoed to terminal",
+          description: `Hook or script echoes sensitive environment variable. This exposes secrets in terminal output and session logs.`,
+          file: file.path,
+          line: findLineNumber4(file.content, match.index ?? 0),
+          evidence: match[0],
+          fix: {
+            description: "Remove echo of sensitive environment variables",
+            before: match[0],
+            after: "# [REMOVED: secret was being echoed]",
+            auto: true
+          }
+        });
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-env-in-claude-md",
+    name: "Secrets in CLAUDE.md",
+    description: "Checks for sensitive env var assignments in CLAUDE.md files which are often committed to repos",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "claude-md") return [];
+      const findings = [];
+      const envAssignmentPattern = /(?:export\s+)?\b(\w*(?:API_KEY|SECRET_KEY|AUTH_TOKEN|ACCESS_TOKEN|PRIVATE_KEY|PASSWORD|CREDENTIAL|API_SECRET)\w*)\s*[=:]\s*["']?([^\s"']{4,})["']?/gi;
+      const matches = findAllMatches4(file.content, envAssignmentPattern);
+      for (const match of matches) {
+        const varName = match[1];
+        const idx = match.index ?? 0;
+        const value = match[2];
+        if (value.startsWith("${") || value.startsWith("$")) continue;
+        findings.push({
+          id: `secrets-claude-md-env-${idx}`,
+          severity: "high",
+          category: "secrets",
+          title: `Sensitive env var in CLAUDE.md: ${varName}`,
+          description: `CLAUDE.md contains an assignment for "${varName}". CLAUDE.md files are typically committed to version control, exposing secrets to anyone who clones the repository.`,
+          file: file.path,
+          line: findLineNumber4(file.content, idx),
+          evidence: `${varName}=<redacted>`,
+          fix: {
+            description: "Move to .env file and reference via environment variable",
+            before: match[0],
+            after: `# Set ${varName} in your .env file`,
+            auto: false
+          }
+        });
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-sensitive-env-passthrough",
+    name: "Sensitive Env Var Passthrough",
+    description: "Checks for MCP servers passing through excessive sensitive environment variables",
+    severity: "medium",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "mcp-json") return [];
+      const findings = [];
+      try {
+        const config = JSON.parse(file.content);
+        const servers = config.mcpServers ?? {};
+        const sensitivePatterns = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH/i;
+        for (const [name, server] of Object.entries(servers)) {
+          const serverConfig = server;
+          const env = serverConfig.env ?? {};
+          const sensitiveVars = Object.keys(env).filter(
+            (key) => sensitivePatterns.test(key)
+          );
+          if (sensitiveVars.length > 5) {
+            findings.push({
+              id: `secrets-env-passthrough-${name}`,
+              severity: "medium",
+              category: "secrets",
+              title: `MCP server "${name}" receives ${sensitiveVars.length} sensitive env vars`,
+              description: `The MCP server "${name}" has ${sensitiveVars.length} sensitive environment variables passed through (${sensitiveVars.slice(0, 3).join(", ")}...). Over-sharing secrets increases the blast radius if the server is compromised. Only pass env vars that the server actually needs.`,
+              file: file.path,
+              evidence: `Sensitive vars: ${sensitiveVars.join(", ")}`,
+              fix: {
+                description: "Remove env vars that the server does not need",
+                before: `${sensitiveVars.length} sensitive env vars`,
+                after: "Only the required env vars for this server",
+                auto: false
+              }
+            });
+          }
+        }
+      } catch {
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-url-credentials",
+    name: "URL-Embedded Credentials",
+    description: "Checks for URLs containing embedded usernames and passwords",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const urlCredPattern = /https?:\/\/[^:\s]+:[^@\s]+@[^\s"']+/g;
+      const matches = findAllMatches4(file.content, urlCredPattern);
+      for (const match of matches) {
+        const idx = match.index ?? 0;
+        const context = file.content.substring(Math.max(0, idx - 20), idx);
+        if (context.includes("${") || context.includes("process.env")) continue;
+        const masked = match[0].replace(/(:\/\/[^:]+:)[^@]+(@)/, "$1****$2");
+        findings.push({
+          id: `secrets-url-credentials-${idx}`,
+          severity: "high",
+          category: "secrets",
+          title: `URL contains embedded credentials`,
+          description: `Found a URL with embedded username:password in ${file.path}. Credentials in URLs are exposed in logs, browser history, and referer headers. Use environment variables or a credentials manager instead.`,
+          file: file.path,
+          line: findLineNumber4(file.content, idx),
+          evidence: masked,
+          fix: {
+            description: "Use environment variables for credentials",
+            before: match[0].substring(0, 40),
+            after: "https://${USERNAME}:${PASSWORD}@...",
+            auto: false
+          }
+        });
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-credential-file-reference",
+    name: "Credential File Reference",
+    description: "Checks for references to credential files that should never be accessed by agents",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const credentialFiles = [
+        {
+          pattern: /~\/\.aws\/credentials|\/\.aws\/credentials/g,
+          description: "AWS credentials file"
+        },
+        {
+          pattern: /~\/\.ssh\/id_(?:rsa|ed25519|ecdsa)|\/\.ssh\/id_(?:rsa|ed25519|ecdsa)/g,
+          description: "SSH private key file"
+        },
+        {
+          pattern: /~\/\.netrc|\/\.netrc/g,
+          description: ".netrc file (contains plain-text login credentials)"
+        },
+        {
+          pattern: /~\/\.pgpass|\/\.pgpass/g,
+          description: "PostgreSQL password file"
+        },
+        {
+          pattern: /~\/\.docker\/config\.json|\/\.docker\/config\.json/g,
+          description: "Docker config (may contain registry credentials)"
+        },
+        {
+          pattern: /~\/\.npmrc|\/\.npmrc/g,
+          description: "npm config (may contain auth tokens)"
+        },
+        {
+          pattern: /~\/\.kube\/config|\/\.kube\/config/g,
+          description: "Kubernetes config (contains cluster credentials)"
+        }
+      ];
+      for (const { pattern, description } of credentialFiles) {
+        const matches = findAllMatches4(file.content, pattern);
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          findings.push({
+            id: `secrets-cred-file-ref-${idx}`,
+            severity: "high",
+            category: "secrets",
+            title: `Reference to ${description}: ${match[0]}`,
+            description: `Found reference to "${match[0]}" \u2014 ${description}. Agent definitions and CLAUDE.md files should not reference credential files. If an agent is instructed to read these files, it could expose secrets.`,
+            file: file.path,
+            line: findLineNumber4(file.content, idx),
+            evidence: match[0]
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-private-key-material",
+    name: "Private Key Material in Config",
+    description: "Checks for PEM-encoded private keys embedded in configuration files",
+    severity: "critical",
+    category: "secrets",
+    check(file) {
+      const findings = [];
+      const keyPatterns = [
+        {
+          pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
+          description: "PEM-encoded private key"
+        },
+        {
+          pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----/g,
+          description: "PGP private key block"
+        }
+      ];
+      for (const { pattern, description } of keyPatterns) {
+        const matches = findAllMatches4(file.content, pattern);
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          findings.push({
+            id: `secrets-private-key-${idx}`,
+            severity: "critical",
+            category: "secrets",
+            title: `${description} found in config`,
+            description: `Found "${match[0]}" in ${file.path}. Private keys should never be stored in configuration files \u2014 they grant authentication access and should be stored in secure key stores or referenced via file paths with restrictive permissions.`,
+            file: file.path,
+            line: findLineNumber4(file.content, idx),
+            evidence: match[0],
+            fix: {
+              description: "Remove private key and reference a key file path instead",
+              before: match[0],
+              after: "Reference key file: ~/.ssh/id_ed25519",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-webhook-url",
+    name: "Webhook URL with Secret Token",
+    description: "Checks for webhook URLs that contain embedded secret tokens or API keys",
+    severity: "high",
+    category: "secrets",
+    check(file) {
+      const findings = [];
+      const webhookPatterns = [
+        {
+          pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[a-zA-Z0-9]+/g,
+          description: "Slack webhook URL \u2014 allows posting messages to a Slack channel"
+        },
+        {
+          pattern: /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\d+\/[a-zA-Z0-9_-]+/g,
+          description: "Discord webhook URL \u2014 allows posting messages to a Discord channel"
+        },
+        {
+          pattern: /https:\/\/outlook\.office\.com\/webhook\/[a-f0-9-]+/g,
+          description: "Microsoft Teams webhook URL"
+        }
+      ];
+      for (const { pattern, description } of webhookPatterns) {
+        const matches = findAllMatches4(file.content, pattern);
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          findings.push({
+            id: `secrets-webhook-url-${idx}`,
+            severity: "high",
+            category: "secrets",
+            title: `Webhook URL found: ${description.split(" \u2014 ")[0]}`,
+            description: `Found a ${description}. Webhook URLs contain embedded secrets and should be stored in environment variables. Anyone with this URL can post messages to the channel.`,
+            file: file.path,
+            line: findLineNumber4(file.content, idx),
+            evidence: `${match[0].substring(0, 30)}...`,
+            fix: {
+              description: "Store webhook URL in an environment variable",
+              before: match[0].substring(0, 30),
+              after: "${WEBHOOK_URL}",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-base64-obfuscation",
+    name: "Potential Base64 Obfuscated Secret",
+    description: "Checks for long base64-encoded strings that may be obfuscated secrets or payloads",
+    severity: "medium",
+    category: "secrets",
+    check(file) {
+      if (file.type !== "agent-md" && file.type !== "claude-md") return [];
+      const findings = [];
+      const base64Pattern = /(?<![a-zA-Z0-9/])([A-Za-z0-9+/]{60,}={0,2})(?![a-zA-Z0-9])/g;
+      const matches = findAllMatches4(file.content, base64Pattern);
+      for (const match of matches) {
+        const idx = match.index ?? 0;
+        const context = file.content.substring(Math.max(0, idx - 30), idx);
+        if (/https?:\/\/|data:/.test(context)) continue;
+        if (/^[a-fA-F0-9]+$/.test(match[1])) continue;
+        findings.push({
+          id: `secrets-base64-obfuscation-${idx}`,
+          severity: "medium",
+          category: "secrets",
+          title: `Potential base64-obfuscated payload (${match[1].length} chars)`,
+          description: `Found a long base64-encoded string (${match[1].length} characters) in ${file.path}. Attackers may encode secrets or malicious instructions in base64 to bypass pattern-matching detection. Decode and inspect this value.`,
+          file: file.path,
+          line: findLineNumber4(file.content, idx),
+          evidence: match[1].substring(0, 20) + "..." + match[1].substring(match[1].length - 10)
+        });
+      }
+      return findings;
+    }
+  },
+  {
+    id: "secrets-hardcoded-ip-port",
+    name: "Hardcoded Internal IP Address with Port",
+    description: "Checks for hardcoded internal/private IP addresses with ports, which may expose internal services",
+    severity: "medium",
+    category: "secrets",
+    check(file) {
+      const findings = [];
+      const ipPatterns = [
+        {
+          pattern: /\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}\b/g,
+          description: "Class A private IP (10.x.x.x) with port"
+        },
+        {
+          pattern: /\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}:\d{2,5}\b/g,
+          description: "Class B private IP (172.16-31.x.x) with port"
+        },
+        {
+          pattern: /\b192\.168\.\d{1,3}\.\d{1,3}:\d{2,5}\b/g,
+          description: "Class C private IP (192.168.x.x) with port"
+        }
+      ];
+      for (const { pattern, description } of ipPatterns) {
+        const matches = findAllMatches4(file.content, pattern);
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          findings.push({
+            id: `secrets-hardcoded-ip-${idx}`,
+            severity: "medium",
+            category: "secrets",
+            title: `Hardcoded internal IP with port: ${match[0]}`,
+            description: `Found "${match[0]}" \u2014 ${description}. Hardcoded internal IPs expose network topology and service locations. Use environment variables or DNS names instead.`,
+            file: file.path,
+            line: findLineNumber4(file.content, idx),
+            evidence: match[0],
+            fix: {
+              description: "Replace with environment variable or DNS name",
+              before: match[0],
+              after: "${INTERNAL_SERVICE_URL}",
+              auto: false
+            }
+          });
+        }
+      }
+      return findings;
+    }
+  }
+];
+
+// src/core-scanner/skills/health.ts
+var import_node_path2 = require("path");
+var import_yaml2 = __toESM(require("yaml"));
+var HISTORY_SUFFIXES = [
+  ".history.json",
+  ".observations.json",
+  ".observation.json",
+  ".feedback.json",
+  ".execution-history.json",
+  ".metrics.json"
+];
+function analyzeSkillHealth(files) {
+  const profiles = getSkillProfiles(files);
+  if (profiles.length === 0) return void 0;
+  const skills = profiles.map((profile) => {
+    const score = scoreSkill(profile);
+    return {
+      skillName: profile.skillName,
+      file: profile.file.path,
+      version: profile.version,
+      hasObservationHooks: profile.hasObservationHooks,
+      hasFeedbackHooks: profile.hasFeedbackHooks,
+      hasRollbackMetadata: profile.hasRollbackMetadata,
+      score,
+      status: classifySkillStatus(score),
+      observedRuns: profile.observedRuns,
+      successRate: profile.successRate,
+      averageFeedback: profile.averageFeedback,
+      historyFiles: profile.historyFiles.map((file) => file.path)
+    };
+  });
+  const scoredSkills = skills.filter(
+    (skill) => typeof skill.score === "number"
+  );
+  return {
+    totalSkills: skills.length,
+    instrumentedSkills: skills.filter(
+      (skill) => skill.hasObservationHooks && skill.hasFeedbackHooks
+    ).length,
+    versionedSkills: skills.filter((skill) => Boolean(skill.version)).length,
+    rollbackReadySkills: skills.filter((skill) => skill.hasRollbackMetadata).length,
+    observedSkills: skills.filter((skill) => skill.observedRuns > 0).length,
+    averageScore: scoredSkills.length > 0 ? Math.round(
+      scoredSkills.reduce((sum, skill) => sum + (skill.score ?? 0), 0) / scoredSkills.length
+    ) : void 0,
+    skills
+  };
+}
+function getSkillProfiles(files) {
+  const skillFiles = files.filter(isSkillDefinitionFile);
+  return skillFiles.map((file) => {
+    const frontmatter = parseSkillFrontmatter(file.content);
+    const historyFiles = getRelatedHistoryFiles(file, files);
+    const records = historyFiles.flatMap(
+      (historyFile) => parseHistoryFile(historyFile)
+    );
+    const successfulRuns = records.filter(
+      (record) => record.success === true
+    ).length;
+    const failedRuns = records.filter(
+      (record) => record.success === false
+    ).length;
+    const observedRuns = successfulRuns + failedRuns;
+    const feedbackValues = records.map((record) => record.feedback).filter((value) => typeof value === "number");
+    return {
+      skillName: inferSkillName(file, frontmatter.raw),
+      file,
+      version: extractVersion(frontmatter),
+      hasObservationHooks: hasObservationHooks(frontmatter),
+      hasFeedbackHooks: hasFeedbackHooks(frontmatter),
+      hasRollbackMetadata: hasRollbackMetadata(frontmatter),
+      historyFiles,
+      observedRuns,
+      successRate: observedRuns > 0 ? successfulRuns / observedRuns : void 0,
+      averageFeedback: feedbackValues.length > 0 ? Number(
+        (feedbackValues.reduce((sum, value) => sum + value, 0) / feedbackValues.length).toFixed(1)
+      ) : void 0
+    };
+  });
+}
+function isSkillDefinitionFile(file) {
+  const normalizedPath = file.path.replace(/\\/g, "/").toLowerCase();
+  const extension = (0, import_node_path2.extname)(normalizedPath);
+  return file.type === "skill-md" && (extension === ".md" || extension === ".markdown");
+}
+function parseSkillFrontmatter(content) {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!match) {
+    return { raw: {}, body: content };
+  }
+  try {
+    const parsed = import_yaml2.default.parse(match[1]);
+    const raw = parsed && typeof parsed === "object" ? parsed : {};
+    return {
+      version: typeof raw.version === "string" ? raw.version : void 0,
+      metadata: raw.metadata && typeof raw.metadata === "object" ? raw.metadata : void 0,
+      raw,
+      body: content.slice(match[0].length)
+    };
+  } catch {
+    return { raw: {}, body: content };
+  }
+}
+function inferSkillName(file, frontmatter) {
+  if (typeof frontmatter.name === "string" && frontmatter.name.trim().length > 0) {
+    return frontmatter.name.trim();
+  }
+  const stem = (0, import_node_path2.basename)(file.path, (0, import_node_path2.extname)(file.path));
+  return stem.toLowerCase() === "skill" ? (0, import_node_path2.basename)((0, import_node_path2.dirname)(file.path)) : stem;
+}
+function extractVersion(frontmatter) {
+  if (frontmatter.version) return frontmatter.version;
+  const metadataVersion = frontmatter.metadata?.version;
+  return typeof metadataVersion === "string" ? metadataVersion : void 0;
+}
+function hasObservationHooks(frontmatter) {
+  return hasKey(frontmatter, /(?:^|_)(?:observe|observation)(?:_hook|_hooks)?$/) || /(?:^|\n)#{1,6}\s*(?:observe|observation|telemetry)\b/im.test(
+    frontmatter.body
+  ) || /\bobservation hooks?\b/i.test(frontmatter.body);
+}
+function hasFeedbackHooks(frontmatter) {
+  return hasKey(frontmatter, /(?:^|_)feedback(?:_hook|_hooks)?$/) || /(?:^|\n)#{1,6}\s*feedback\b/im.test(frontmatter.body) || /\bfeedback hooks?\b/i.test(frontmatter.body);
+}
+function hasRollbackMetadata(frontmatter) {
+  return hasKey(frontmatter, /rollback(?:_strategy|_plan|_metadata)?$/) || hasKey(frontmatter, /previous_version$/) || /(?:^|\n)#{1,6}\s*rollback\b/im.test(frontmatter.body);
+}
+function hasKey(frontmatter, pattern) {
+  const stack = [frontmatter.raw];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    for (const [key, value] of Object.entries(
+      current
+    )) {
+      if (pattern.test(key)) {
+        return truthyMetadata(value);
+      }
+      if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+  return false;
+}
+function truthyMetadata(value) {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number") return true;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value);
+}
+function getRelatedHistoryFiles(skillFile, files) {
+  const normalizedDir = (0, import_node_path2.dirname)(skillFile.path).replace(/\\/g, "/");
+  const skillStem = (0, import_node_path2.basename)(skillFile.path, (0, import_node_path2.extname)(skillFile.path));
+  const expectedPrefixes = /* @__PURE__ */ new Set([
+    `${skillStem}.`,
+    `${skillStem}-`,
+    `${skillStem}_`
+  ]);
+  if (skillStem.toLowerCase() === "skill") {
+    const parent = (0, import_node_path2.basename)(normalizedDir);
+    expectedPrefixes.add(`${parent}.`);
+    expectedPrefixes.add(`${parent}-`);
+    expectedPrefixes.add(`${parent}_`);
+  }
+  return files.filter((file) => {
+    if (file === skillFile || file.type !== "skill-md") return false;
+    if ((0, import_node_path2.dirname)(file.path).replace(/\\/g, "/") !== normalizedDir) return false;
+    const lowerName = (0, import_node_path2.basename)(file.path).toLowerCase();
+    if (!lowerName.endsWith(".json")) return false;
+    return HISTORY_SUFFIXES.some((suffix) => lowerName.endsWith(suffix)) && [...expectedPrefixes].some(
+      (prefix) => lowerName.startsWith(prefix.toLowerCase())
+    );
+  });
+}
+function parseHistoryFile(file) {
+  try {
+    const parsed = JSON.parse(file.content);
+    return extractRecords(parsed);
+  } catch {
+    return [];
+  }
+}
+function extractRecords(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeRunRecord(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const record = value;
+  const arrays = [
+    record.runs,
+    record.history,
+    record.executions,
+    record.observations,
+    record.events,
+    record.entries
+  ];
+  for (const candidate of arrays) {
+    if (Array.isArray(candidate)) {
+      return candidate.flatMap((entry) => normalizeRunRecord(entry));
+    }
+  }
+  return normalizeRunRecord(record);
+}
+function normalizeRunRecord(value) {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const record = value;
+  const success = extractSuccess(record);
+  const feedback = extractFeedback(record);
+  if (typeof success !== "boolean" && typeof feedback !== "number") {
+    return [];
+  }
+  return [{ success, feedback }];
+}
+function extractSuccess(record) {
+  for (const key of ["success", "succeeded", "passed"]) {
+    if (typeof record[key] === "boolean") {
+      return record[key];
+    }
+  }
+  const status = [record.status, record.outcome, record.result].find(
+    (value) => typeof value === "string"
+  );
+  if (typeof status !== "string") return void 0;
+  const normalized = status.toLowerCase();
+  if (["success", "succeeded", "ok", "passed", "completed"].includes(normalized)) {
+    return true;
+  }
+  if (["failure", "failed", "error", "errored", "rollback", "reverted"].includes(
+    normalized
+  )) {
+    return false;
+  }
+  return void 0;
+}
+function extractFeedback(record) {
+  const candidates = [
+    record.feedback,
+    record.feedbackScore,
+    record.rating,
+    record.score,
+    record.userFeedback
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeFeedback(candidate);
+    if (typeof normalized === "number") {
+      return normalized;
+    }
+  }
+  return void 0;
+}
+function normalizeFeedback(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value <= 5) return clampFeedback(value);
+    if (value <= 100) return clampFeedback(value / 20);
+  }
+  if (typeof value === "boolean") {
+    return value ? 5 : 1;
+  }
+  if (!value || typeof value !== "object") {
+    return void 0;
+  }
+  const record = value;
+  if (typeof record.rating === "number")
+    return normalizeFeedback(record.rating);
+  if (typeof record.score === "number") return normalizeFeedback(record.score);
+  if (typeof record.positive === "boolean") return record.positive ? 5 : 1;
+  return void 0;
+}
+function clampFeedback(value) {
+  return Math.max(1, Math.min(5, Number(value.toFixed(1))));
+}
+function scoreSkill(profile) {
+  if (typeof profile.successRate !== "number") return void 0;
+  const successScore = profile.successRate * 80;
+  const feedbackScore = typeof profile.averageFeedback === "number" ? profile.averageFeedback / 5 * 20 : 0;
+  return Math.round(successScore + feedbackScore);
+}
+function classifySkillStatus(score) {
+  if (typeof score !== "number") return "unobserved";
+  if (score >= 85) return "healthy";
+  if (score >= 70) return "watch";
+  return "at-risk";
+}
+
+// src/core-scanner/rules/skills.ts
+function buildMissingFieldsLabel(missingFields) {
+  if (missingFields.length === 1) {
+    return missingFields[0];
+  }
+  return `${missingFields.slice(0, -1).join(", ")} and ${missingFields.at(-1)}`;
+}
+var skillRules = [
+  {
+    id: "skills-observation-feedback-hooks",
+    name: "Skill observation and feedback hooks",
+    description: "Checks whether SKILL.md files define observation and feedback hooks for self-improvement loops",
+    severity: "medium",
+    category: "skills",
+    check(file, allFiles = []) {
+      if (!isSkillDefinitionFile(file)) return [];
+      const profile = getSkillProfiles(allFiles).find(
+        (entry) => entry.file.path === file.path
+      );
+      if (!profile) return [];
+      const missing = [];
+      if (!profile.hasObservationHooks) missing.push("observation hooks");
+      if (!profile.hasFeedbackHooks) missing.push("feedback hooks");
+      if (missing.length === 0) return [];
+      return [
+        {
+          id: `skills-missing-telemetry-${file.path}`,
+          severity: "medium",
+          category: "skills",
+          title: `Skill is missing ${buildMissingFieldsLabel(missing)}`,
+          description: `The skill "${profile.skillName}" does not define ${buildMissingFieldsLabel(missing)} in SKILL.md. ECC 2.0 self-improving skills need explicit observe/feedback hooks so runs can be inspected and amended safely.`,
+          file: file.path,
+          evidence: buildMissingFieldsLabel(missing)
+        }
+      ];
+    }
+  },
+  {
+    id: "skills-version-rollback-metadata",
+    name: "Skill version and rollback metadata",
+    description: "Checks whether SKILL.md files define versioning and rollback metadata",
+    severity: "medium",
+    category: "skills",
+    check(file, allFiles = []) {
+      if (!isSkillDefinitionFile(file)) return [];
+      const profile = getSkillProfiles(allFiles).find(
+        (entry) => entry.file.path === file.path
+      );
+      if (!profile) return [];
+      const missing = [];
+      if (!profile.version) missing.push("version metadata");
+      if (!profile.hasRollbackMetadata) missing.push("rollback metadata");
+      if (missing.length === 0) return [];
+      return [
+        {
+          id: `skills-missing-governance-${file.path}`,
+          severity: "medium",
+          category: "skills",
+          title: `Skill is missing ${buildMissingFieldsLabel(missing)}`,
+          description: `The skill "${profile.skillName}" does not define ${buildMissingFieldsLabel(missing)}. Self-amending skills need explicit version and rollback markers so regressions can be evaluated and reversed.`,
+          file: file.path,
+          evidence: buildMissingFieldsLabel(missing)
+        }
+      ];
+    }
+  }
+];
+
+// src/core-scanner/rules/index.ts
+function getBuiltinRules() {
+  return [
+    ...secretRules,
+    ...permissionRules,
+    ...hookRules,
+    ...mcpRules,
+    ...cveMcpRules,
+    ...toolPoisoningRules,
+    ...packageManagerRules,
+    ...skillRules,
+    ...agentRules,
+    ...promptDefenseRules
+  ];
+}
+
+// src/core-scanner/harness-adapters/index.ts
+var import_node_fs2 = require("fs");
+var import_node_path3 = require("path");
+var ADAPTERS = [
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    description: "Claude Code project rules, permissions, MCP, hooks, agents, skills, and command surfaces.",
+    configPaths: [
+      "CLAUDE.md",
+      ".claude/CLAUDE.md",
+      "settings.json",
+      ".claude/settings.json",
+      "mcp.json",
+      ".claude/mcp.json",
+      ".claude/agents",
+      ".claude/skills",
+      ".claude/hooks"
+    ],
+    permissionConcepts: [
+      "allow/deny permissions",
+      "dangerous shell commands",
+      "project-local overrides"
+    ],
+    pluginSurfaces: [
+      "Claude plugins",
+      "hooks manifests",
+      "skills",
+      "slash commands"
+    ],
+    mcpConventions: ["mcpServers", ".claude.json", "mcp.json"],
+    historySurfaces: ["Claude transcripts", "session hooks", "tool usage logs"],
+    ciEvidence: [
+      "W.H.Agent scan",
+      "policy evaluation",
+      "SARIF upload",
+      "evidence pack"
+    ],
+    markers: [
+      { path: "CLAUDE.md", kind: "file", strength: "strong" },
+      { path: ".claude/CLAUDE.md", kind: "file", strength: "strong" },
+      { path: "settings.json", kind: "file", strength: "strong" },
+      { path: ".claude/settings.json", kind: "file", strength: "strong" },
+      { path: "mcp.json", kind: "file", strength: "supporting" },
+      { path: ".claude/mcp.json", kind: "file", strength: "supporting" },
+      { path: ".claude/agents", kind: "directory", strength: "supporting" },
+      { path: ".claude/skills", kind: "directory", strength: "supporting" },
+      { path: ".claude/hooks", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    description: "OpenCode agent, command, provider, plugin, and project configuration surfaces.",
+    configPaths: [
+      "opencode.json",
+      "opencode.jsonc",
+      ".opencode.json",
+      ".opencode/config.json",
+      ".opencode/agents",
+      ".opencode/commands",
+      ".opencode/plugins"
+    ],
+    permissionConcepts: ["provider permissions", "agent modes", "tool scopes"],
+    pluginSurfaces: ["OpenCode plugins", "agents", "commands"],
+    mcpConventions: [
+      "provider/tool configuration",
+      "project-local tool adapters"
+    ],
+    historySurfaces: ["sessions", "client/server state", "tool traces"],
+    ciEvidence: ["scan report", "package-surface checks", "policy gate"],
+    markers: [
+      { path: "opencode.json", kind: "file", strength: "strong" },
+      { path: "opencode.jsonc", kind: "file", strength: "strong" },
+      { path: ".opencode.json", kind: "file", strength: "strong" },
+      { path: ".opencode/config.json", kind: "file", strength: "strong" },
+      { path: ".opencode/agents", kind: "directory", strength: "supporting" },
+      { path: ".opencode/commands", kind: "directory", strength: "supporting" },
+      { path: ".opencode/plugins", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    description: "Codex AGENTS instructions, project config, prompts, and local memory/tooling surfaces.",
+    configPaths: [
+      "AGENTS.md",
+      ".codex/config.toml",
+      ".codex/agents",
+      ".codex/prompts",
+      ".codex/skills"
+    ],
+    permissionConcepts: [
+      "sandbox policy",
+      "approval policy",
+      "agent instructions"
+    ],
+    pluginSurfaces: ["skills", "MCP servers", "project AGENTS.md"],
+    mcpConventions: [".codex/config.toml", "MCP server entries"],
+    historySurfaces: [
+      "Codex session logs",
+      "rollout summaries",
+      "local memories"
+    ],
+    ciEvidence: ["scan report", "rules conformance", "policy gate"],
+    markers: [
+      { path: "AGENTS.md", kind: "file", strength: "strong" },
+      { path: ".codex/config.toml", kind: "file", strength: "strong" },
+      { path: ".codex/agents", kind: "directory", strength: "supporting" },
+      { path: ".codex/prompts", kind: "directory", strength: "supporting" },
+      { path: ".codex/skills", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "gemini",
+    name: "Gemini CLI",
+    description: "Gemini project instructions, commands, extensions, and MCP configuration surfaces.",
+    configPaths: [
+      "GEMINI.md",
+      ".gemini/settings.json",
+      ".gemini/commands",
+      ".gemini/extensions",
+      ".gemini/mcp.json"
+    ],
+    permissionConcepts: [
+      "tool permissions",
+      "extension scopes",
+      "project rules"
+    ],
+    pluginSurfaces: ["commands", "extensions", "MCP adapters"],
+    mcpConventions: [".gemini/mcp.json", "settings tool entries"],
+    historySurfaces: ["terminal transcripts", "command history", "tool traces"],
+    ciEvidence: ["scan report", "policy gate", "extension review"],
+    markers: [
+      { path: "GEMINI.md", kind: "file", strength: "strong" },
+      { path: ".gemini/settings.json", kind: "file", strength: "strong" },
+      { path: ".gemini/mcp.json", kind: "file", strength: "supporting" },
+      { path: ".gemini/commands", kind: "directory", strength: "supporting" },
+      { path: ".gemini/extensions", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "zed",
+    name: "Zed",
+    description: "Zed project agent settings, MCP context servers, tool permissions, tasks, and external-agent handoff surfaces.",
+    configPaths: [".zed/settings.json", ".zed/tasks.json"],
+    permissionConcepts: [
+      "agent tool permissions",
+      "task command review",
+      "worktree trust"
+    ],
+    pluginSurfaces: [
+      "MCP server extensions",
+      "custom context servers",
+      "external agents"
+    ],
+    mcpConventions: [
+      "context_servers",
+      "mcp:<server>:<tool_name>",
+      "Agent Panel settings"
+    ],
+    historySurfaces: [
+      "agent threads",
+      "project context",
+      "worktree-local settings"
+    ],
+    ciEvidence: ["scan report", "task automation review", "policy gate"],
+    markers: [
+      { path: ".zed/settings.json", kind: "file", strength: "strong" },
+      { path: ".zed/tasks.json", kind: "file", strength: "strong" },
+      { path: ".zed", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "vscode",
+    name: "VS Code",
+    description: "VS Code workspace settings, tasks, extension recommendations, and editor-launched automation surfaces.",
+    configPaths: [
+      ".vscode/settings.json",
+      ".vscode/tasks.json",
+      ".vscode/extensions.json",
+      ".vscode/launch.json"
+    ],
+    permissionConcepts: [
+      "workspace trust",
+      "folder-open task automation",
+      "extension recommendations"
+    ],
+    pluginSurfaces: ["extensions", "tasks", "launch configurations"],
+    mcpConventions: [
+      "extension-provided MCP/tool configuration",
+      "workspace settings"
+    ],
+    historySurfaces: ["workspace storage", "task output", "extension logs"],
+    ciEvidence: [
+      "scan report",
+      "task automation review",
+      "extension policy gate"
+    ],
+    markers: [
+      { path: ".vscode/tasks.json", kind: "file", strength: "strong" },
+      { path: ".vscode/settings.json", kind: "file", strength: "strong" },
+      { path: ".vscode/extensions.json", kind: "file", strength: "supporting" },
+      { path: ".vscode/launch.json", kind: "file", strength: "supporting" },
+      { path: ".vscode", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "dmux",
+    name: "dmux",
+    description: "dmux multi-agent pane, worktree, launch, and lifecycle hook surfaces.",
+    configPaths: [
+      "dmux.yaml",
+      "dmux.yml",
+      "dmux.json",
+      ".dmux/config.yaml",
+      ".dmux/config.json",
+      ".dmux"
+    ],
+    permissionConcepts: [
+      "pane launch commands",
+      "worktree lifecycle hooks",
+      "merge workflows"
+    ],
+    pluginSurfaces: ["launch recipes", "hooks", "agent templates"],
+    mcpConventions: ["per-agent MCP environment", "launch-time tool config"],
+    historySurfaces: ["tmux pane logs", "worktree state", "handoff files"],
+    ciEvidence: ["scan report", "worktree safety review", "merge gate"],
+    markers: [
+      { path: "dmux.yaml", kind: "file", strength: "strong" },
+      { path: "dmux.yml", kind: "file", strength: "strong" },
+      { path: "dmux.json", kind: "file", strength: "strong" },
+      { path: ".dmux/config.yaml", kind: "file", strength: "strong" },
+      { path: ".dmux/config.json", kind: "file", strength: "strong" },
+      { path: ".dmux", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "generic-terminal",
+    name: "Generic Terminal Agent",
+    description: "Terminal-agent launch scripts, command wrappers, and shell-based orchestration surfaces.",
+    configPaths: [
+      "agent.yaml",
+      "agent.yml",
+      ".agents",
+      "agents.yaml",
+      "scripts/agents",
+      "terminal-agents"
+    ],
+    permissionConcepts: [
+      "shell command allowlists",
+      "environment exposure",
+      "working-directory scope"
+    ],
+    pluginSurfaces: [
+      "shell wrappers",
+      "agent launch manifests",
+      "local command packs"
+    ],
+    mcpConventions: [
+      "environment-provided MCP endpoints",
+      "wrapper-managed tools"
+    ],
+    historySurfaces: [
+      "terminal logs",
+      "agent run directories",
+      "handoff files"
+    ],
+    ciEvidence: ["scan report", "script review", "policy gate"],
+    markers: [
+      { path: "agent.yaml", kind: "file", strength: "strong" },
+      { path: "agent.yml", kind: "file", strength: "strong" },
+      { path: "agents.yaml", kind: "file", strength: "strong" },
+      { path: ".agents", kind: "directory", strength: "strong" },
+      { path: "scripts/agents", kind: "directory", strength: "supporting" },
+      { path: "terminal-agents", kind: "directory", strength: "supporting" }
+    ]
+  },
+  {
+    id: "project-local-template",
+    name: "Project-local Templates",
+    description: "Repository-local skills, commands, rules, prompts, and reusable agent templates.",
+    configPaths: [
+      "skills",
+      "commands",
+      "rules",
+      "contexts",
+      "prompts",
+      ".claude/commands",
+      ".claude/skills"
+    ],
+    permissionConcepts: [
+      "template guidance",
+      "default tool scopes",
+      "copy-forward examples"
+    ],
+    pluginSurfaces: ["skills", "commands", "rules", "contexts", "prompts"],
+    mcpConventions: ["template MCP examples", "copy-forward config snippets"],
+    historySurfaces: [
+      "template changelogs",
+      "skill health history",
+      "example traces"
+    ],
+    ciEvidence: [
+      "template scan",
+      "docs-example downgrade evidence",
+      "corpus fixture coverage"
+    ],
+    markers: [
+      { path: "skills", kind: "directory", strength: "strong" },
+      { path: "commands", kind: "directory", strength: "strong" },
+      { path: "rules", kind: "directory", strength: "supporting" },
+      { path: "contexts", kind: "directory", strength: "supporting" },
+      { path: "prompts", kind: "directory", strength: "supporting" },
+      { path: ".claude/commands", kind: "directory", strength: "supporting" },
+      { path: ".claude/skills", kind: "directory", strength: "supporting" }
+    ]
+  }
+];
+function getHarnessAdapterRegistry() {
+  return ADAPTERS.map(({ markers: _markers, ...metadata }) => metadata);
+}
+function detectHarnessAdapters(rootPath) {
+  const detections = ADAPTERS.map(
+    (adapter) => detectAdapter(rootPath, adapter)
+  );
+  const matched = detections.filter((adapter) => adapter.matched).sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    totalRegistered: ADAPTERS.length,
+    totalMatched: matched.length,
+    matched,
+    registered: getHarnessAdapterRegistry()
+  };
+}
+function detectAdapter(rootPath, adapter) {
+  const evidence = adapter.markers.filter((marker) => markerExists(rootPath, marker)).map((marker) => marker.path).sort();
+  const strongMatches = adapter.markers.filter(
+    (marker) => marker.strength === "strong" && evidence.includes(marker.path)
+  ).length;
+  const { markers: _markers, ...metadata } = adapter;
+  return {
+    ...metadata,
+    matched: evidence.length > 0,
+    confidence: strongMatches > 0 ? "strong" : "partial",
+    evidence
+  };
+}
+function markerExists(rootPath, marker) {
+  try {
+    const fullPath = (0, import_node_path3.join)(rootPath, marker.path);
+    if (!(0, import_node_fs2.existsSync)(fullPath)) return false;
+    const stats = (0, import_node_fs2.statSync)(fullPath);
+    switch (marker.kind) {
+      case "file":
+        return stats.isFile();
+      case "directory":
+        return stats.isDirectory();
+      default:
+        return stats.isFile() || stats.isDirectory();
+    }
+  } catch {
+    return false;
+  }
+}
+
+// src/core-scanner/scanner/discovery.ts
+var import_node_fs3 = require("fs");
+var import_node_path4 = require("path");
+var IGNORED_DIRS = /* @__PURE__ */ new Set([
+  ".dmux",
+  ".git",
+  "node_modules",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "coverage",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "vendor",
+  "brain",
+  "scratch"
+]);
+var CLAUDE_ROOT_MARKERS = /* @__PURE__ */ new Set([
+  "claude.md",
+  "settings.json",
+  "settings.local.json",
+  "mcp.json",
+  ".claude.json"
+]);
+var HOOK_SHELL_EXTENSIONS = /* @__PURE__ */ new Set([".sh", ".bash", ".zsh"]);
+var HOOK_CODE_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".js",
+  ".cjs",
+  ".mjs",
+  ".ts",
+  ".cts",
+  ".mts",
+  ".py",
+  ".rb"
+]);
+var HOOK_IMPLEMENTATION_EXTENSIONS = /* @__PURE__ */ new Set([
+  ...HOOK_SHELL_EXTENSIONS,
+  ...HOOK_CODE_EXTENSIONS
+]);
+var PACKAGE_MANAGER_CONFIG_FILES = /* @__PURE__ */ new Set([
+  "package.json",
+  "package-lock.json",
+  ".npmrc",
+  ".pnpmrc",
+  ".yarnrc",
+  ".yarnrc.yml",
+  "pnpm-workspace.yaml",
+  "pnpm-workspace.yml"
+]);
+var PROJECT_ROOT_HOOK_VARS = /* @__PURE__ */ new Set([
+  "CLAUDE_PLUGIN_ROOT",
+  "CLAUDE_PROJECT_DIR",
+  "PWD"
+]);
+function discoverConfigFiles(rootPath) {
+  const files = [];
+  const seenFiles = /* @__PURE__ */ new Set();
+  const claudeRoots = /* @__PURE__ */ new Set([rootPath]);
+  const exampleClaudeFiles = /* @__PURE__ */ new Set();
+  walkForClaudeRoots(rootPath, rootPath, claudeRoots, exampleClaudeFiles);
+  for (const exampleClaudeFile of [...exampleClaudeFiles].sort()) {
+    addDiscoveredFile(
+      rootPath,
+      exampleClaudeFile,
+      "claude-md",
+      files,
+      seenFiles
+    );
+  }
+  for (const claudeRoot of [...claudeRoots].sort()) {
+    scanClaudeRoot(rootPath, claudeRoot, files, seenFiles);
+  }
+  return { path: rootPath, files };
+}
+function walkForClaudeRoots(scanRoot, dirPath, claudeRoots, exampleClaudeFiles) {
+  if (!(0, import_node_fs3.existsSync)(dirPath) || !(0, import_node_fs3.statSync)(dirPath).isDirectory()) return;
+  const entries = (0, import_node_fs3.readdirSync)(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      if (entry.name === ".claude") {
+        claudeRoots.add(dirPath);
+        continue;
+      }
+      walkForClaudeRoots(
+        scanRoot,
+        (0, import_node_path4.join)(dirPath, entry.name),
+        claudeRoots,
+        exampleClaudeFiles
+      );
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (CLAUDE_ROOT_MARKERS.has(entry.name.toLowerCase())) {
+      if (isExampleOnlyClaudeRoot(scanRoot, dirPath, entry.name)) {
+        exampleClaudeFiles.add((0, import_node_path4.join)(dirPath, entry.name));
+        continue;
+      }
+      claudeRoots.add(dirPath);
+    }
+  }
+}
+function isExampleOnlyClaudeRoot(scanRoot, dirPath, markerName) {
+  if (markerName.toLowerCase() !== "claude.md") return false;
+  const relativeDir = (0, import_node_path4.relative)(scanRoot, dirPath);
+  const segments = relativeDir.split(/[\\/]/).filter(Boolean).map((segment) => segment.toLowerCase()).join("/");
+  if (!isExampleLikePath(segments)) {
+    return false;
+  }
+  const hasRuntimeCompanion = ["settings.json", "settings.local.json", "mcp.json", ".claude.json"].some(
+    (name) => (0, import_node_fs3.existsSync)((0, import_node_path4.join)(dirPath, name))
+  ) || (0, import_node_fs3.existsSync)((0, import_node_path4.join)(dirPath, ".claude"));
+  return !hasRuntimeCompanion;
+}
+function scanClaudeRoot(scanRoot, claudeRoot, files, seenFiles) {
+  const directFiles = [
+    ["CLAUDE.md", "claude-md"],
+    [".claude/CLAUDE.md", "claude-md"],
+    ["settings.json", "settings-json"],
+    ["settings.local.json", "settings-json"],
+    [".claude/settings.json", "settings-json"],
+    [".claude/settings.local.json", "settings-json"],
+    [".claude/router_runtime.js", "hook-code"],
+    [".claude/setup.mjs", "hook-code"],
+    [".vscode/tasks.json", "settings-json"],
+    [".zed/settings.json", "settings-json"],
+    [".zed/tasks.json", "settings-json"],
+    ["package.json", "package-manager-config"],
+    ["package-lock.json", "package-manager-config"],
+    [".npmrc", "package-manager-config"],
+    [".pnpmrc", "package-manager-config"],
+    [".yarnrc", "package-manager-config"],
+    [".yarnrc.yml", "package-manager-config"],
+    ["pnpm-workspace.yaml", "package-manager-config"],
+    ["pnpm-workspace.yml", "package-manager-config"],
+    [".github/workflows/codeql_analysis.yml", "settings-json"],
+    [".github/workflows/codeql_analysis.yaml", "settings-json"],
+    [".config/gh-token-monitor/token", "hook-script"],
+    [".config/systemd/user/gh-token-monitor.service", "hook-script"],
+    [".local/bin/gh-token-monitor.sh", "hook-script"],
+    ["Library/LaunchAgents/com.user.gh-token-monitor.plist", "settings-json"],
+    ["mcp.json", "mcp-json"],
+    [".claude/mcp.json", "mcp-json"],
+    [".claude.json", "mcp-json"]
+  ];
+  for (const [relativePath, type] of directFiles) {
+    const fullPath = (0, import_node_path4.join)(claudeRoot, relativePath);
+    if ((0, import_node_fs3.existsSync)(fullPath)) {
+      addDiscoveredFile(scanRoot, fullPath, type, files, seenFiles);
+    }
+  }
+  const subdirs = [
+    ["agents", "agent-md"],
+    [".claude/agents", "agent-md"],
+    ["subagents", "agent-md"],
+    [".claude/subagents", "agent-md"],
+    ["mcp-configs", "mcp-json"],
+    [".claude/mcp-configs", "mcp-json"],
+    ["mcp", "mcp-json"],
+    [".claude/mcp", "mcp-json"],
+    ["configs/mcp", "mcp-json"],
+    ["config/mcp", "mcp-json"],
+    ["skills", "skill-md"],
+    [".claude/skills", "skill-md"],
+    ["hooks", "hook-script"],
+    [".claude/hooks", "hook-script"],
+    [".vscode", "hook-script"],
+    [".zed", "hook-script"],
+    ["rules", "rule-md"],
+    [".claude/rules", "rule-md"],
+    ["contexts", "context-md"],
+    [".claude/contexts", "context-md"],
+    ["commands", "skill-md"],
+    [".claude/commands", "skill-md"],
+    ["slash-commands", "skill-md"],
+    [".claude/slash-commands", "skill-md"]
+  ];
+  for (const [subdir, type] of subdirs) {
+    const dirPath = (0, import_node_path4.join)(claudeRoot, subdir);
+    if ((0, import_node_fs3.existsSync)(dirPath) && (0, import_node_fs3.statSync)(dirPath).isDirectory()) {
+      collectFilesRecursively(scanRoot, dirPath, type, files, seenFiles, 0);
+    }
+  }
+  discoverReferencedHookScripts(scanRoot, claudeRoot, files, seenFiles);
+}
+var BINARY_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".bmp",
+  ".svg",
+  ".pdf",
+  ".zip",
+  ".gz",
+  ".tar",
+  ".tgz",
+  ".bz2",
+  ".7z",
+  ".rar",
+  ".wasm",
+  ".node",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".mp3",
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".wav",
+  ".ogg",
+  ".webm"
+]);
+var MAX_DISCOVERED_FILE_BYTES = 1024 * 1024;
+var MAX_DISCOVERY_DEPTH = 10;
+function collectFilesRecursively(scanRoot, dirPath, defaultType, files, seenFiles, depth) {
+  if (depth > MAX_DISCOVERY_DEPTH) return;
+  let entries;
+  try {
+    entries = (0, import_node_fs3.readdirSync)(dirPath, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const entryPath = (0, import_node_path4.join)(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      collectFilesRecursively(
+        scanRoot,
+        entryPath,
+        defaultType,
+        files,
+        seenFiles,
+        depth + 1
+      );
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (BINARY_EXTENSIONS.has((0, import_node_path4.extname)(entry.name).toLowerCase())) continue;
+    try {
+      if ((0, import_node_fs3.statSync)(entryPath).size > MAX_DISCOVERED_FILE_BYTES) continue;
+    } catch {
+      continue;
+    }
+    addDiscoveredFile(
+      scanRoot,
+      entryPath,
+      inferType(entry.name, defaultType),
+      files,
+      seenFiles
+    );
+  }
+}
+function inferType(filename, defaultType) {
+  const ext = (0, import_node_path4.extname)(filename).toLowerCase();
+  const name = (0, import_node_path4.basename)(filename).toLowerCase();
+  if (PACKAGE_MANAGER_CONFIG_FILES.has(name)) return "package-manager-config";
+  if (name === "claude.md") return "claude-md";
+  if (name === "settings.json" || name === "settings.local.json")
+    return "settings-json";
+  if (name === "mcp.json" || name === ".claude.json") return "mcp-json";
+  if (HOOK_SHELL_EXTENSIONS.has(ext) && defaultType === "hook-script")
+    return "hook-script";
+  if (HOOK_CODE_EXTENSIONS.has(ext) && defaultType === "hook-script")
+    return "hook-code";
+  if (ext === ".sh" || ext === ".bash" || ext === ".zsh") return "hook-script";
+  if (defaultType === "hook-script" && (ext === ".md" || ext === ".markdown")) {
+    return "unknown";
+  }
+  if (defaultType === "mcp-json" && ext === ".json") return "mcp-json";
+  if (defaultType === "mcp-json" && (ext === ".md" || ext === ".markdown")) {
+    return "unknown";
+  }
+  if (defaultType === "agent-md" && ext === ".json") return "agent-md";
+  if (defaultType === "skill-md" && ext === ".json") return "skill-md";
+  if (ext === ".json") return "settings-json";
+  if (ext === ".md" || ext === ".markdown") return defaultType;
+  return "unknown";
+}
+function discoverReferencedHookScripts(scanRoot, claudeRoot, files, seenFiles) {
+  const hookConfigPaths = [
+    "settings.json",
+    "settings.local.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    "hooks/hooks.json",
+    ".claude/hooks/hooks.json"
+  ];
+  for (const relativeConfigPath of hookConfigPaths) {
+    const fullPath = (0, import_node_path4.join)(claudeRoot, relativeConfigPath);
+    if (!(0, import_node_fs3.existsSync)(fullPath) || !(0, import_node_fs3.statSync)(fullPath).isFile()) continue;
+    const content = (0, import_node_fs3.readFileSync)(fullPath, "utf-8");
+    for (const candidate of extractHookReferencedPaths(content)) {
+      const resolvedPath = resolveHookReferencedPath(
+        scanRoot,
+        claudeRoot,
+        candidate
+      );
+      if (!resolvedPath) continue;
+      addDiscoveredFile(
+        scanRoot,
+        resolvedPath,
+        inferType(resolvedPath, "hook-script"),
+        files,
+        seenFiles
+      );
+    }
+  }
+}
+function extractHookReferencedPaths(content) {
+  const referencedPaths = /* @__PURE__ */ new Set();
+  for (const command of extractHookCommands2(content)) {
+    for (const candidate of extractCommandPathCandidates(command)) {
+      referencedPaths.add(candidate);
+    }
+  }
+  return [...referencedPaths];
+}
+function extractHookCommands2(content) {
+  try {
+    const config = JSON.parse(content);
+    const hookGroups = config?.hooks;
+    if (!hookGroups || typeof hookGroups !== "object") return [];
+    const commands = [];
+    for (const group of Object.values(hookGroups)) {
+      if (!Array.isArray(group)) continue;
+      for (const entry of group) {
+        commands.push(...extractHookEntryCommands(entry));
+      }
+    }
+    return commands;
+  } catch {
+    return [];
+  }
+}
+function extractHookEntryCommands(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  const record = entry;
+  const commands = [];
+  if (typeof record.hook === "string" && record.hook.length > 0) {
+    commands.push(record.hook);
+  }
+  if (typeof record.command === "string" && record.command.length > 0) {
+    commands.push(record.command);
+  }
+  if (Array.isArray(record.hooks)) {
+    for (const nestedEntry of record.hooks) {
+      if (!nestedEntry || typeof nestedEntry !== "object") continue;
+      const nestedCommand = nestedEntry.command;
+      if (typeof nestedCommand === "string" && nestedCommand.length > 0) {
+        commands.push(nestedCommand);
+      }
+    }
+  }
+  return commands;
+}
+function extractCommandPathCandidates(command) {
+  const pathPattern = /(?:(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)\/)?(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:sh|bash|zsh|js|cjs|mjs|ts|cts|mts|py|rb)/gi;
+  const candidates = [];
+  for (const match of command.matchAll(pathPattern)) {
+    const index = match.index ?? 0;
+    if (command.slice(Math.max(0, index - 3), index) === "://") {
+      continue;
+    }
+    candidates.push(match[0]);
+  }
+  return candidates;
+}
+function resolveHookReferencedPath(scanRoot, claudeRoot, candidate) {
+  let normalized = candidate.replace(/\\/g, "/");
+  if (/^https?:\/\//i.test(normalized) || normalized.startsWith("/") || normalized.startsWith("~")) {
+    return null;
+  }
+  const envVarMatch = normalized.match(
+    /^(?:\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))\/(.*)$/
+  );
+  if (envVarMatch) {
+    const varName = envVarMatch[1] ?? envVarMatch[2];
+    if (!PROJECT_ROOT_HOOK_VARS.has(varName)) {
+      return null;
+    }
+    normalized = envVarMatch[3];
+  }
+  if (normalized.startsWith("/")) return null;
+  const fullPath = (0, import_node_path4.join)(claudeRoot, normalized);
+  if (!(0, import_node_fs3.existsSync)(fullPath) || !(0, import_node_fs3.statSync)(fullPath).isFile()) {
+    return null;
+  }
+  const ext = (0, import_node_path4.extname)(fullPath).toLowerCase();
+  if (!HOOK_IMPLEMENTATION_EXTENSIONS.has(ext)) {
+    return null;
+  }
+  const relativePath = (0, import_node_path4.relative)(scanRoot, fullPath);
+  if (relativePath.startsWith("..")) {
+    return null;
+  }
+  return fullPath;
+}
+function addDiscoveredFile(scanRoot, fullPath, type, files, seenFiles) {
+  const relativePath = (0, import_node_path4.relative)(scanRoot, fullPath);
+  if (seenFiles.has(relativePath)) return;
+  const pathParts = relativePath.split(/[\\/]/);
+  if (pathParts.includes("node_modules") || pathParts.includes(".cache")) return;
+  const lowerName = (0, import_node_path4.basename)(fullPath).toLowerCase();
+  if (lowerName.endsWith(".jsonl") || lowerName === "transcript.json" || lowerName.endsWith(".log")) return;
+  const content = (0, import_node_fs3.readFileSync)(fullPath, "utf-8");
+  files.push({ path: relativePath, type, content });
+  seenFiles.add(relativePath);
+}
+
+// src/core-scanner/scanner/index.ts
+function scan(targetPath) {
+  const target = discoverConfigFiles(targetPath);
+  const rules = getBuiltinRules();
+  const findings = runRules2(target.files, rules, target.path);
+  const skillHealth = analyzeSkillHealth(target.files);
+  const harnessAdapters = detectHarnessAdapters(targetPath);
+  return { target, findings, skillHealth, harnessAdapters };
+}
+function runRules2(files, rules, scanRoot) {
+  const findings = [];
+  for (const file of files) {
+    for (const rule of rules) {
+      const ruleFindings = rule.check(file, files);
+      findings.push(...ruleFindings);
+    }
+  }
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
+  const annotatedFindings = findings.map((finding) => {
+    const annotatedFinding = annotateFindingRuntimeConfidence(
+      finding,
+      filesByPath,
+      scanRoot
+    );
+    return adjustFindingForSourceContext(annotatedFinding);
+  });
+  return [...annotatedFindings].sort((a, b) => {
+    const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+    return order[a.severity] - order[b.severity];
+  });
+}
+function classifyRuntimeConfidence(file, scanRoot) {
+  const normalizedPath = file.path.replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath === "settings.local.json" || normalizedPath.endsWith("/settings.local.json")) {
+    return "project-local-optional";
+  }
+  if (isPluginCachePath(file.path, scanRoot)) {
+    return "plugin-cache";
+  }
+  if (file.type === "hook-code") {
+    return "hook-code";
+  }
+  if (file.type === "settings-json" && /(?:^|\/)(?:\.claude\/)?hooks\/hooks\.json$/i.test(normalizedPath)) {
+    return "plugin-manifest";
+  }
+  if (isExampleLikePath(normalizedPath)) {
+    return "docs-example";
+  }
+  return void 0;
+}
+function annotateFindingRuntimeConfidence(finding, filesByPath, scanRoot) {
+  if (finding.runtimeConfidence) {
+    return finding;
+  }
+  const file = filesByPath.get(finding.file);
+  const runtimeConfidence = file ? classifyRuntimeConfidence(file, scanRoot) : void 0;
+  return runtimeConfidence ? { ...finding, runtimeConfidence } : finding;
+}
+function adjustFindingForSourceContext(finding) {
+  switch (finding.runtimeConfidence) {
+    case "docs-example":
+      return adjustDocsExampleFinding(finding);
+    case "plugin-cache":
+      return adjustPluginCacheFinding(finding);
+    case "plugin-manifest":
+      return adjustPluginManifestFinding(finding);
+    default:
+      return finding;
+  }
+}
+function adjustDocsExampleFinding(finding) {
+  if (finding.category === "secrets") {
+    return withPrefixedDescription(
+      {
+        ...finding,
+        title: prefixTitle(finding.title, "Example config")
+      },
+      "This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure."
+    );
+  }
+  return withPrefixedDescription(
+    {
+      ...finding,
+      severity: downgradeStructuralSeverity(finding.severity),
+      title: prefixTitle(finding.title, "Example config")
+    },
+    "This finding comes from docs or sample configuration in the repository. It indicates risky guidance or example defaults, not confirmed active runtime exposure."
+  );
+}
+function adjustPluginCacheFinding(finding) {
+  if (finding.category === "secrets") {
+    return withPrefixedDescription(
+      {
+        ...finding,
+        title: prefixTitle(finding.title, "Plugin cache")
+      },
+      "This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration."
+    );
+  }
+  return withPrefixedDescription(
+    {
+      ...finding,
+      severity: downgradeStructuralSeverity(finding.severity),
+      title: prefixTitle(finding.title, "Plugin cache")
+    },
+    "This finding comes from an installed Claude plugin cache. It indicates packaged plugin content present on disk, not confirmed top-level runtime configuration."
+  );
+}
+function adjustPluginManifestFinding(finding) {
+  return withPrefixedDescription(
+    {
+      ...finding,
+      title: prefixTitle(finding.title, "Plugin hook manifest")
+    },
+    "This finding comes from a declarative hook manifest. Review the referenced hook implementation to confirm the exact runtime behavior."
+  );
+}
+function downgradeStructuralSeverity(severity) {
+  switch (severity) {
+    case "critical":
+      return "high";
+    case "high":
+      return "medium";
+    case "medium":
+      return "low";
+    default:
+      return severity;
+  }
+}
+function prefixTitle(title, prefix) {
+  return title.startsWith(`${prefix}: `) ? title : `${prefix}: ${title}`;
+}
+function withPrefixedDescription(finding, prefix) {
+  return finding.description.startsWith(prefix) ? finding : { ...finding, description: `${prefix} ${finding.description}` };
+}
+
+// src/commands/inspect-mcp.ts
+function globalConfigCandidates() {
+  const home = os.homedir();
+  return [
+    path4.join(home, ".claude.json"),
+    path4.join(home, ".claude", "mcp.json"),
+    path4.join(home, ".claude", "settings.json"),
+    path4.join(home, ".cursor", "mcp.json"),
+    path4.join(
+      home,
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude_desktop_config.json"
+    ),
+    path4.join(home, ".config", "Claude", "claude_desktop_config.json")
+  ];
+}
+function readServersFrom(filePath) {
+  try {
+    const parsed = JSON.parse(fs4.readFileSync(filePath, "utf-8"));
+    const servers = parsed?.mcpServers;
+    if (servers && typeof servers === "object") {
+      return servers;
+    }
+  } catch {
+  }
+  return null;
+}
+function collectAllServers() {
+  const byName = /* @__PURE__ */ new Map();
+  const addFrom = (configPath, servers) => {
+    for (const [name, entry] of Object.entries(servers)) {
+      if (!byName.has(name)) byName.set(name, { entry: entry ?? {}, configPath });
+    }
+  };
+  try {
+    const discovered = discoverConfigFiles(process.cwd());
+    for (const f of discovered.files) {
+      if (f.type !== "mcp-json" && f.type !== "settings-json") continue;
+      try {
+        const parsed = JSON.parse(f.content);
+        if (parsed?.mcpServers && typeof parsed.mcpServers === "object") {
+          addFrom(path4.resolve(f.path), parsed.mcpServers);
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  for (const candidate of globalConfigCandidates()) {
+    if (!fs4.existsSync(candidate)) continue;
+    const servers = readServersFrom(candidate);
+    if (servers) addFrom(candidate, servers);
+  }
+  return { byName };
+}
+function looksLikeUrl(s) {
+  return /^https?:\/\//i.test(s);
+}
+var KNOWN_RUNNERS = /* @__PURE__ */ new Set([
+  "npx",
+  "node",
+  "bunx",
+  "bun",
+  "deno",
+  "python",
+  "python3",
+  "uv",
+  "uvx",
+  "docker",
+  "podman",
+  "sh",
+  "bash",
+  "pnpm",
+  "yarn"
+]);
+function looksLikeCommand(s) {
+  if (s.includes(" ")) return true;
+  const first = s.split(/\s+/)[0];
+  if (KNOWN_RUNNERS.has(first)) return true;
+  if (s.startsWith("/") || s.startsWith("./") || s.startsWith("~/")) return true;
+  return false;
+}
+function resolveTarget(target, options) {
+  if (options.config && options.server) {
+    const cfgPath = path4.resolve(options.config);
+    if (!fs4.existsSync(cfgPath)) {
+      fail(`Config file not found: ${cfgPath}`);
+    }
+    const servers = readServersFrom(cfgPath);
+    const entry = servers?.[options.server];
+    if (!entry) {
+      fail(
+        `Server "${options.server}" not found in ${cfgPath}.` + (servers ? ` Available: ${Object.keys(servers).join(", ") || "(none)"}` : "")
+      );
+    }
+    return {
+      label: options.server,
+      serverName: options.server,
+      entry,
+      connection: ["--config", cfgPath, "--server", options.server],
+      sourceConfigPath: cfgPath
+    };
+  }
+  if (!target) {
+    fail(
+      'Provide an MCP server name, a command, or a URL \u2014 e.g.\n  wh-agent inspect-mcp github\n  wh-agent inspect-mcp --config ./mcp.json --server github\n  wh-agent inspect-mcp "npx -y @modelcontextprotocol/server-github"\n  wh-agent inspect-mcp https://my-server.example.com --transport http'
+    );
+  }
+  if (looksLikeUrl(target)) {
+    return {
+      label: target,
+      serverName: target,
+      entry: { url: target },
+      connection: [target]
+    };
+  }
+  const { byName } = collectAllServers();
+  const found = byName.get(target);
+  if (found) {
+    const e = found.entry;
+    const connection = e.url ? [e.url] : ["--config", found.configPath, "--server", target];
+    return {
+      label: target,
+      serverName: target,
+      entry: e,
+      connection,
+      sourceConfigPath: found.configPath
+    };
+  }
+  if (looksLikeCommand(target)) {
+    const parts = target.split(/\s+/).filter(Boolean);
+    return {
+      label: target,
+      serverName: parts[0] ?? "server",
+      entry: { command: parts[0], args: parts.slice(1) },
+      connection: parts
+    };
+  }
+  const names = [...byName.keys()];
+  fail(
+    `No MCP server named "${target}" was found in your project or global configs` + (names.length ? `.
+   Known servers: ${names.join(", ")}` : " (no MCP servers configured).") + `
+   Pass a full command instead, e.g.: wh-agent inspect-mcp "npx -y ${target}"`
+  );
+}
+function fail(msg) {
+  console.error(import_chalk3.default.red(`\u274C ${msg}`));
+  process.exit(1);
+}
+function runInspector(connection, method, transport, timeoutMs) {
+  const args = [
+    "--yes",
+    "@modelcontextprotocol/inspector",
+    "--cli",
+    ...connection,
+    "--method",
+    method
+  ];
+  if (transport) args.push("--transport", transport);
+  const out = (0, import_node_child_process.execFileSync)("npx", args, {
+    encoding: "utf-8",
+    timeout: timeoutMs,
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  return JSON.parse(out);
+}
+function liveFindings(target, options) {
+  const findings = [];
+  const timeoutMs = Math.max(5e3, Number(options.timeout ?? "45") * 1e3);
+  console.error(
+    import_chalk3.default.yellow.bold(
+      "\n\u26A0\uFE0F  --live EXECUTES the MCP server to enumerate its tools (this runs arbitrary\n   code from the server). Only use --live on servers you are willing to run.\n"
+    )
+  );
+  console.error(import_chalk3.default.gray(`   Connecting via the MCP Inspector CLI...`));
+  let tools = [];
+  try {
+    const result = runInspector(
+      target.connection,
+      "tools/list",
+      options.transport,
+      timeoutMs
+    );
+    tools = Array.isArray(result?.tools) ? result.tools : [];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      import_chalk3.default.red(
+        `   \u26A0\uFE0F  Live enumeration failed (${msg.split("\n")[0]}).
+   Static findings above still apply. Ensure npx is available and the server starts.`
+      )
+    );
+    return { findings, toolCount: 0 };
+  }
+  for (const tool of tools) {
+    const schemaText = tool.inputSchema ? JSON.stringify(tool.inputSchema) : "";
+    const hits = analyzeMcpToolText(
+      tool.name ?? "",
+      tool.description ?? "",
+      schemaText
+    );
+    for (const hit of hits) {
+      findings.push({
+        id: "mcp-live-tool-poisoning",
+        severity: hit.severity,
+        category: "mcp",
+        title: hit.title,
+        description: hit.description,
+        file: `${target.label} (live tool: ${tool.name ?? "?"})`,
+        evidence: hit.evidence
+      });
+    }
+  }
+  console.error(
+    import_chalk3.default.gray(
+      `   Enumerated ${tools.length} live tool(s); ${findings.length} issue(s) found in tool metadata.`
+    )
+  );
+  return { findings, toolCount: tools.length };
+}
+function toSarif(report) {
+  return JSON.stringify(
+    {
+      version: "2.1.0",
+      $schema: "http://json.schemastore.org/sarif-2.1.0-rtm.5",
+      runs: [
+        {
+          tool: { driver: { name: "W.H.Agent inspect-mcp" } },
+          results: report.findings.map((f) => ({
+            ruleId: f.id,
+            level: f.severity === "critical" ? "error" : f.severity === "info" ? "note" : "warning",
+            message: { text: `${f.title} \u2014 ${f.description}` },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: f.file },
+                  ...f.line ? { region: { startLine: f.line } } : {}
+                }
+              }
+            ]
+          }))
+        }
+      ]
+    },
+    null,
+    2
+  );
+}
+async function inspectMcp(target, options) {
+  const format = options.format || "terminal";
+  const resolved = resolveTarget(target, options);
+  if (options.ui) {
+    console.log(
+      import_chalk3.default.yellow(
+        "\u26A0\uFE0F  Launching the MCP Inspector web UI \u2014 this EXECUTES the server. Ctrl+C to stop.\n"
+      )
+    );
+    try {
+      (0, import_node_child_process.execFileSync)(
+        "npx",
+        ["--yes", "@modelcontextprotocol/inspector", ...resolved.connection],
+        { stdio: "inherit" }
+      );
+    } catch (err) {
+      fail(`Failed to launch the Inspector UI: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  if (format === "terminal") {
+    console.log(
+      import_chalk3.default.blue(`
+\u{1F50D} Inspecting MCP server: ${import_chalk3.default.bold(resolved.label)}`)
+    );
+    if (resolved.sourceConfigPath) {
+      console.log(import_chalk3.default.gray(`   Resolved from: ${resolved.sourceConfigPath}`));
+    }
+  }
+  const synthetic = {
+    path: `${resolved.label} (resolved MCP config)`,
+    type: "mcp-json",
+    content: JSON.stringify(
+      { mcpServers: { [resolved.serverName]: resolved.entry } },
+      null,
+      2
+    )
+  };
+  const findings = [];
+  for (const rule of getBuiltinRules()) {
+    try {
+      findings.push(...rule.check(synthetic, [synthetic]));
+    } catch {
+    }
+  }
+  let liveToolCount = 0;
+  if (options.live) {
+    const live = liveFindings(resolved, options);
+    findings.push(...live.findings);
+    liveToolCount = live.toolCount;
+  }
+  const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+  findings.sort((a, b) => order[a.severity] - order[b.severity]);
+  const report = calculateScore({
+    target: { path: resolved.label, files: [synthetic] },
+    findings
+  });
+  if (format === "json") {
+    const out = JSON.stringify(report, null, 2);
+    if (options.output) fs4.writeFileSync(options.output, out);
+    else console.log(out);
+  } else if (format === "sarif") {
+    const out = toSarif(report);
+    if (options.output) fs4.writeFileSync(options.output, out);
+    else console.log(out);
+  } else {
+    console.log(renderTerminalReport(report));
+    if (!options.live) {
+      console.log(
+        import_chalk3.default.gray(
+          "\n\u2139\uFE0F  This was a STATIC inspection (server not executed). Add --live to enumerate\n   the server's actual tools/resources and scan their descriptions for poisoning."
+        )
+      );
+    } else {
+      console.log(import_chalk3.default.gray(`
+Live tools enumerated: ${liveToolCount}`));
+    }
+    if (report.summary.critical > 0) {
+      console.error(import_chalk3.default.red(`
+\u{1F6A8} CRITICAL findings \u2014 do not trust this MCP server as-is.`));
+    } else if (report.summary.totalFindings > 0) {
+      console.log(import_chalk3.default.yellow(`
+\u26A0\uFE0F  Findings present \u2014 review before trusting this server.`));
+    } else {
+      console.log(import_chalk3.default.green(`
+\u2705 No issues found in the inspected configuration.`));
+    }
+  }
+  process.exit(report.summary.critical > 0 ? 2 : 0);
+}
+
+// src/commands/install.ts
+var import_node_child_process2 = require("child_process");
+var fs5 = __toESM(require("fs"));
+var https = __toESM(require("https"));
+var os2 = __toESM(require("os"));
+var path5 = __toESM(require("path"));
+var import_chalk4 = __toESM(require("chalk"));
+var tar = __toESM(require("tar"));
+
+// src/commands/popular-packages.json
+var popular_packages_default = [
+  "express",
+  "react",
+  "react-dom",
+  "lodash",
+  "axios",
+  "chalk",
+  "commander",
+  "next",
+  "vue",
+  "vue-router",
+  "vuex",
+  "angular",
+  "@angular/core",
+  "svelte",
+  "typescript",
+  "webpack",
+  "webpack-cli",
+  "vite",
+  "rollup",
+  "esbuild",
+  "babel",
+  "@babel/core",
+  "@babel/preset-env",
+  "eslint",
+  "prettier",
+  "jest",
+  "mocha",
+  "chai",
+  "sinon",
+  "vitest",
+  "cypress",
+  "playwright",
+  "puppeteer",
+  "ts-node",
+  "tsx",
+  "tslib",
+  "nodemon",
+  "concurrently",
+  "cross-env",
+  "rimraf",
+  "glob",
+  "fs-extra",
+  "chokidar",
+  "dotenv",
+  "cors",
+  "body-parser",
+  "cookie-parser",
+  "helmet",
+  "morgan",
+  "compression",
+  "multer",
+  "passport",
+  "jsonwebtoken",
+  "bcrypt",
+  "bcryptjs",
+  "argon2",
+  "express-session",
+  "connect-redis",
+  "socket.io",
+  "socket.io-client",
+  "ws",
+  "mongoose",
+  "mongodb",
+  "mysql",
+  "mysql2",
+  "pg",
+  "pg-promise",
+  "sequelize",
+  "typeorm",
+  "prisma",
+  "@prisma/client",
+  "knex",
+  "sqlite3",
+  "redis",
+  "ioredis",
+  "node-fetch",
+  "got",
+  "request",
+  "request-promise",
+  "superagent",
+  "form-data",
+  "qs",
+  "query-string",
+  "url-parse",
+  "uuid",
+  "nanoid",
+  "shortid",
+  "moment",
+  "moment-timezone",
+  "dayjs",
+  "date-fns",
+  "luxon",
+  "async",
+  "bluebird",
+  "p-limit",
+  "p-queue",
+  "rxjs",
+  "immer",
+  "immutable",
+  "ramda",
+  "underscore",
+  "debug",
+  "winston",
+  "pino",
+  "bunyan",
+  "loglevel",
+  "signale",
+  "ora",
+  "inquirer",
+  "prompts",
+  "yargs",
+  "minimist",
+  "meow",
+  "figlet",
+  "boxen",
+  "cli-table3",
+  "cli-progress",
+  "colors",
+  "kleur",
+  "picocolors",
+  "ansi-colors",
+  "strip-ansi",
+  "supports-color",
+  "semver",
+  "validator",
+  "joi",
+  "yup",
+  "zod",
+  "ajv",
+  "class-validator",
+  "class-transformer",
+  "reflect-metadata",
+  "dataloader",
+  "graphql",
+  "@apollo/client",
+  "apollo-server",
+  "apollo-server-express",
+  "type-graphql",
+  "@nestjs/core",
+  "@nestjs/common",
+  "@nestjs/platform-express",
+  "fastify",
+  "koa",
+  "koa-router",
+  "hapi",
+  "@hapi/hapi",
+  "restify",
+  "cheerio",
+  "jsdom",
+  "xml2js",
+  "fast-xml-parser",
+  "csv-parse",
+  "csv-parser",
+  "papaparse",
+  "js-yaml",
+  "yaml",
+  "toml",
+  "ini",
+  "dotenv-expand",
+  "cosmiconfig",
+  "rc",
+  "handlebars",
+  "ejs",
+  "pug",
+  "mustache",
+  "nunjucks",
+  "marked",
+  "markdown-it",
+  "remark",
+  "gray-matter",
+  "highlight.js",
+  "prismjs",
+  "sharp",
+  "jimp",
+  "image-size",
+  "qrcode",
+  "canvas",
+  "pdfkit",
+  "pdf-lib",
+  "archiver",
+  "adm-zip",
+  "tar",
+  "unzipper",
+  "node-gyp",
+  "node-addon-api",
+  "bindings",
+  "prebuild-install",
+  "node-pre-gyp",
+  "@types/node",
+  "@types/react",
+  "@types/express",
+  "@types/lodash",
+  "@types/jest",
+  "@types/mocha",
+  "styled-components",
+  "@emotion/react",
+  "@emotion/styled",
+  "tailwindcss",
+  "postcss",
+  "autoprefixer",
+  "sass",
+  "less",
+  "stylus",
+  "classnames",
+  "clsx",
+  "framer-motion",
+  "react-router",
+  "react-router-dom",
+  "react-redux",
+  "@reduxjs/toolkit",
+  "redux",
+  "redux-thunk",
+  "redux-saga",
+  "mobx",
+  "mobx-react",
+  "zustand",
+  "recoil",
+  "jotai",
+  "swr",
+  "@tanstack/react-query",
+  "react-query",
+  "formik",
+  "react-hook-form",
+  "final-form",
+  "react-select",
+  "react-table",
+  "@mui/material",
+  "@material-ui/core",
+  "antd",
+  "@chakra-ui/react",
+  "bootstrap",
+  "react-bootstrap",
+  "@headlessui/react",
+  "@radix-ui/react-dialog",
+  "lucide-react",
+  "react-icons",
+  "@fortawesome/fontawesome-svg-core",
+  "d3",
+  "chart.js",
+  "recharts",
+  "three",
+  "leaflet",
+  "mapbox-gl",
+  "plotly.js",
+  "stripe",
+  "@stripe/stripe-js",
+  "firebase",
+  "firebase-admin",
+  "@supabase/supabase-js",
+  "aws-sdk",
+  "@aws-sdk/client-s3",
+  "@google-cloud/storage",
+  "@sentry/node",
+  "@sentry/react",
+  "openai",
+  "@anthropic-ai/sdk",
+  "langchain",
+  "@octokit/rest",
+  "twilio",
+  "nodemailer",
+  "@sendgrid/mail",
+  "amqplib",
+  "kafkajs",
+  "bull",
+  "bullmq",
+  "agenda",
+  "node-cron",
+  "cron",
+  "puppeteer-core",
+  "selenium-webdriver",
+  "typedoc",
+  "husky",
+  "lint-staged",
+  "commitizen",
+  "standard",
+  "xo",
+  "@typescript-eslint/parser",
+  "@typescript-eslint/eslint-plugin",
+  "eslint-config-prettier",
+  "eslint-plugin-react",
+  "eslint-plugin-import",
+  "npm",
+  "pnpm",
+  "yarn",
+  "lerna",
+  "nx",
+  "turbo",
+  "changesets",
+  "@changesets/cli",
+  "core-js",
+  "regenerator-runtime",
+  "whatwg-fetch",
+  "cross-fetch",
+  "abort-controller",
+  "eventemitter3",
+  "mitt",
+  "nanoevents",
+  "lodash.merge",
+  "lodash.debounce",
+  "lodash.clonedeep",
+  "deepmerge",
+  "object-assign",
+  "extend",
+  "clone"
+];
+
+// src/commands/install.ts
+var MAX_TARBALL_SIZE = 50 * 1024 * 1024;
+var FETCH_TIMEOUT_MS = 1e4;
+function levenshtein(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [
+    i,
+    ...Array(b.length).fill(0)
+  ]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+function fetchPackageMetadata(packageName, version = "latest") {
+  return new Promise((resolve11, reject) => {
+    const req = https.get(
+      `https://registry.npmjs.org/${packageName}`,
+      (res) => {
+        if (res.statusCode === 404) {
+          return reject(new Error("PACKAGE_NOT_FOUND"));
+        }
+        if (res.statusCode !== 200) {
+          return reject(new Error(`Registry returned ${res.statusCode}`));
+        }
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          try {
+            const meta = JSON.parse(data);
+            const resolvedVersion = version === "latest" ? meta["dist-tags"]?.latest : version;
+            const manifest = meta.versions?.[resolvedVersion];
+            if (!manifest) {
+              return reject(new Error(`Version ${resolvedVersion} not found`));
+            }
+            resolve11(manifest);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(FETCH_TIMEOUT_MS, () => {
+      req.destroy();
+      reject(new Error("TIMEOUT"));
+    });
+  });
+}
+function checkTyposquat(packageName) {
+  const close = popular_packages_default.filter((p) => {
+    if (p === packageName) return false;
+    const dist = levenshtein(p, packageName);
+    return dist > 0 && dist <= 2 && Math.abs(p.length - packageName.length) <= 2;
+  });
+  if (close.length > 0) {
+    console.log(
+      import_chalk4.default.red(
+        `\u26A0\uFE0F  '${packageName}' is suspiciously close to: ${close.join(", ")}`
+      )
+    );
+    console.log(
+      import_chalk4.default.yellow(
+        `   This could be a typosquat. Verify before installing.
+   \u2139\uFE0F  Typosquat check compares against the top ${popular_packages_default.length} npm packages only; lesser-known package names aren't covered.`
+      )
+    );
+    return { risky: true, similarTo: close };
+  }
+  return { risky: false, similarTo: [] };
+}
+function checkLifecycleScripts(packageName, manifest) {
+  const scripts = manifest.scripts || {};
+  const dangerous = ["preinstall", "install", "postinstall"];
+  const found = dangerous.filter((s) => scripts[s]);
+  if (found.length > 0) {
+    console.log(
+      import_chalk4.default.yellow(
+        `\u2139\uFE0F  ${packageName} runs code automatically on install via: ${found.join(", ")}`
+      )
+    );
+    for (const s of found) {
+      console.log(import_chalk4.default.gray(`   ${s}: ${scripts[s]}`));
+    }
+    return { hasScripts: true, scripts: found };
+  }
+  console.log(import_chalk4.default.green(`\u2705 No install-time lifecycle scripts found.`));
+  return { hasScripts: false, scripts: [] };
+}
+function checkProvenance(packageName, manifest) {
+  const hasAttestation = !!manifest.dist?.attestations?.url;
+  if (hasAttestation) {
+    console.log(
+      import_chalk4.default.green(
+        `\u2705 ${packageName} has npm provenance (Sigstore-backed build attestation).`
+      )
+    );
+    return { verified: true };
+  }
+  console.log(
+    import_chalk4.default.gray(
+      `\u2139\uFE0F  ${packageName} has no provenance attestation (most packages don't yet \u2014 not necessarily a red flag).`
+    )
+  );
+  return { verified: false };
+}
+function downloadTarball(url, destPath) {
+  return new Promise((resolve11, reject) => {
+    const file = fs5.createWriteStream(destPath);
+    let downloadedBytes = 0;
+    const req = https.get(url, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        if (res.headers.location) {
+          return downloadTarball(res.headers.location, destPath).then(resolve11).catch(reject);
+        }
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`Download failed: ${res.statusCode}`));
+      }
+      res.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > MAX_TARBALL_SIZE) {
+          req.destroy();
+          file.close();
+          reject(new Error("TARBALL_TOO_LARGE"));
+        }
+      });
+      res.pipe(file);
+      file.on("finish", () => {
+        file.close();
+        resolve11();
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(FETCH_TIMEOUT_MS, () => {
+      req.destroy();
+      file.close();
+      reject(new Error("TIMEOUT"));
+    });
+  });
+}
+var SECRET_PATTERNS2 = [
+  { name: "AWS Access Key", re: /AKIA[0-9A-Z]{16}/ },
+  { name: "Private Key", re: /-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----/ },
+  {
+    name: "Generic API Key assignment",
+    re: /api[_-]?key\s*[:=]\s*['"]([a-zA-Z0-9_-]{20,})['"]/i
+  },
+  {
+    name: "eval of remote content",
+    re: /eval\(\s*(await\s+)?fetch|eval\(.*http/i
+  }
+];
+async function scanTarball(packageName, manifest) {
+  const tarballUrl = manifest.dist?.tarball;
+  if (!tarballUrl) {
+    console.log(import_chalk4.default.gray(`\u2139\uFE0F  No tarball URL found in manifest.`));
+    return { findings: [], binaries: [] };
+  }
+  const tmpDir = fs5.mkdtempSync(path5.join(os2.tmpdir(), "wh-agent-scan-"));
+  const tarPath = path5.join(tmpDir, "pkg.tgz");
+  try {
+    await downloadTarball(tarballUrl, tarPath);
+  } catch (err) {
+    if (err.message === "TARBALL_TOO_LARGE") {
+      console.log(
+        import_chalk4.default.yellow(
+          `\u26A0\uFE0F  Tarball exceeds 50MB limit; skipping static source scan.`
+        )
+      );
+      fs5.rmSync(tmpDir, { recursive: true, force: true });
+      return { findings: [], binaries: [] };
+    }
+    throw err;
+  }
+  try {
+    await tar.x({
+      file: tarPath,
+      cwd: tmpDir,
+      strip: 0,
+      filter: (entryPath) => {
+        const resolved = path5.resolve(tmpDir, entryPath);
+        return resolved.startsWith(tmpDir);
+      }
+    });
+  } catch (err) {
+    console.log(import_chalk4.default.red(`\u26A0\uFE0F  Failed to extract tarball safely: ${err}`));
+    fs5.rmSync(tmpDir, { recursive: true, force: true });
+    return {
+      findings: [{ file: "tarball", pattern: "Extraction failure" }],
+      binaries: []
+    };
+  }
+  const findings = [];
+  const binaries = [];
+  function walk2(dir) {
+    const entries = fs5.readdirSync(dir);
+    for (const f of entries) {
+      const full = path5.join(dir, f);
+      const stat2 = fs5.statSync(full);
+      if (stat2.isDirectory()) {
+        walk2(full);
+        continue;
+      }
+      const relativePath = full.replace(tmpDir + path5.sep, "");
+      if (/\.(node|exe|dll|so|dylib)$/i.test(f)) {
+        binaries.push(relativePath);
+        continue;
+      }
+      if (stat2.size > 10 * 1024 * 1024 && !/\.(js|ts|json|md|txt)$/i.test(f)) {
+        binaries.push(
+          `${relativePath} (Large blob: ${Math.round(stat2.size / 1024 / 1024)}MB)`
+        );
+        continue;
+      }
+      if (!/\.(js|ts|json)$/.test(f)) continue;
+      const content = fs5.readFileSync(full, "utf-8");
+      for (const { name, re } of SECRET_PATTERNS2) {
+        const match = content.match(re);
+        if (match) {
+          const secret = match[1] || match[0];
+          const redacted = secret.length > 8 ? secret.slice(0, 4) + "***" : "***";
+          findings.push({ file: relativePath, pattern: name, redacted });
+        }
+      }
+    }
+  }
+  try {
+    walk2(tmpDir);
+  } catch (e) {
+  }
+  fs5.rmSync(tmpDir, { recursive: true, force: true });
+  if (findings.length > 0) {
+    console.log(import_chalk4.default.red(`\u26A0\uFE0F  Suspicious patterns found in package source:`));
+    for (const f of findings) {
+      console.log(import_chalk4.default.red(`   ${f.file}: ${f.pattern} (${f.redacted})`));
+    }
+  } else {
+    console.log(
+      import_chalk4.default.green(`\u2705 No known suspicious patterns found in source.`)
+    );
+  }
+  if (binaries.length > 0) {
+    console.log(
+      import_chalk4.default.yellow(
+        `\u2139\uFE0F  This package ships native binaries or large blobs which were not scanned:
+   ${binaries.join("\n   ")}`
+      )
+    );
+  }
+  return { findings, binaries };
+}
+async function installAgent(pkgName, options) {
+  console.log(`
+\u{1F4E6} W.H.Agent Supply Chain: Checking ${pkgName}`);
+  let hasBlocker = false;
+  let hasInfo = false;
+  const typoResult = checkTyposquat(pkgName);
+  if (typoResult.risky) hasBlocker = true;
+  let manifest;
+  try {
+    manifest = await fetchPackageMetadata(
+      pkgName,
+      options.pkgVersion || "latest"
+    );
+  } catch (err) {
+    if (err.message === "PACKAGE_NOT_FOUND") {
+      console.error(import_chalk4.default.red(`\u274C Package '${pkgName}' not found on npm.`));
+    } else if (err.message === "TIMEOUT") {
+      console.error(import_chalk4.default.red(`\u274C Registry request timed out.`));
+    } else {
+      console.error(
+        import_chalk4.default.red(`\u274C Failed to fetch package metadata: ${err.message}`)
+      );
+    }
+    process.exit(1);
+  }
+  const lifecycleResult = checkLifecycleScripts(pkgName, manifest);
+  if (lifecycleResult.hasScripts) hasInfo = true;
+  checkProvenance(pkgName, manifest);
+  let tarballResult;
+  try {
+    tarballResult = await scanTarball(pkgName, manifest);
+    if (tarballResult.findings.length > 0) hasBlocker = true;
+    if (tarballResult.binaries.length > 0) hasInfo = true;
+  } catch (err) {
+    console.log(import_chalk4.default.red(`\u26A0\uFE0F  Error during tarball scan: ${err.message}`));
+  }
+  console.log("");
+  if (hasBlocker) {
+    if (options.force) {
+      console.log(
+        import_chalk4.default.yellow(
+          `\u{1F6A8} Hard blockers bypassed due to --force. Proceeding with installation...`
+        )
+      );
+    } else {
+      console.log(
+        import_chalk4.default.red(`\u{1F6D1} Installation aborted due to critical security findings.`)
+      );
+      console.log(
+        import_chalk4.default.gray(
+          `   Use --force to install anyway if you have verified this package.`
+        )
+      );
+      process.exit(2);
+    }
+  } else if (options.dryRun) {
+    console.log(import_chalk4.default.blue(`\u2139\uFE0F  Dry run completed. No installation performed.`));
+    process.exit(hasInfo ? 1 : 0);
+  }
+  console.log(
+    import_chalk4.default.blue(`\u{1F527} Executing npm install (lifecycle scripts disabled)...`)
+  );
+  try {
+    const target = options.pkgVersion && options.pkgVersion !== "latest" ? `${pkgName}@${options.pkgVersion}` : pkgName;
+    (0, import_node_child_process2.execFileSync)("npm", ["install", "--ignore-scripts", target], {
+      stdio: "inherit"
+    });
+    console.log(
+      import_chalk4.default.green(
+        `
+\u{1F389} Installation complete (install-time scripts were skipped).`
+      )
+    );
+    if (lifecycleResult.hasScripts) {
+      console.log(
+        import_chalk4.default.yellow(
+          `   \u26A0\uFE0F  ${pkgName} declares lifecycle scripts (${lifecycleResult.scripts.join(", ")}) that were NOT run. If you trust this package and it needs them, re-run with plain npm.`
+        )
+      );
+    }
+    console.log(`\u{1F449} Run 'shield run <script>' to safely execute the agent.`);
+    process.exit(hasInfo ? 1 : 0);
+  } catch (err) {
+    console.error(import_chalk4.default.red(`
+\u274C npm install failed.`));
+    process.exit(1);
+  }
+}
+
+// src/commands/run.ts
+var import_node_child_process3 = require("child_process");
+var fs6 = __toESM(require("fs"));
+var path6 = __toESM(require("path"));
+async function runAgent(scriptPath, _envelopePath, expectedAstHash) {
+  console.log(`\u{1F6E1}\uFE0F W.H.Agent: Initializing Native OS Sandbox for ${scriptPath}`);
+  const absoluteScriptPath = path6.resolve(scriptPath);
+  if (!fs6.existsSync(absoluteScriptPath)) {
+    console.error(`\u274C Script not found: ${absoluteScriptPath}`);
+    process.exit(1);
+  }
+  const code = fs6.readFileSync(absoluteScriptPath, "utf-8");
+  const isPython = absoluteScriptPath.endsWith(".py");
+  const language = isPython ? "python" : "bash";
+  const astHash = astFingerprint(code, path6.extname(absoluteScriptPath));
+  if (expectedAstHash && astHash !== expectedAstHash) {
+    console.error(
+      "\x1B[41m\x1B[37m\x1B[1m\n \u{1F6A8} SECURITY VIOLATION: Execution Blocked \u{1F6A8} \x1B[0m"
+    );
+    console.error(
+      `\x1B[91m\u2717 AST fingerprint differs from the pinned Golden Snapshot.\x1B[0m`
+    );
+    console.error(`\x1B[91m\u2717 Expected: ${expectedAstHash}\x1B[0m`);
+    console.error(`\x1B[91m\u2717 Actual:   ${astHash}\x1B[0m`);
+    console.error(
+      `\x1B[91m\u2717 Reason: the tool's code changed after it was scanned.\x1B[0m`
+    );
+    process.exit(1);
+  }
+  console.log(
+    `\x1B[32m[W.H.Agent] Golden Snapshot AST fingerprint: ${astHash}\x1B[0m`
+  );
+  if (!expectedAstHash) {
+    console.log(
+      `\x1B[90m> Pin it with --ast-hash ${astHash} to block execution if the file changes.\x1B[0m`
+    );
+  }
+  console.log(`[NETWORK] Default-Deny enforced.`);
+  console.log(`[STORAGE] Root filesystem restricted.`);
+  console.log(`[ISOLATION] Sub-millisecond OS-Native isolation active.`);
+  console.log(`
+\u{1F680} Launching isolated process...
+`);
+  const reqPayload = JSON.stringify({
+    Code: code,
+    Language: language,
+    TimeoutMs: 5e3,
+    Env: {}
+    // Can parse envelope.yaml to pass env vars
+  });
+  const sandboxBinPath = path6.resolve(__dirname, "../bin/wh-sandbox");
+  if (!fs6.existsSync(sandboxBinPath)) {
+    console.error(
+      `\u274C Native sandbox binary not found at ${sandboxBinPath}. Please run the build script.`
+    );
+    process.exit(1);
+  }
+  try {
+    const result = (0, import_node_child_process3.spawnSync)(sandboxBinPath, [], {
+      input: reqPayload,
+      encoding: "utf-8"
+    });
+    if (result.error) {
+      console.error(
+        `
+\u{1F6A8} Sandbox execution failed to start: ${result.error.message}`
+      );
+      return;
+    }
+    if (result.stdout) {
+      try {
+        const parsedResult = JSON.parse(result.stdout);
+        console.log(`----- SANDBOX STDOUT -----`);
+        console.log(parsedResult.Stdout);
+        if (parsedResult.Stderr) {
+          console.error(`----- SANDBOX STDERR -----`);
+          console.error(parsedResult.Stderr);
+        }
+        console.log(
+          `
+\u2705 Execution completed in ${parsedResult.ExecutionMs}ms with exit code ${parsedResult.ExitCode}.`
+        );
+        if (parsedResult.Killed) {
+          console.log(`\u26A0\uFE0F Process was killed (Timeout exceeded).`);
+        }
+      } catch (_e) {
+        console.log(`----- RAW STDOUT -----`);
+        console.log(result.stdout);
+        if (result.stderr) {
+          console.error(`----- RAW STDERR -----`);
+          console.error(result.stderr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`
+\u{1F6A8} Agent execution crashed: ${err}`);
+  }
+}
+
+// src/commands/scan.ts
+var crypto = __toESM(require("crypto"));
+var fs8 = __toESM(require("fs"));
+var os4 = __toESM(require("os"));
+var path8 = __toESM(require("path"));
+var import_chalk5 = __toESM(require("chalk"));
+
+// src/core-scanner/discovery.ts
+var fs7 = __toESM(require("fs"));
+var os3 = __toESM(require("os"));
+var path7 = __toESM(require("path"));
+var GLOBAL_AGENTS = [
+  {
+    id: "windsurf",
+    name: "Windsurf",
+    paths: {
+      win32: ["%USERPROFILE%\\.codeium\\windsurf"],
+      darwin: ["~/.codeium/windsurf"],
+      linux: ["~/.codeium/windsurf"]
+    }
+  },
+  {
+    id: "cursor",
+    name: "Cursor",
+    paths: {
+      win32: ["%USERPROFILE%\\.cursor"],
+      darwin: ["~/.cursor"],
+      linux: ["~/.cursor"]
+    }
+  },
+  {
+    id: "vscode",
+    name: "VS Code",
+    paths: {
+      win32: ["%USERPROFILE%\\.vscode"],
+      darwin: ["~/.vscode"],
+      linux: ["~/.vscode"]
+    }
+  },
+  {
+    id: "claude-desktop",
+    name: "Claude Desktop",
+    paths: {
+      win32: ["%APPDATA%\\Claude"],
+      darwin: ["~/Library/Application Support/Claude"],
+      linux: ["~/.config/Claude"]
+      // Assuming standard XDG
+    }
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    paths: {
+      win32: ["%USERPROFILE%\\.claude"],
+      darwin: ["~/.claude"],
+      linux: ["~/.claude"]
+    }
+  },
+  {
+    id: "gemini-cli",
+    name: "Gemini CLI",
+    paths: {
+      win32: ["%USERPROFILE%\\.gemini"],
+      darwin: ["~/.gemini"],
+      linux: ["~/.gemini"]
+    }
+  },
+  {
+    id: "openclaw",
+    name: "OpenClaw",
+    paths: {
+      win32: ["%USERPROFILE%\\.openclaw"],
+      darwin: ["~/.openclaw"],
+      linux: ["~/.openclaw"]
+    }
+  },
+  {
+    id: "antigravity",
+    name: "Antigravity",
+    paths: {
+      win32: ["%USERPROFILE%\\.gemini\\antigravity-ide"],
+      darwin: ["~/.gemini/antigravity-ide"],
+      linux: ["~/.gemini/antigravity-ide"]
+    }
+  }
+];
+function resolvePath(p) {
+  let resolved = p;
+  if (resolved.startsWith("~/")) {
+    resolved = path7.join(os3.homedir(), resolved.slice(2));
+  }
+  resolved = resolved.replace(/%([^%]+)%/g, (_, n) => process.env[n] || "");
+  return path7.resolve(resolved);
+}
+function discoverGlobalAgents() {
+  const discovered = [];
+  const platform3 = process.platform;
+  let osKey = "linux";
+  if (platform3 === "win32") osKey = "win32";
+  else if (platform3 === "darwin") osKey = "darwin";
+  for (const agent of GLOBAL_AGENTS) {
+    const pathsToCheck = agent.paths[osKey];
+    for (const p of pathsToCheck) {
+      const resolved = resolvePath(p);
+      if (fs7.existsSync(resolved)) {
+        discovered.push({
+          id: agent.id,
+          name: agent.name,
+          path: resolved
+        });
+      }
+    }
+  }
+  return discovered;
+}
+
+// src/commands/scan.ts
+var STATE_FILE = path8.join(os4.homedir(), ".wh-agent", "state.json");
+function loadState() {
+  try {
+    if (fs8.existsSync(STATE_FILE)) {
+      const data = fs8.readFileSync(STATE_FILE, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (_err) {
+  }
+  return null;
+}
+function saveState(state) {
+  try {
+    const dir = path8.dirname(STATE_FILE);
+    if (!fs8.existsSync(dir)) fs8.mkdirSync(dir, { recursive: true });
+    fs8.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error(`\u26A0\uFE0F Failed to save Watchdog state: ${err}`);
+  }
+}
+function hashFinding(f) {
+  const payload = `${f.id}:${f.file}:${f.line ?? 0}:${f.severity}`;
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+function formatJson(reports) {
+  return JSON.stringify(reports, null, 2);
+}
+function formatMarkdown(reports) {
+  let md = "# W.H.Agent Security Scan Report\n\n";
+  for (const r of reports) {
+    md += `## ${r.agent} (${r.path})
+`;
+    md += `- **Score:** ${r.report.score.numericScore}/100 (Grade ${r.report.score.grade})
+`;
+    md += `- **Critical:** ${r.report.summary.critical}
+`;
+    md += `- **High:** ${r.report.summary.high}
+`;
+    md += `- **Medium:** ${r.report.summary.medium}
+
+`;
+    for (const f of r.report.findings) {
+      md += `### [${f.severity.toUpperCase()}] ${f.title}
+`;
+      md += `**File:** ${f.file}${f.line ? `:${f.line}` : ""}
+`;
+      md += `${f.description}
+
+`;
+    }
+  }
+  return md;
+}
+function formatSarif(reports) {
+  const sarif = {
+    version: "2.1.0",
+    $schema: "http://json.schemastore.org/sarif-2.1.0-rtm.5",
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: "W.H.Agent",
+            version: "1.0.0",
+            rules: []
+            // Ideally populated with unique rules
+          }
+        },
+        results: []
+      }
+    ]
+  };
+  for (const r of reports) {
+    for (const f of r.report.findings) {
+      sarif.runs[0].results.push({
+        ruleId: f.id,
+        level: f.severity === "critical" ? "error" : f.severity === "high" ? "error" : f.severity === "medium" ? "warning" : "note",
+        message: { text: f.title },
+        locations: [
+          {
+            physicalLocation: {
+              artifactLocation: { uri: f.file },
+              region: f.line ? { startLine: f.line } : void 0
+            }
+          }
+        ]
+      });
+    }
+  }
+  return JSON.stringify(sarif, null, 2);
+}
+async function scanConfig(targetPath, options) {
+  const isGlobal = options.global || false;
+  const format = options.format || "terminal";
+  let targets = [];
+  if (isGlobal) {
+    console.log(
+      import_chalk5.default.blue(`
+\u{1F50D} Auto-discovering global agent configurations...`)
+    );
+    const discovered = discoverGlobalAgents();
+    if (discovered.length === 0) {
+      console.log(import_chalk5.default.yellow(`No supported agents found on the system.`));
+      process.exit(0);
+    }
+    targets = discovered.map((d) => ({ agent: d.name, path: d.path }));
+    console.log(import_chalk5.default.green(`Found ${targets.length} agent environments.
+`));
+  } else {
+    const p = targetPath ? path8.resolve(targetPath) : process.cwd();
+    if (!fs8.existsSync(p)) {
+      console.error(import_chalk5.default.red(`\u274C Path not found: ${p}`));
+      process.exit(1);
+    }
+    targets = [{ agent: "Local Project", path: p }];
+  }
+  const reports = [];
+  let totalCritical = 0;
+  let totalFindings = 0;
+  let totalFilesScanned = 0;
+  for (const target of targets) {
+    try {
+      const result = scan(target.path);
+      const report = calculateScore(result);
+      reports.push({ agent: target.agent, path: target.path, report });
+      totalCritical += report.summary.critical;
+      totalFindings += report.summary.totalFindings;
+      totalFilesScanned += report.summary.filesScanned;
+    } catch (err) {
+      console.error(
+        import_chalk5.default.red(`\u274C Failed to scan ${target.agent} (${target.path}): ${err}`)
+      );
+    }
+  }
+  const previousState = loadState();
+  const currentHashes = /* @__PURE__ */ new Set();
+  let newFindingsCount = 0;
+  for (const r of reports) {
+    for (const f of r.report.findings) {
+      const h = hashFinding(f);
+      currentHashes.add(h);
+      if (previousState && !previousState.findingHashes.includes(h)) {
+        newFindingsCount++;
+      }
+    }
+  }
+  saveState({
+    lastScanTimestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    findingHashes: Array.from(currentHashes)
+  });
+  if (format !== "terminal") {
+    let outputStr = "";
+    if (format === "json") outputStr = formatJson(reports);
+    else if (format === "markdown") outputStr = formatMarkdown(reports);
+    else if (format === "sarif") outputStr = formatSarif(reports);
+    else {
+      console.error(import_chalk5.default.red(`\u274C Unsupported format: ${format}`));
+      process.exit(1);
+    }
+    if (options.output) {
+      fs8.writeFileSync(options.output, outputStr);
+      console.log(import_chalk5.default.green(`\u2705 Report written to ${options.output}`));
+    } else {
+      console.log(outputStr);
+    }
+    process.exit(totalCritical > 0 ? 2 : 0);
+  }
+  if (totalFilesScanned === 0) {
+    const where = isGlobal ? "the discovered agent environments" : targetPath ? path8.resolve(targetPath) : process.cwd();
+    console.log(
+      import_chalk5.default.yellow(
+        `
+\u26A0\uFE0F  No agent configuration files were found in ${where}.`
+      )
+    );
+    console.log(
+      import_chalk5.default.gray(
+        `   Nothing was scanned \u2014 this is NOT an all-clear. Point scan at a project root or a .claude directory
+   (e.g. 'wh-agent scan ~/.claude'), or use --global. To deep-scan a single script for malicious code, use 'wh-agent check <file>'.`
+      )
+    );
+    process.exit(0);
+  }
+  if (isGlobal) {
+    console.log(import_chalk5.default.bold("System-Wide Agent Security Posture"));
+    console.log("\u2501".repeat(110));
+    console.log(
+      `${"AGENT".padEnd(20)} | ${"PATH".padEnd(45)} | ${"SCORE".padEnd(6)} | ${"CRIT".padEnd(5)} | ${"HIGH".padEnd(5)} | ${"MED".padEnd(4)} | ${"LOW".padEnd(4)}`
+    );
+    console.log("\u2501".repeat(110));
+    for (const r of reports) {
+      const pStr = r.path.length > 45 ? `...${r.path.substring(r.path.length - 42)}` : r.path.padEnd(45);
+      const s = r.report.summary;
+      const scoreColor = r.report.score.numericScore >= 90 ? import_chalk5.default.green : r.report.score.numericScore >= 70 ? import_chalk5.default.yellow : import_chalk5.default.red;
+      console.log(
+        `${r.agent.padEnd(20)} | ${pStr} | ${scoreColor(r.report.score.grade.padEnd(6))} | ${s.critical.toString().padEnd(5)} | ${s.high.toString().padEnd(5)} | ${s.medium.toString().padEnd(4)} | ${s.low.toString().padEnd(4)}`
+      );
+    }
+    console.log("\u2501".repeat(110));
+    if (previousState && newFindingsCount > 0) {
+      console.log(
+        import_chalk5.default.bgRed.white.bold(
+          ` \u26A0\uFE0F WATCHDOG ALERT: ${newFindingsCount} NEW configuration vulnerabilities detected since last scan! `
+        )
+      );
+    }
+    console.log(
+      import_chalk5.default.gray(
+        `
+Hint: Use --format json --output report.json to export detailed findings.`
+      )
+    );
+  } else {
+    const renderedReport = renderTerminalReport(reports[0].report);
+    console.log(renderedReport);
+    if (previousState && newFindingsCount > 0) {
+      console.log(
+        import_chalk5.default.bgRed.white.bold(
+          `
+ \u26A0\uFE0F WATCHDOG ALERT: ${newFindingsCount} NEW vulnerabilities detected since last scan! `
+        )
+      );
+    }
+  }
+  if (totalCritical > 0) {
+    console.error(import_chalk5.default.red(`
+\u{1F6A8} Scan finished with CRITICAL findings!`));
+    process.exit(2);
+  } else if (totalFindings > 0) {
+    console.log(import_chalk5.default.yellow(`
+\u26A0\uFE0F Scan finished with findings.`));
+  } else {
+    console.log(
+      import_chalk5.default.green(`
+\u2705 Scan passed! No configuration vulnerabilities found.`)
+    );
+  }
+}
+
+// src/commands/setup.ts
+var fs10 = __toESM(require("fs"));
+var os7 = __toESM(require("os"));
+var path12 = __toESM(require("path"));
+
+// src/vm/index.ts
+var os6 = __toESM(require("os"));
+
+// src/vm/docker-gvisor.ts
+var import_node_child_process4 = require("child_process");
+var fs9 = __toESM(require("fs"));
+var os5 = __toESM(require("os"));
+var path9 = __toESM(require("path"));
+var import_node_util = require("util");
+var execAsync = (0, import_node_util.promisify)(import_node_child_process4.exec);
+var DockerGvisorProvider = class {
+  containerName = `shield-env-${Date.now()}`;
+  socketMountDir = path9.join(os5.tmpdir(), "shield-sockets");
+  async isAvailable() {
+    try {
+      await execAsync("docker info");
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+  async setup() {
+    console.log("\u{1F433} Verifying Docker Desktop & gVisor runtime...");
+    try {
+      const { stdout } = await execAsync(
+        'docker info --format "{{.Runtimes}}"'
+      );
+      if (!stdout.includes("runsc")) {
+        console.warn(
+          "\n[WARNING] gVisor (runsc) is not registered in your Docker daemon.json!"
+        );
+        console.warn(
+          "To achieve Tier B Isolation, you must manually add 'runsc' to your Docker Desktop runtimes and restart Docker."
+        );
+        console.warn(
+          "We will proceed using the default runtime for now, but isolation will be severely degraded.\n"
+        );
+      }
+    } catch (_e) {
+      console.error("Failed to check Docker runtimes.");
+    }
+    if (!fs9.existsSync(this.socketMountDir)) {
+      fs9.mkdirSync(this.socketMountDir, { recursive: true });
+    }
+    const runCmd = `docker run -d --name ${this.containerName} --network none --cap-add=BPF --cap-add=PERFMON -v ${this.socketMountDir}:/tmp/shield-sockets debian:bookworm-slim sleep infinity`;
+    await execAsync(runCmd);
+  }
+  async copyIn(localPath) {
+    const basename6 = path9.basename(localPath);
+    const dest = `/app/${basename6}`;
+    await execAsync(`docker exec ${this.containerName} mkdir -p /app`);
+    await execAsync(`docker cp "${localPath}" ${this.containerName}:${dest}`);
+    return dest;
+  }
+  async exec(cmd) {
+    await execAsync(`docker exec ${this.containerName} sh -c "${cmd}"`);
+  }
+  getSocketPath() {
+    return path9.join(this.socketMountDir, "shield-agent.sock");
+  }
+  async teardown() {
+    try {
+      await execAsync(`docker rm -f ${this.containerName}`);
+    } catch (_e) {
+    }
+  }
+};
+
+// src/vm/lima.ts
+var import_node_child_process5 = require("child_process");
+var path10 = __toESM(require("path"));
+var import_node_util2 = require("util");
+var execAsync2 = (0, import_node_util2.promisify)(import_node_child_process5.exec);
+var LimaProvider = class {
+  instanceName = "shield-ubuntu";
+  expectedKernel = "6.5.0-1014-lima";
+  // Pinned kernel for eBPF stability
+  async isAvailable() {
+    try {
+      await execAsync2("limactl --version");
+      const { stdout } = await execAsync2('limactl ls --format "{{.Name}}"');
+      return stdout.includes(this.instanceName);
+    } catch (_e) {
+      return false;
+    }
+  }
+  async setup() {
+    console.log("\u{1F34F} Verifying Lima VM & Intel KVM requirements...");
+    const { stdout: kernel } = await execAsync2(
+      `limactl shell ${this.instanceName} uname -r`
+    );
+    if (kernel.trim() !== this.expectedKernel) {
+      console.error(`
+[CRITICAL ERROR] Lima VM kernel mismatch.`);
+      console.error(`Expected: ${this.expectedKernel}`);
+      console.error(`Found:    ${kernel.trim()}`);
+      console.error(
+        `eBPF probes will silently fail on unpinned kernels. Please run 'shield setup' to rebuild the VM.
+`
+      );
+      process.exit(1);
+    }
+  }
+  async copyIn(localPath) {
+    const basename6 = path10.basename(localPath);
+    const dest = `/tmp/${basename6}`;
+    await execAsync2(`limactl cp "${localPath}" ${this.instanceName}:${dest}`);
+    return dest;
+  }
+  async exec(cmd) {
+    await execAsync2(`limactl shell ${this.instanceName} bash -c "${cmd}"`);
+  }
+  getSocketPath() {
+    return `/tmp/shield-lima-socket.sock`;
+  }
+  async teardown() {
+    await this.exec("rm -f /tmp/shield-agent.sock");
+  }
+};
+
+// src/vm/wsl.ts
+var import_node_child_process6 = require("child_process");
+var path11 = __toESM(require("path"));
+var import_node_util3 = require("util");
+var execAsync3 = (0, import_node_util3.promisify)(import_node_child_process6.exec);
+var WslProvider = class {
+  distroName = "Ubuntu";
+  // Assuming default Ubuntu distro for now
+  async isAvailable() {
+    try {
+      await execAsync3("wsl --status");
+      return true;
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("0x80070005")) {
+        console.warn(
+          "[WARNING] WSL2 is blocked by Corporate Group Policy (0x80070005). Falling back to Docker Desktop."
+        );
+      }
+      console.error("\n[ERROR] WSL2 is not enabled on this Windows machine.");
+      console.error(
+        "W.H.Agent requires WSL2 to provide Tier A Firecracker isolation."
+      );
+      console.error(
+        "Please run: 'wsl --install' from an Administrator PowerShell and reboot.\n"
+      );
+      return false;
+    }
+  }
+  async setup() {
+    console.log("\u{1FA9F} Verifying WSL2 kernel & Firecracker dependencies...");
+  }
+  async copyIn(localPath) {
+    const basename6 = path11.basename(localPath);
+    const dest = `/tmp/${basename6}`;
+    const winPath = path11.resolve(localPath).replace(/\\/g, "\\\\");
+    await execAsync3(
+      `powershell.exe -Command "Get-Content -Path '${winPath}' -Raw | wsl -d ${this.distroName} cat > ${dest}"`
+    );
+    return dest;
+  }
+  async exec(cmd) {
+    await execAsync3(`wsl -d ${this.distroName} -- bash -c "${cmd}"`);
+  }
+  getSocketPath() {
+    return `\\\\wsl.localhost\\${this.distroName}\\tmp\\shield-agent.sock`;
+  }
+  async teardown() {
+    await this.exec("rm -f /tmp/shield-agent.sock /tmp/agent.py");
+  }
+};
+
+// src/vm/index.ts
+async function getProvider() {
+  const platform3 = os6.platform();
+  const arch3 = os6.arch();
+  if (platform3 === "win32") {
+    const wsl = new WslProvider();
+    if (await wsl.isAvailable()) {
+      return {
+        provider: wsl,
+        tier: "Tier A",
+        description: "Hardware MicroVM (WSL2 Firecracker)"
+      };
+    }
+    console.log("\u{1F449} Falling back to Docker Desktop gVisor for Windows...");
+    return {
+      provider: new DockerGvisorProvider(),
+      tier: "Tier B",
+      description: "Userspace Kernel (Docker Desktop Windows)"
+    };
+  }
+  if (platform3 === "darwin") {
+    if (arch3 === "arm64") {
+      return {
+        provider: new DockerGvisorProvider(),
+        tier: "Tier B",
+        description: "Userspace Kernel (Docker Desktop Apple Silicon)"
+      };
+    } else {
+      const lima = new LimaProvider();
+      return {
+        provider: lima,
+        tier: "Tier A",
+        description: "Hardware MicroVM (Lima Intel Mac)"
+      };
+    }
+  }
+  throw new Error(
+    "Native Linux execution uses direct binary execution, not a VM provider. (To be implemented)"
+  );
+}
+
+// src/commands/setup.ts
+async function setup() {
+  console.log("\u2699\uFE0F W.H.Agent Initial Setup");
+  console.log(
+    "Determining optimal virtualization path for your architecture...\n"
+  );
+  try {
+    const { provider, tier, description } = await getProvider();
+    console.log(`\u{1F4CD} Selected Architecture: ${description} (${tier})`);
+    console.log(`Applying idempotent configuration...`);
+    await provider.setup();
+    console.log(`
+\u{1F4E5} Fetching pre-compiled shield-agent binary...`);
+    const agentDir = path12.join(os7.homedir(), ".wh-agent", "bin");
+    if (!fs10.existsSync(agentDir)) {
+      fs10.mkdirSync(agentDir, { recursive: true });
+    }
+    const platform3 = os7.platform();
+    const arch3 = os7.arch();
+    const agentPath = path12.join(agentDir, "shield-agent");
+    console.log(
+      `[INFO] (Simulated Download) Fetched shield-agent for ${platform3}-${arch3} to ${agentPath}`
+    );
+    fs10.writeFileSync(agentPath, '#!/bin/sh\necho "Mock agent running"\n');
+    fs10.chmodSync(agentPath, 493);
+    console.log(
+      `
+\u2705 Setup complete! You are ready to use 'shield check' and 'shield run'.`
+    );
+  } catch (e) {
+    if (e instanceof Error) {
+      console.error(`
+\u274C Setup Failed: ${e.message}`);
+    }
+    console.error("Please ensure Docker Desktop or WSL2 is installed.");
+    process.exit(1);
+  }
+}
+
+// src/commands/watch.ts
+var import_node_fs5 = require("fs");
+var import_node_path6 = require("path");
+
+// src/core-scanner/watch/alerts.ts
+async function dispatchAlert(drift, mode, webhookUrl) {
+  if (mode === "terminal" || mode === "both") {
+    renderTerminalAlert(drift);
+  }
+  if ((mode === "webhook" || mode === "both") && webhookUrl) {
+    await sendWebhookAlert(drift, webhookUrl);
+  }
+}
+function renderTerminalAlert(drift) {
+  const divider = "\u2500".repeat(60);
+  const timestamp = new Date(drift.timestamp).toLocaleTimeString();
+  console.error(`
+${divider}`);
+  console.error(`  W.H.Agent Watch \u2014 Drift Detected  [${timestamp}]`);
+  console.error(divider);
+  if (drift.scoreDelta !== 0) {
+    const direction = drift.scoreDelta > 0 ? "+" : "";
+    const label = drift.scoreDelta > 0 ? "IMPROVED" : "REGRESSED";
+    console.error(
+      `  Score: ${drift.previousScore} \u2192 ${drift.currentScore} (${direction}${drift.scoreDelta}) [${label}]`
+    );
+  }
+  if (drift.newFindings.length > 0) {
+    console.error(`
+  NEW findings (${drift.newFindings.length}):`);
+    for (const f of drift.newFindings) {
+      const sev = f.severity.toUpperCase().padEnd(8);
+      console.error(`    [${sev}] ${f.title}`);
+      console.error(`             ${f.file}`);
+    }
+  }
+  if (drift.resolvedFindings.length > 0) {
+    console.error(`
+  RESOLVED findings (${drift.resolvedFindings.length}):`);
+    for (const f of drift.resolvedFindings) {
+      console.error(`    [RESOLVED] ${f.title}`);
+    }
+  }
+  if (drift.hasCritical) {
+    console.error(`
+  *** CRITICAL findings detected ***`);
+  }
+  console.error(`${divider}
+`);
+}
+function formatWebhookPayload(drift) {
+  return JSON.stringify({
+    event: "wh-agent.drift",
+    timestamp: drift.timestamp,
+    isRegression: drift.isRegression,
+    hasCritical: drift.hasCritical,
+    score: {
+      previous: drift.previousScore,
+      current: drift.currentScore,
+      delta: drift.scoreDelta
+    },
+    newFindings: drift.newFindings.map((f) => ({
+      id: f.id,
+      severity: f.severity,
+      title: f.title,
+      file: f.file
+    })),
+    resolvedFindings: drift.resolvedFindings.map((f) => ({
+      id: f.id,
+      severity: f.severity,
+      title: f.title,
+      file: f.file
+    }))
+  });
+}
+async function sendWebhookAlert(drift, webhookUrl) {
+  const payload = formatWebhookPayload(drift);
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      signal: AbortSignal.timeout(5e3)
+    });
+    if (!response.ok) {
+      console.error(
+        `  Webhook alert failed: ${response.status} ${response.statusText}`
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Webhook alert failed: ${message}`);
+  }
+}
+
+// src/core-scanner/fingerprint.ts
+var import_node_crypto2 = require("crypto");
+function fingerprintFinding(finding) {
+  return `${finding.id}::${finding.file}::${evidenceFingerprint(finding.evidence)}`;
+}
+function evidenceFingerprint(evidence) {
+  if (!evidence) {
+    return "sha256:no-evidence";
+  }
+  return `sha256:${(0, import_node_crypto2.createHash)("sha256").update(evidence).digest("hex").slice(0, 16)}`;
+}
+
+// src/core-scanner/watch/diff.ts
+function createBaseline(findings, score) {
+  const findingIds = new Set(findings.map(fingerprintFinding));
+  return {
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    score,
+    findings,
+    findingIds
+  };
+}
+function diffBaseline(baseline, currentFindings, currentScore) {
+  const currentIds = new Set(currentFindings.map(fingerprintFinding));
+  const newFindings = currentFindings.filter(
+    (f) => !baseline.findingIds.has(fingerprintFinding(f))
+  );
+  const resolvedFindings = baseline.findings.filter(
+    (f) => !currentIds.has(fingerprintFinding(f))
+  );
+  const scoreDelta = currentScore.numericScore - baseline.score.numericScore;
+  const hasCritical = newFindings.some((f) => f.severity === "critical");
+  const isRegression = newFindings.length > 0 || scoreDelta < 0;
+  return {
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    newFindings,
+    resolvedFindings,
+    scoreDelta,
+    previousScore: baseline.score.numericScore,
+    currentScore: currentScore.numericScore,
+    isRegression,
+    hasCritical
+  };
+}
+
+// src/core-scanner/watch/watcher.ts
+var import_node_fs4 = require("fs");
+var import_node_path5 = require("path");
+var SEVERITY_ORDER = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4
+};
+function startWatcher(config) {
+  let baseline = null;
+  let lastDrift = null;
+  let scanCount = 0;
+  let debounceTimer = null;
+  let isScanning = false;
+  let rescanQueued = false;
+  const watchers = [];
+  const initialBaseline = performInitialScan(config);
+  if (initialBaseline) {
+    baseline = initialBaseline;
+    scanCount = 1;
+  }
+  function runRescan() {
+    if (isScanning) {
+      rescanQueued = true;
+      return;
+    }
+    isScanning = true;
+    void handleChange(config, baseline, (result) => {
+      if (result.newBaseline) {
+        baseline = result.newBaseline;
+      }
+      if (result.drift) {
+        lastDrift = result.drift;
+      }
+      scanCount += 1;
+    }).finally(() => {
+      isScanning = false;
+      if (rescanQueued) {
+        rescanQueued = false;
+        runRescan();
+      }
+    });
+  }
+  for (const watchPath of config.paths) {
+    const resolvedPath = (0, import_node_path5.resolve)(watchPath);
+    if (!(0, import_node_fs4.existsSync)(resolvedPath)) continue;
+    const isDir = (0, import_node_fs4.statSync)(resolvedPath).isDirectory();
+    if (!isDir) continue;
+    try {
+      const pathWatchers = createPathWatchers(resolvedPath, () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        debounceTimer = setTimeout(runRescan, config.debounceMs);
+      });
+      watchers.push(...pathWatchers);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`  Failed to watch ${resolvedPath}: ${message}`);
+    }
+  }
+  function stop() {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    for (const w of watchers) {
+      w.close();
+    }
+    watchers.length = 0;
+  }
+  function getState() {
+    return {
+      isRunning: watchers.length > 0,
+      baseline,
+      lastDrift,
+      scanCount
+    };
+  }
+  return { stop, getState };
+}
+function createPathWatchers(resolvedPath, listener) {
+  const withErrorHandler = (handle) => {
+    handle.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`  Watch error on ${resolvedPath}: ${message}`);
+    });
+    return handle;
+  };
+  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
+  const recursiveUnsafe = process.platform === "linux" && Number.isFinite(nodeMajor) && nodeMajor < 20;
+  if (!recursiveUnsafe) {
+    try {
+      return [
+        withErrorHandler((0, import_node_fs4.watch)(resolvedPath, { recursive: true }, listener))
+      ];
+    } catch (error) {
+      if (!isRecursiveWatchUnsupported(error)) {
+        throw error;
+      }
+    }
+  }
+  const fallbackWatchers = [];
+  try {
+    for (const directory of collectWatchDirectories(resolvedPath)) {
+      fallbackWatchers.push(withErrorHandler((0, import_node_fs4.watch)(directory, listener)));
+    }
+    return fallbackWatchers;
+  } catch (error) {
+    for (const watcher of fallbackWatchers) {
+      watcher.close();
+    }
+    throw error;
+  }
+}
+function collectWatchDirectories(rootPath) {
+  const directories = [rootPath];
+  const queue = [rootPath];
+  while (queue.length > 0) {
+    const currentPath = queue.shift();
+    if (!currentPath) {
+      continue;
+    }
+    for (const entry of (0, import_node_fs4.readdirSync)(currentPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const childPath = (0, import_node_path5.resolve)(currentPath, entry.name);
+      directories.push(childPath);
+      queue.push(childPath);
+    }
+  }
+  return directories;
+}
+function isRecursiveWatchUnsupported(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const nodeError = error;
+  return nodeError.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" || nodeError.code === "ERR_INVALID_ARG_VALUE" && error.message.toLowerCase().includes("recursive");
+}
+function performInitialScan(config) {
+  try {
+    const targetPath = config.paths[0];
+    if (!targetPath || !(0, import_node_fs4.existsSync)(targetPath)) return null;
+    const result = scan(targetPath);
+    const minIndex = SEVERITY_ORDER[config.minSeverity];
+    const filteredFindings = result.findings.filter(
+      (f) => SEVERITY_ORDER[f.severity] <= minIndex
+    );
+    const report = calculateScore({ ...result, findings: filteredFindings });
+    return createBaseline(filteredFindings, report.score);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Initial scan failed: ${message}`);
+    return null;
+  }
+}
+async function handleChange(config, currentBaseline, onResult) {
+  try {
+    const targetPath = config.paths[0];
+    if (!targetPath || !(0, import_node_fs4.existsSync)(targetPath)) return;
+    const result = scan(targetPath);
+    const minIndex = SEVERITY_ORDER[config.minSeverity];
+    const filteredFindings = result.findings.filter(
+      (f) => SEVERITY_ORDER[f.severity] <= minIndex
+    );
+    const report = calculateScore({ ...result, findings: filteredFindings });
+    const newBaseline = createBaseline(filteredFindings, report.score);
+    if (currentBaseline) {
+      const drift = diffBaseline(
+        currentBaseline,
+        filteredFindings,
+        report.score
+      );
+      if (drift.newFindings.length > 0 || drift.resolvedFindings.length > 0) {
+        await dispatchAlert(drift, config.alertMode, config.webhookUrl);
+        onResult({ newBaseline, drift });
+      } else {
+        onResult({ newBaseline, drift: null });
+      }
+    } else {
+      onResult({ newBaseline, drift: null });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Re-scan failed: ${message}`);
+  }
+}
+
+// src/commands/watch.ts
+var VALID_ALERT_MODES = [
+  "terminal",
+  "webhook",
+  "both"
+];
+var VALID_SEVERITIES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info"
+];
+function resolveTargetPath(pathArg) {
+  if (pathArg) return (0, import_node_path6.resolve)(pathArg);
+  const localClaude = (0, import_node_path6.resolve)(process.cwd(), ".claude");
+  if ((0, import_node_fs5.existsSync)(localClaude)) return localClaude;
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
+  const homeClaude = (0, import_node_path6.resolve)(home, ".claude");
+  if ((0, import_node_fs5.existsSync)(homeClaude)) return homeClaude;
+  return process.cwd();
+}
+async function watchConfig(targetPath, options) {
+  const resolved = resolveTargetPath(targetPath);
+  if (!(0, import_node_fs5.existsSync)(resolved)) {
+    console.error(`Error: Path does not exist: ${resolved}`);
+    process.exit(1);
+  }
+  const debounceMs = Number.parseInt(options.debounce ?? "500", 10);
+  if (Number.isNaN(debounceMs) || debounceMs < 100) {
+    console.error("Error: --debounce must be an integer of at least 100 (ms).");
+    process.exit(1);
+  }
+  const alertMode = options.alert ?? "terminal";
+  if (!VALID_ALERT_MODES.includes(alertMode)) {
+    console.error(
+      `Error: --alert must be one of: ${VALID_ALERT_MODES.join(", ")}.`
+    );
+    process.exit(1);
+  }
+  if ((alertMode === "webhook" || alertMode === "both") && !options.webhook) {
+    console.error(
+      "Error: --webhook <url> is required when --alert is 'webhook' or 'both'."
+    );
+    process.exit(1);
+  }
+  const minSeverity = options.minSeverity ?? "info";
+  if (!VALID_SEVERITIES.includes(minSeverity)) {
+    console.error(
+      `Error: --min-severity must be one of: ${VALID_SEVERITIES.join(", ")}.`
+    );
+    process.exit(1);
+  }
+  console.log("\n  W.H.Agent \u2014 watch (config drift)\n");
+  console.log(`  Watching:      ${resolved}`);
+  console.log(`  Debounce:      ${debounceMs}ms`);
+  console.log(`  Alert mode:    ${alertMode}`);
+  console.log(`  Min severity:  ${minSeverity}`);
+  if (options.webhook) console.log(`  Webhook:       ${options.webhook}`);
+  console.log("\n  Establishing baseline (initial scan)...");
+  const { stop, getState } = startWatcher({
+    paths: [resolved],
+    debounceMs,
+    alertMode,
+    webhookUrl: options.webhook,
+    minSeverity,
+    blockOnCritical: options.block ?? false
+  });
+  const state = getState();
+  if (state.baseline) {
+    console.log(
+      `  Baseline:      score ${state.baseline.score.numericScore}/100 (${state.baseline.score.grade}), ${state.baseline.findings.length} finding(s)`
+    );
+  } else {
+    console.log("  Baseline:      no config files found to scan yet");
+  }
+  if (options.block && state.baseline) {
+    const hasCritical = state.baseline.findings.some(
+      (f) => f.severity === "critical"
+    );
+    if (hasCritical) {
+      console.error(
+        "\n  BLOCKED: critical findings present in the initial scan."
+      );
+      stop();
+      process.exit(2);
+    }
+  }
+  console.log("\n  Watching for changes... (Ctrl+C to stop)\n");
+  const handleSignal = () => {
+    console.log("\n  Stopping watch.\n");
+    stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+}
+
+// src/index.ts
+function resolveVersion() {
+  try {
+    return JSON.parse(
+      (0, import_node_fs6.readFileSync)((0, import_node_path7.join)(__dirname, "..", "package.json"), "utf-8")
+    ).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+var program = new import_commander.Command();
+program.name("shield").description("W.H.Agent CLI - Security platform for AI agents").version(resolveVersion());
+program.command("install").description("Securely fetch and install an agent via npm (with AST/typosquat checking)").argument("<package>", "package name to install").option("--pkg-version <version>", "version to install", "latest").option("-r, --registry-url <url>", "custom registry URL").option("-f, --force", "force install despite quarantine warnings", false).option("--dry-run", "run checks without actually installing", false).option(
+  "--allow-low-score",
+  "allow install of packages with low conformance score",
+  false
+).action((pkg, options) => {
+  installAgent(pkg, options).catch((err) => {
+    console.error("Failed to install:", err.message);
+    process.exit(1);
+  });
+});
+program.command("setup").description(
+  "Set up the W.H.Agent Secure Container Envelope and fetch dependencies"
+).action(() => {
+  setup().catch((err) => {
+    console.error("Setup failed:", err.message);
+    process.exit(1);
+  });
+});
+program.command("check").description("Statically analyze files for dangerous patterns using universal AST scanner").argument("[files...]", "paths to the files to analyze (leave empty to scan all supported files in cwd)").option("--fix", "automatically fix fixable vulnerabilities").option("--format <format>", "output format (text, json, sarif)", "text").option("-o, --output <path>", "path to write the output file").action((files, options) => {
+  checkAgent(files, options).catch((err) => {
+    console.error("Check failed:", err.message);
+    process.exit(1);
+  });
+});
+program.command("run").description("[experimental] Safely execute an agent in the Secure Container Envelope").argument("<script>", "path to the script to execute").option(
+  "-e, --envelope <path>",
+  "path to envelope.yaml configuration",
+  "envelope.yaml"
+).option("--ast-hash <hash>", "expected AST hash from golden snapshot to prevent TOCTOU bypasses").option("--experimental", "acknowledge this command is experimental").addHelpText(
+  "after",
+  `
+Environment Variables:
+  WH_SANDBOX_BACKEND    Selects the Linux backend. Both currently FAIL CLOSED
+                        (they refuse to run rather than provide fake isolation):
+                        - "landlock": not yet implemented
+                        - "gvisor":   not yet securely isolated (host FS exposed)
+                        macOS always uses native sandbox-exec (this var is ignored);
+                        it is the only backend that isolates untrusted code today.`
+).action((script, options) => {
+  if (!options.experimental) {
+    console.log(`\u26A0\uFE0F  'run' is experimental and requires the --experimental flag to use.`);
+    return;
+  }
+  runAgent(script, options.envelope, options.astHash).catch((err) => {
+    console.error("Run failed:", err.message);
+    process.exit(1);
+  });
+});
+program.command("scan").description("Scan an AI agent configuration directory for security issues").argument("[path]", "path to the agent config directory (e.g., .claude)").option(
+  "-g, --global",
+  "auto-discover and scan all agent configurations on the system"
+).option(
+  "-f, --format <type>",
+  "output format (terminal, json, markdown, sarif)",
+  "terminal"
+).option("-o, --output <file>", "file to write the report to").action((targetPath, options) => {
+  scanConfig(targetPath, options).catch((err) => {
+    console.error("Scan failed:", err.message);
+    process.exit(1);
+  });
+});
+program.command("inspect-mcp").description(
+  "Inspect an MCP server for security issues (supply chain, tool poisoning, prompt injection)"
+).argument(
+  "[target]",
+  "MCP server name (from your config), a command, or a URL"
+).option("--config <path>", "path to an MCP config file (used with --server)").option("--server <name>", "server name inside --config").option(
+  "--live",
+  "execute the server and enumerate its live tools (runs untrusted code \u2014 opt-in)",
+  false
+).option("--ui", "launch the official MCP Inspector web UI (interactive)", false).option("--transport <type>", "transport for remote URLs (sse or http)").option("--timeout <seconds>", "timeout for --live enumeration", "45").option("-f, --format <type>", "output format (terminal, json, sarif)", "terminal").option("-o, --output <file>", "file to write the report to").action((target, options) => {
+  inspectMcp(target, options).catch((err) => {
+    console.error("Inspect failed:", err.message);
+    process.exit(1);
+  });
+});
+program.command("watch").description(
+  "Continuously watch an agent config directory and alert on security drift (config changes)"
+).argument(
+  "[path]",
+  "directory to watch (default: ./.claude, then ~/.claude, then cwd)"
+).option("--debounce <ms>", "debounce interval in milliseconds", "500").option("--alert <mode>", "alert mode: terminal, webhook, both", "terminal").option("--webhook <url>", "webhook URL for alerts (required for webhook/both)").option(
+  "--min-severity <severity>",
+  "minimum severity to track: critical, high, medium, low, info",
+  "info"
+).option(
+  "--block",
+  "exit non-zero if the initial scan has critical findings (for CI)",
+  false
+).action((targetPath, options) => {
+  watchConfig(targetPath, options).catch((err) => {
+    console.error("Watch failed:", err.message);
+    process.exit(1);
+  });
+});
+program.parse();

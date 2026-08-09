@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requirePython(t *testing.T) {
@@ -262,6 +263,92 @@ print('PAYLOAD_MARKER')
 `)
 	if strings.Contains(res.Stdout, "root:") || strings.Contains(res.Stderr, "root:") {
 		t.Fatalf("output-file symlink swap leaked a host file.\nstdout=%q\nstderr=%q", res.Stdout, res.Stderr)
+	}
+}
+
+// A payload that detaches via setsid() moves into a NEW session, which escapes
+// the process-group kill (kill(-pgid)) that reaps ordinary background children —
+// and cmd.Wait() returns the instant the direct parent exits, so without an extra
+// sweep the detached process runs on while the sandbox reports a clean exit.
+// reapByScratchCwd must find it by the scratch dir it still holds as its cwd and
+// kill it before Execute returns. Regression for the setsid timeout/reaper escape.
+func TestDarwinSandboxReapsSetsidDetachedProcess(t *testing.T) {
+	requirePython(t)
+	const marker = "wh_setsid_reap_2718281"
+	// Clean up any straggler from a previous failed run so the assertion is precise.
+	_ = exec.Command("pkill", "-f", marker).Run()
+
+	s, err := (&DarwinFactory{}).Create(context.Background())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer func() { _ = s.Destroy(context.Background()) }()
+
+	code := "import os, sys\n" +
+		"if os.fork() == 0:\n" +
+		"    os.setsid()\n" +
+		"    os.execv('/bin/sleep', ['" + marker + "', '30'])\n" +
+		"else:\n" +
+		"    print('DETACHED', flush=True)\n" +
+		"    sys.exit(0)\n"
+
+	res, err := s.Execute(context.Background(), ExecRequest{Code: code, Language: "python", TimeoutMs: 1000})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	// Give any survivor a beat to still be running, then assert it is gone.
+	time.Sleep(300 * time.Millisecond)
+	if out, _ := exec.Command("pgrep", "-f", marker).Output(); strings.TrimSpace(string(out)) != "" {
+		_ = exec.Command("pkill", "-f", marker).Run()
+		t.Fatalf("setsid-detached process escaped the sandbox: pids=%q (DetachedReaped=%d)",
+			strings.TrimSpace(string(out)), res.DetachedReaped)
+	}
+	if res.DetachedReaped < 1 {
+		t.Fatalf("a detached payload was not accounted for: expected DetachedReaped>=1, got %d", res.DetachedReaped)
+	}
+}
+
+// A single-file write beyond RLIMIT_FSIZE must fail rather than let a payload fill
+// the host disk. macOS enforces RLIMIT_FSIZE (verified); RLIMIT_AS/memory is NOT
+// enforced by Darwin and is intentionally not claimed here.
+func TestDarwinSandboxBoundsFileSize(t *testing.T) {
+	requirePython(t)
+	res := runInSandbox(t, `
+try:
+    with open('big.bin', 'wb') as f:
+        f.write(b'x' * (300 * 1024 * 1024))  # 300 MiB, over the 256 MiB cap
+    print('WROTE_UNBOUNDED')
+except OSError:
+    print('FSIZE_BOUNDED')
+`)
+	if !strings.Contains(res.Stdout, "FSIZE_BOUNDED") {
+		t.Fatalf("RLIMIT_FSIZE not enforced: a 300MB single-file write was not bounded.\nstdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+}
+
+// Benign code that legitimately spawns a short-lived subprocess and exits cleanly
+// must NOT be flagged as having detached survivors — the reaper must not produce
+// false positives that would make every normal run look suspicious.
+func TestDarwinSandboxNoFalseDetachedReap(t *testing.T) {
+	requirePython(t)
+	s, err := (&DarwinFactory{}).Create(context.Background())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer func() { _ = s.Destroy(context.Background()) }()
+	res, err := s.Execute(context.Background(), ExecRequest{
+		Code:      "import subprocess\nsubprocess.run(['/bin/echo', 'hi'])\nprint('DONE')",
+		Language:  "python",
+		TimeoutMs: 5000,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "DONE") {
+		t.Fatalf("benign subprocess run failed: stdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+	if res.DetachedReaped != 0 {
+		t.Fatalf("false-positive reap on a clean run: DetachedReaped=%d", res.DetachedReaped)
 	}
 }
 
