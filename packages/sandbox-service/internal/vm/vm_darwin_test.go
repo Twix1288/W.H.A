@@ -4,11 +4,13 @@ package vm
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -349,6 +351,203 @@ func TestDarwinSandboxNoFalseDetachedReap(t *testing.T) {
 	}
 	if res.DetachedReaped != 0 {
 		t.Fatalf("false-positive reap on a clean run: DetachedReaped=%d", res.DetachedReaped)
+	}
+}
+
+// A read-only AllowPath must make its subtree readable while (a) keeping writes
+// to it denied and (b) leaving a SIBLING directory denied by omission — the core
+// "scope to this project without exposing its neighbours" property.
+func TestDarwinSandboxScopedPathReadOnly(t *testing.T) {
+	requirePython(t)
+	root, err := os.MkdirTemp("", "wha-proj-*")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(root)
+	allowed := filepath.Join(root, "allowed")
+	sibling := filepath.Join(root, "sibling")
+	if err := os.MkdirAll(allowed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(allowed, "data.txt"), []byte("PROJECT_DATA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "secret.txt"), []byte("SIBLING_SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonAllowed, _ := filepath.EvalSymlinks(allowed)
+
+	s, _ := (&DarwinFactory{}).Create(context.Background())
+	defer func() { _ = s.Destroy(context.Background()) }()
+	res, err := s.Execute(context.Background(), ExecRequest{
+		Language:   "python",
+		TimeoutMs:  5000,
+		AllowPaths: []PathRule{{Path: canonAllowed, Write: false}},
+		Code: "print('READ', open(" + strconv.Quote(filepath.Join(canonAllowed, "data.txt")) + ").read())\n" +
+			"try:\n open(" + strconv.Quote(filepath.Join(canonAllowed, "new.txt")) + ",'w').write('x'); print('WROTE_RO')\nexcept Exception: print('WRITE_DENIED')\n" +
+			"try:\n open(" + strconv.Quote(filepath.Join(sibling, "secret.txt")) + ").read(); print('SIBLING_LEAK')\nexcept Exception: print('SIBLING_DENIED')\n",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "READ PROJECT_DATA") {
+		t.Fatalf("read-only grant did not permit reading the opened subtree.\nstdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "WRITE_DENIED") {
+		t.Fatalf("read-only grant wrongly permitted a write.\nstdout=%q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "SIBLING_DENIED") {
+		t.Fatalf("a sibling of the opened dir was readable — scoping leaked.\nstdout=%q", res.Stdout)
+	}
+}
+
+// A read-write AllowPath must permit writing inside the opened subtree.
+func TestDarwinSandboxScopedPathReadWrite(t *testing.T) {
+	requirePython(t)
+	root, err := os.MkdirTemp("", "wha-projrw-*")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(root)
+	canon, _ := filepath.EvalSymlinks(root)
+
+	s, _ := (&DarwinFactory{}).Create(context.Background())
+	defer func() { _ = s.Destroy(context.Background()) }()
+	res, err := s.Execute(context.Background(), ExecRequest{
+		Language:   "python",
+		TimeoutMs:  5000,
+		AllowPaths: []PathRule{{Path: canon, Write: true}},
+		Code: "try:\n open(" + strconv.Quote(filepath.Join(canon, "out.txt")) + ",'w').write('ok'); print('WROTE_OK')\n" +
+			"except Exception as e: print('WRITE_FAIL', e)\n",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "WROTE_OK") {
+		t.Fatalf("read-write grant did not permit a write inside the opened subtree.\nstdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+}
+
+// With an egress proxy set, the sandbox must reach ONLY that endpoint. Proven
+// against a real local listener: the same reachable port is allowed when named as
+// the proxy and denied (EPERM, not connection-refused) when it is not.
+func TestDarwinSandboxEgressProxyOnly(t *testing.T) {
+	requirePython(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	connCode := "import socket\ns=socket.socket(); s.settimeout(3)\n" +
+		"try:\n s.connect(('127.0.0.1'," + port + ")); print('CONNECT_OK')\n" +
+		"except PermissionError: print('CONNECT_DENIED_EPERM')\n" +
+		"except Exception as e: print('CONNECT_OTHER', type(e).__name__)\n"
+
+	s, _ := (&DarwinFactory{}).Create(context.Background())
+	defer func() { _ = s.Destroy(context.Background()) }()
+
+	// (a) Allowed when named as the proxy.
+	resAllow, err := s.Execute(context.Background(), ExecRequest{
+		Language: "python", TimeoutMs: 5000, Code: connCode,
+		EgressProxy: "127.0.0.1:" + port,
+	})
+	if err != nil {
+		t.Fatalf("execute(allow): %v", err)
+	}
+	if !strings.Contains(resAllow.Stdout, "CONNECT_OK") {
+		t.Fatalf("egress to the named proxy was not allowed.\nstdout=%q stderr=%q", resAllow.Stdout, resAllow.Stderr)
+	}
+
+	// (b) The SAME reachable port is denied by the sandbox when no proxy is set —
+	// EPERM (blocked), not a connection-refused (which would mean nothing listened).
+	resDeny, err := s.Execute(context.Background(), ExecRequest{
+		Language: "python", TimeoutMs: 5000, Code: connCode,
+	})
+	if err != nil {
+		t.Fatalf("execute(deny): %v", err)
+	}
+	if !strings.Contains(resDeny.Stdout, "CONNECT_DENIED_EPERM") {
+		t.Fatalf("egress was not denied without a proxy (expected EPERM).\nstdout=%q stderr=%q", resDeny.Stdout, resDeny.Stderr)
+	}
+}
+
+// A scoped run sets cwd to the mount, so a setsid-detached survivor's cwd is the
+// mount (not scratch). It must still be reaped — via the before/after mount-pid
+// diff — WITHOUT killing a process that was already sitting in the mount (e.g. the
+// user's shell). Regression for the scoped-run reaper gap.
+func TestDarwinSandboxScopedRunReapsSetsidSurvivorSafely(t *testing.T) {
+	requirePython(t)
+	const marker = "wh_scoped_reap_31415"
+	_ = exec.Command("pkill", "-f", marker).Run()
+
+	mount, err := os.MkdirTemp("", "wha-scopedreap-*")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(mount)
+	canon, _ := filepath.EvalSymlinks(mount)
+
+	// A pre-existing process whose cwd is the mount — must NOT be killed by the reap.
+	bystander := exec.Command("/bin/sleep", "30")
+	bystander.Dir = canon
+	if err := bystander.Start(); err != nil {
+		t.Fatalf("start bystander: %v", err)
+	}
+	defer func() {
+		_ = bystander.Process.Kill()
+		_, _ = bystander.Process.Wait()
+	}()
+
+	s, _ := (&DarwinFactory{}).Create(context.Background())
+	defer func() { _ = s.Destroy(context.Background()) }()
+	res, err := s.Execute(context.Background(), ExecRequest{
+		Language:   "python",
+		TimeoutMs:  1000,
+		AllowPaths: []PathRule{{Path: canon, Write: true}},
+		Code: "import os, sys\n" +
+			"if os.fork() == 0:\n    os.setsid()\n    os.execv('/bin/sleep', ['" + marker + "', '30'])\n" +
+			"else:\n    print('DETACHED', flush=True)\n    sys.exit(0)\n",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if out, _ := exec.Command("pgrep", "-f", marker).Output(); strings.TrimSpace(string(out)) != "" {
+		_ = exec.Command("pkill", "-f", marker).Run()
+		t.Fatalf("scoped-run setsid survivor was not reaped: pids=%q (DetachedReaped=%d)",
+			strings.TrimSpace(string(out)), res.DetachedReaped)
+	}
+	if res.DetachedReaped < 1 {
+		t.Fatalf("expected DetachedReaped>=1 for the scoped detached payload, got %d", res.DetachedReaped)
+	}
+	// The bystander that was already in the mount must still be alive.
+	if bystander.ProcessState != nil && bystander.ProcessState.Exited() {
+		t.Fatalf("reaper wrongly killed a pre-existing process sitting in the mount")
+	}
+	if err := bystander.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("pre-existing mount process was killed by the reaper: %v", err)
+	}
+}
+
+// An AllowPath that does not resolve must fail the whole execution closed, rather
+// than silently running with a weaker sandbox than the operator asked for.
+func TestDarwinSandboxRejectsUnresolvableAllowPath(t *testing.T) {
+	requirePython(t)
+	s, _ := (&DarwinFactory{}).Create(context.Background())
+	defer func() { _ = s.Destroy(context.Background()) }()
+	_, err := s.Execute(context.Background(), ExecRequest{
+		Language:   "python",
+		TimeoutMs:  5000,
+		Code:       "print('should not run')",
+		AllowPaths: []PathRule{{Path: "/nonexistent/wha/path/xyz", Write: false}},
+	})
+	if err == nil {
+		t.Fatalf("expected Execute to fail closed on an unresolvable AllowPath, got nil error")
 	}
 }
 

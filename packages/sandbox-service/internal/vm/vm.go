@@ -11,6 +11,23 @@ type ExecRequest struct {
 	TimeoutMs int
 	Env       map[string]string
 
+	// AllowPaths are host subtrees the caller (via the envelope) has explicitly
+	// opened to the sandboxed process, on TOP of the always-private scratch dir.
+	// This is what turns `run` from a hermetic throwaway box into "run my real
+	// tool, scoped to this project": a read-only or read-write grant on a specific
+	// directory while every sibling and the rest of the host stay denied by
+	// omission. Each path is canonicalized by the backend so `..`/symlink tricks
+	// cannot widen the grant, and grants are read/write only — never
+	// exec/map-executable — so a mounted dir can't become a write-then-exec vector.
+	AllowPaths []PathRule
+
+	// EgressProxy, if set ("host:port"), is the ONLY network destination the
+	// sandboxed process may reach; all other egress stays denied. Seatbelt cannot
+	// match egress by hostname (DNS is denied inside the sandbox), so the
+	// enforceable model is "allow only a local vetting proxy" — the proxy is where
+	// hostname allow-listing and secret brokering happen. Empty = deny all egress.
+	EgressProxy string
+
 	// NOT YET ENFORCED. These are accepted for forward-compatibility but no
 	// backend currently applies a hard memory or CPU limit: reliable per-process
 	// limits need cgroups on Linux (pending the Linux backend) and are not
@@ -19,6 +36,13 @@ type ExecRequest struct {
 	// output cap (see maxOutputBytes). Do not rely on these fields for isolation.
 	MaxMemMB  int
 	MaxCPUPct float64
+}
+
+// PathRule is a single caller-opened host subtree. Write=false grants read-only
+// access; Write=true grants read+write. Never grants execute/map-executable.
+type PathRule struct {
+	Path  string
+	Write bool
 }
 
 // ValidateLanguage rejects any language the sandbox does not explicitly support.

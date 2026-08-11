@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,33 +32,55 @@ import (
 // the CPU limit even after setsid, and network/host-file access stays denied by
 // the Seatbelt profile regardless.
 func reapByScratchCwd(scratchDir string) int {
+	return reapCwd(scratchDir, nil)
+}
+
+// cwdPidsOnce returns the set of pids whose working directory is at or below dir,
+// via lsof. IMPORTANT: lsof exits NON-ZERO both when it matches nothing AND when
+// it merely warns about a path it couldn't stat, yet it still prints valid
+// matches to stdout — so we parse stdout regardless of exit status (bailing on it
+// silently drops real survivors). A genuine start failure (lsof missing) returns
+// nil, ok=false so callers can stop retrying.
+func cwdPidsOnce(dir string) (map[int]bool, bool) {
+	out, err := exec.Command("lsof", "-w", "-t", "-a", "-d", "cwd", "+D", dir).Output()
+	if err != nil {
+		if _, isExit := err.(*exec.ExitError); !isExit {
+			return nil, false // lsof missing / failed to start
+		}
+	}
+	pids := map[int]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if pid, perr := strconv.Atoi(line); perr == nil && pid > 1 {
+			pids[pid] = true
+		}
+	}
+	return pids, true
+}
+
+// reapCwd kills every process whose cwd is at or below dir, EXCEPT ourself and any
+// pid in `exclude`. `exclude` is how we stay safe when dir is a user-opened mount
+// rather than our private scratch: the caller snapshots the pids already sitting
+// in the mount BEFORE launch (e.g. the user's own shell/editor) and passes them
+// here, so we only ever kill NEW processes — the detached survivors WE spawned —
+// and never the user's pre-existing ones. For the private scratch dir `exclude`
+// is nil (everything there is ours). Retries briefly because a detached child
+// takes a few ms to appear (fork -> setsid -> exec).
+func reapCwd(dir string, exclude map[int]bool) int {
 	killed := 0
 	seen := map[int]bool{}
-	// A detached child can take a few ms to appear after the direct parent returns
-	// (fork -> setsid -> exec), so sweep a few times over a short window. Each pass
-	// is cheap because scratch holds only a handful of files.
+	self := os.Getpid()
 	for attempt := 0; attempt < 4; attempt++ {
-		// -w suppresses warnings; -t prints PIDs only. IMPORTANT: lsof exits
-		// NON-ZERO both when it matches nothing AND when it merely warns about a
-		// path it couldn't stat, yet it still prints valid matches to stdout — so we
-		// parse stdout regardless of the exit status (bailing on it silently drops
-		// real survivors). We only skip a genuine start failure (cmd.Start error),
-		// which surfaces as a non-ExitError.
-		cmd := exec.Command("lsof", "-w", "-t", "-a", "-d", "cwd", "+D", scratchDir)
-		out, err := cmd.Output()
-		if err != nil {
-			if _, isExit := err.(*exec.ExitError); !isExit {
-				return killed // lsof missing / failed to start — best-effort, give up
-			}
+		pids, ok := cwdPidsOnce(dir)
+		if !ok {
+			return killed
 		}
 		found := false
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			pid, perr := strconv.Atoi(line)
-			if perr != nil || pid <= 1 || pid == os.Getpid() || seen[pid] {
+		for pid := range pids {
+			if pid == self || seen[pid] || (exclude != nil && exclude[pid]) {
 				continue
 			}
 			found = true
@@ -66,8 +89,6 @@ func reapByScratchCwd(scratchDir string) int {
 				killed++
 			}
 		}
-		// Stop early once a pass is clean AND we've already caught something, or on
-		// the first clean pass if nothing has shown up yet after a brief settle.
 		if !found && (killed > 0 || attempt >= 1) {
 			break
 		}
@@ -91,6 +112,16 @@ func readCappedFile(f *os.File) string {
 	// +1 so the cap buffer sees the overflow byte and records truncation.
 	_, _ = io.Copy(cb, io.LimitReader(f, int64(maxOutputBytes)+1))
 	return cb.String()
+}
+
+// sbplString renders s as a Seatbelt (SBPL) double-quoted string literal,
+// escaping backslashes and quotes. This matters for security, not just
+// correctness: a path containing a `"` could otherwise close the literal early
+// and inject arbitrary profile directives (e.g. widening the sandbox). All
+// caller-supplied path/host values that reach the profile go through this.
+func sbplString(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	return `"` + r.Replace(s) + `"`
 }
 
 type DarwinSandbox struct {
@@ -168,6 +199,54 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 		return nil, fmt.Errorf("resolve sandbox scratch dir for confinement: %w", symErr)
 	}
 
+	// Caller-scoped project grants from the envelope. Each path is canonicalized
+	// so a `..` segment or a symlink cannot widen the grant beyond what the
+	// operator named; a path that doesn't resolve is a hard error (fail closed
+	// rather than run with a weaker sandbox than was asked for). Read/write only —
+	// deliberately NO file-map-executable / process-exec*, so an opened project
+	// dir cannot be used for write-then-exec.
+	var extraPaths strings.Builder
+	// The first opened path becomes the process working directory (below), so a
+	// scoped tool's PROJECT-RELATIVE file access resolves against the directory the
+	// operator opened rather than the private scratch dir. Empty when no envelope.
+	firstAllow := ""
+	for _, pr := range req.AllowPaths {
+		if strings.TrimSpace(pr.Path) == "" {
+			continue
+		}
+		canon, perr := filepath.EvalSymlinks(pr.Path)
+		if perr != nil {
+			return nil, fmt.Errorf("resolve allowed path %q for confinement: %w", pr.Path, perr)
+		}
+		if firstAllow == "" {
+			firstAllow = canon
+		}
+		if pr.Write {
+			fmt.Fprintf(&extraPaths, "(allow file-read* file-write* file-test-existence (subpath %s))\n", sbplString(canon))
+		} else {
+			fmt.Fprintf(&extraPaths, "(allow file-read* file-test-existence (subpath %s))\n", sbplString(canon))
+		}
+	}
+
+	// Network policy. Default is deny-all egress. If a local vetting proxy was
+	// supplied, allow egress ONLY to it (placed after the blanket deny so the
+	// last-match-wins SBPL evaluation lets the proxy through while everything else
+	// stays denied).
+	networkRule := "(deny network*)"
+	if p := strings.TrimSpace(req.EgressProxy); p != "" {
+		host, port, splitErr := net.SplitHostPort(p)
+		if splitErr != nil {
+			return nil, fmt.Errorf("invalid egress proxy %q (want host:port): %w", p, splitErr)
+		}
+		// Seatbelt's `remote ip` accepts the "localhost" keyword but does NOT
+		// reliably parse a numeric loopback literal, so normalize 127.0.0.1/::1 to
+		// it. (The egress-proxy model is a LOCAL vetting proxy by design.)
+		if host == "127.0.0.1" || host == "::1" || host == "" {
+			host = "localhost"
+		}
+		networkRule = fmt.Sprintf("(deny network*)\n(allow network-outbound (remote ip %s))", sbplString(net.JoinHostPort(host, port)))
+	}
+
 	profile := fmt.Sprintf(`(version 1)
 (deny default)
 (import "bsd.sb")
@@ -215,13 +294,19 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 (allow file-read* file-write*
        (subpath "%s"))
 
+; Caller-scoped project grants from the envelope (read-only or read-write
+; subtrees the operator explicitly opened). Read/write only — never exec/map —
+; so an opened dir can't become a write-then-exec vector. Sibling directories and
+; the rest of the host stay denied by omission. Empty when no envelope is used.
+%s
 ; Defense in depth over the base profile: it permits passwd/hosts DATA for
 ; libinfo, but user/group resolution actually goes through opendirectoryd over
 ; mach — so deny the file data (blocks e.g. reading /etc/passwd) while name
-; lookups keep working. And deny all network egress.
+; lookups keep working. Network egress is default-deny (optionally narrowed to a
+; single local vetting proxy).
 (deny file-read-data (subpath "/private/etc"))
-(deny network*)
-`, realTmp)
+%s
+`, realTmp, extraPaths.String(), networkRule)
 
 	profilePath := filepath.Join(tmpDir, "profile.sb")
 	if err := os.WriteFile(profilePath, []byte(profile), 0644); err != nil {
@@ -282,10 +367,17 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 	args := []string{"-f", profilePath, "/bin/sh", "-c", limitScript, "sh", interpreter, codePath}
 	cmd := exec.CommandContext(execCtx, "sandbox-exec", args...)
 
-	// Run inside the sandbox scratch dir. Otherwise the child inherits our cwd
-	// (which may be under a now-denied location like the user's home), and even
-	// getcwd(3) fails. This keeps the untrusted script confined to its own dir.
+	// Working directory. Default to the private scratch dir: otherwise the child
+	// inherits our cwd (which may be under a now-denied location like the user's
+	// home) and even getcwd(3) fails. When the operator opened a project subtree
+	// via the envelope, run WITH THAT as the cwd instead, so the tool's
+	// project-relative file access resolves where the operator expects — while the
+	// rest of the host stays denied. Both are readable+traversable under the
+	// profile, so getcwd works either way.
 	cmd.Dir = realTmp
+	if firstAllow != "" {
+		cmd.Dir = firstAllow
+	}
 
 	// Give the child its own process group so we can kill the WHOLE tree — a
 	// payload that spawns a subprocess (now allowed via process-exec*) would
@@ -331,6 +423,18 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 
+	// When the working dir is a user-opened mount (not our private scratch), a
+	// detached survivor's inherited cwd is that mount, not scratch — so the scratch
+	// sweep can't see it, and we must NOT blindly reap by the mount (the user's own
+	// shell/editor may sit there and we'd kill it). Snapshot the pids already in the
+	// mount BEFORE launch so afterwards we reap only the NEW ones (ours).
+	var preMountPids map[int]bool
+	mountReapDir := ""
+	if cmd.Dir != realTmp {
+		mountReapDir = cmd.Dir
+		preMountPids, _ = cwdPidsOnce(mountReapDir)
+	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sandbox process: %w", err)
 	}
@@ -365,6 +469,11 @@ func (s *DarwinSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecResu
 	// still walk the path.
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	reaped := reapByScratchCwd(realTmp)
+	if mountReapDir != "" {
+		// Reap survivors that detached into the mounted project dir, excluding the
+		// pids that were already there before we launched (the user's own processes).
+		reaped += reapCwd(mountReapDir, preMountPids)
+	}
 
 	return &ExecResult{
 		Stdout:         readCappedFile(outF),
