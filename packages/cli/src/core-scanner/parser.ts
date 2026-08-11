@@ -44,20 +44,26 @@ export function parseSourceToTree(
 	return parser.parse(source);
 }
 
-export async function parseFile(filePath: string): Promise<ParseResult> {
-	const ext = path.extname(filePath);
-	const source = await fs.readFile(filePath, "utf-8");
-
+/**
+ * Parse already-in-memory source into a ParseResult, without touching disk. Used
+ * by the runtime `guard` hook, which analyzes the code a tool call is ABOUT to
+ * run (from the hook payload, not a file). `parseFile` is this plus a read, so
+ * both paths behave identically. Unknown extensions fall back to line-based text.
+ */
+export function parseSource(source: string, ext: string): ParseResult {
 	const language = grammarForExt(ext);
 	if (!language) {
-		// unknown extensions fall back to line-based text scanning
 		return { type: "text", lines: source.split("\n"), source };
 	}
-
 	const parser = new Parser();
 	parser.setLanguage(language as any);
 	const tree = parser.parse(source);
 	return { type: "ast", tree, source, parser };
+}
+
+export async function parseFile(filePath: string): Promise<ParseResult> {
+	const source = await fs.readFile(filePath, "utf-8");
+	return parseSource(source, path.extname(filePath));
 }
 
 // ─── AST Fingerprint (Golden Snapshot) ────────────────────────────────

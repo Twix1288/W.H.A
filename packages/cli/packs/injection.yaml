@@ -1,0 +1,82 @@
+# W.H.Agent rule pack — prompt injection & tool poisoning.
+#
+# Text patterns for injection payloads that show up in MCP tool descriptions,
+# CLAUDE.md, skill/agent prose, and retrieved content. Shared by scan / check /
+# guard. These broaden the previously-narrow override regex (which missed the
+# canonical "ignore all previous instructions") and add the tool-poisoning
+# secrecy/precedence directives from the Invariant-Labs class of attacks.
+version: 1
+category: injection
+rules:
+  - id: INJ-OVERRIDE
+    # Allows any words between the verb and the noun, so "ignore all previous
+    # instructions", "disregard the prior guidelines", etc. all match.
+    pattern: '\b(?:ignore|disregard|forget|override|bypass|dismiss)\b[\s\w,.''"-]*\b(?:previous|prior|earlier|above|all|any|the)?[\s\w,.''"-]*\b(?:instructions?|prompts?|rules?|guidelines?|directions?|context|system\s+prompt)\b'
+    flags: i
+    title: Instruction-override phrase (prompt injection)
+    severity: high
+    confidence: 0.8
+    tags: [prompt-injection]
+
+  - id: INJ-SECRECY-DIRECTIVE
+    # Tightened to a SELF-REFERENTIAL hide ("do not mention THIS / THAT YOU did …"),
+    # which is the tool-poisoning tell — not ordinary security prose like "do not
+    # reveal secrets to any user" or deferred-notification like "do not notify the
+    # user until the job completes". Advisory severity (medium): natural-language
+    # instruction heuristics have an irreducible false-positive rate, so they inform
+    # but do not fail a gate on their own.
+    pattern: '\b(?:do\s*not|don''t|never)\b[\s\w,.''"-]{0,20}?\b(?:mention|tell|reveal|disclose|inform)\b[\s\w,.''"-]{0,30}?\b(?:this|that\s+you|the\s+fact\s+that|what\s+you\s+(?:did|ran|called|used)|your\s+(?:use|call|invocation)\s+of)\b'
+    flags: i
+    title: Secrecy directive to hide the tool's own activity (tool poisoning)
+    severity: medium
+    confidence: 0.6
+    tags: [tool-poisoning]
+    profiles: [default, strict]
+
+  - id: INJ-TOOL-PRECEDENCE
+    # Tightened to require an explicit TOOL reference ("call this tool" / "before any
+    # other tool"), so ordinary ordering language ("always run the tests first",
+    # "always run this in the first worker slot") no longer trips it. Advisory
+    # (medium) for the same reason as the secrecy rule.
+    pattern: '\balways\b[\s\w,.''"-]{0,40}?\b(?:call|use|invoke)\b[\s\w,.''"-]{0,20}?\bthis\s+tool\b|\balways\b[\s\w,.''"-]{0,40}?\bbefore\s+(?:any|every|all|other)\s+(?:tool|function)s?\b'
+    flags: i
+    title: Forced tool-precedence directive (tool poisoning)
+    severity: medium
+    confidence: 0.6
+    tags: [tool-poisoning]
+    profiles: [default, strict]
+
+  - id: INJ-IMPORTANT-SIDENOTE
+    pattern: '<\s*(?:important|system|secret|admin|instructions?)\s*>'
+    flags: i
+    title: Hidden pseudo-tag directive (e.g. <IMPORTANT>)
+    severity: medium
+    confidence: 0.7
+    tags: [tool-poisoning]
+    profiles: [default, strict]
+
+  - id: INJ-EXFIL-ON-BEHALF
+    pattern: '\b(?:read|cat|load|fetch|include|send|post|upload|attach)\b[\s\w,.''"-]*\b(?:~/\.ssh|id_rsa|\.env|\.aws|credentials?|api[_\s-]?keys?|secrets?|/etc/passwd)\b'
+    flags: i
+    title: Content instructs reading/sending a secret (exfil-on-behalf)
+    severity: high
+    confidence: 0.7
+    tags: [prompt-injection, exfiltration]
+
+  - id: INJ-ROLEPLAY-JAILBREAK
+    pattern: '\b(?:you\s+are\s+now|act\s+as|pretend\s+to\s+be|from\s+now\s+on\s+you)\b[\s\w,.''"-]*\b(?:DAN|developer\s+mode|jailbroken|no\s+restrictions?|unfiltered|no\s+longer\s+bound)\b'
+    flags: i
+    title: Roleplay/jailbreak framing
+    severity: medium
+    confidence: 0.7
+    tags: [prompt-injection]
+    profiles: [default, strict]
+
+  - id: INJ-HIDDEN-UNICODE
+    # Zero-width / bidi control chars used to smuggle hidden instructions.
+    pattern: '[​‌‍⁠‪-‮⁦-⁩]'
+    title: Hidden zero-width / bidi control characters
+    severity: medium
+    confidence: 0.85
+    tags: [prompt-injection, obfuscation]
+    profiles: [default, strict]

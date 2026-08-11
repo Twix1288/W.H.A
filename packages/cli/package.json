@@ -24,7 +24,8 @@
   },
   "files": [
     "dist",
-    "bin/wh-sandbox"
+    "bin/wh-sandbox",
+    "packs"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs --minify",
@@ -35,7 +36,7 @@
     "check": "biome check .",
     "update-popular-packages": "node scripts/update-popular-packages.js",
     "test": "bun test && pnpm run test:ast",
-    "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts",
+    "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts src/commands/guard.nodetest.ts src/core-scanner/patterns/patterns.nodetest.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 
 import { checkAgent } from "./commands/check";
+import { guard, guardInstall } from "./commands/guard";
 import { inspectMcp } from "./commands/inspect-mcp";
 import { installAgent } from "./commands/install";
 import { runAgent } from "./commands/run";
@@ -177,6 +178,45 @@ program
 	.action((targetPath, options) => {
 		watchConfig(targetPath, options).catch((err) => {
 			console.error("Watch failed:", err.message);
+			process.exit(1);
+		});
+	});
+
+const guardCmd = program
+	.command("guard")
+	.description(
+		"Runtime guardrail: screen a Claude Code PreToolUse hook payload (on stdin) with the deterministic engine and allow/ask/deny the tool call before it runs",
+	)
+	.option(
+		"--profile <name>",
+		"guardrail profile: strict, default, permissive",
+		"default",
+	)
+	.action((options) => {
+		guard(options).catch((err) => {
+			// Fail-open on an internal guard error so a guard bug can't brick the
+			// agent; the payload-analysis path itself fails closed (see analyzeCode).
+			console.error("Guard error:", err?.message ?? err);
+			process.stdout.write(
+				`${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "W.H.Agent: internal guard error — not screened" } })}\n`,
+			);
+			process.exit(0);
+		});
+	});
+
+guardCmd
+	.command("install")
+	.description(
+		"Register `wh-agent guard` as a PreToolUse hook in a Claude Code settings.json (merges, never clobbers; writes a .bak)",
+	)
+	.argument("[dir]", "target config dir (default: ./.claude, then ~/.claude)")
+	.option("--profile <name>", "guardrail profile to install", "default")
+	.action((dir, _options, command) => {
+		// `--profile` can bind to the parent `guard` command; optsWithGlobals merges
+		// parent + subcommand options so the flag is honored wherever it lands.
+		const profile = command.optsWithGlobals().profile;
+		guardInstall(dir, { profile }).catch((err) => {
+			console.error("Guard install failed:", err?.message ?? err);
 			process.exit(1);
 		});
 	});

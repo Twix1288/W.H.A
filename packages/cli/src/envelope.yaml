@@ -1,36 +1,47 @@
 # W.H.Agent Secure Container Envelope
-# This defines the strict boundaries for your AI agent container.
+#
+# Declares the boundaries `wh-agent run <script> --envelope <this file>` enforces
+# on macOS. Fields are split into what is ENFORCED today and what is advisory
+# (parsed but not yet enforced) — we don't pretend the advisory parts contain a
+# running agent.
 
 version: 1.0
 
-# 1. File System Boundaries
-storage:
-  root_filesystem: read-only
-  allow_host_mounts: false
-  volatile_scratchpad: /tmp
-  # Explicitly allow the agent to read (but not write) its own source code
-  mounts:
-    - path: ./src
-      mode: ro
+# ── ENFORCED ─────────────────────────────────────────────────────────────────
 
-# 2. Network Boundaries (Default Deny)
+# File system: by default the sandbox is hermetic (scratch-only). Each mount
+# opens ONE host subtree to the tool; every sibling and the rest of the host stay
+# denied by omission — so you can scope a tool to a project without exposing its
+# neighbours, and without restructuring your directory layout. Paths are resolved
+# relative to where you run `wh-agent`, then canonicalized (a `..` or symlink
+# cannot widen the grant). Grants are read/write only — never execute — so an
+# opened dir cannot become a write-then-exec vector. The FIRST mount also becomes
+# the tool's working directory, so project-relative paths resolve as expected.
+storage:
+  mounts:
+    - path: .          # the project this tool is scoped to
+      mode: rw         # ro (read-only) or rw (read + write)
+    # - path: ../shared-data
+    #   mode: ro
+
+# Network: egress is default-deny. Because the sandbox blocks DNS, hostname
+# allow-lists can't be enforced in-kernel — the enforceable model is a single
+# LOCAL vetting proxy: allow egress ONLY to it, and let the proxy do hostname
+# allow-listing / secret brokering. Omit `egress_proxy` for zero network.
 network:
   default_egress: deny
-  allowed_destinations:
-    - api.openai.com:443
-    - database.internal.corp:5432
-    - huggingface.co:443
+  # egress_proxy: "127.0.0.1:8888"
 
-# 3. Credential Injection
-# Short-lived tokens are injected directly into tmpfs/memory at runtime.
-# Long-lived .env files on the host disk are ignored.
+# ── ADVISORY (parsed, NOT yet enforced by the sandbox) ───────────────────────
+# These describe intent for the roadmap's control-plane/proxy work. They do not
+# constrain the running process today; do not rely on them for isolation.
+
 credentials:
   inject_mode: memory_only
   required_secrets:
     - OPENAI_API_KEY
     - DB_PASSWORD
 
-# 4. Telemetry
 telemetry:
   log_tool_calls: true
   log_file_access: true

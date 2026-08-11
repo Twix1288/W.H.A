@@ -2,10 +2,11 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { astFingerprint } from "../core-scanner/parser";
+import { loadSandboxScope } from "./envelope";
 
 export async function runAgent(
 	scriptPath: string,
-	_envelopePath: string,
+	envelopePath: string,
 	expectedAstHash?: string,
 ) {
 	console.log(`🛡️ W.H.Agent: Initializing Native OS Sandbox for ${scriptPath}`);
@@ -55,21 +56,43 @@ export async function runAgent(
 		);
 	}
 
-	console.log(`[NETWORK] Default-Deny enforced.`);
-	console.log(`[STORAGE] Root filesystem restricted.`);
+	// Resolve the enforceable sandbox scope from the envelope (optional). A missing
+	// envelope keeps the sandbox fully hermetic — the prior default. Declared
+	// mounts become read-only/read-write grants on specific host subtrees; an
+	// egress proxy narrows the default network deny to a single local endpoint.
+	const scope = loadSandboxScope(envelopePath);
+	for (const w of scope.warnings) {
+		console.log(`\x1b[33m⚠️  ${w}\x1b[0m`);
+	}
+
+	if (scope.egressProxy) {
+		console.log(`[NETWORK] Egress allowed ONLY to proxy ${scope.egressProxy}.`);
+	} else {
+		console.log(`[NETWORK] Default-Deny enforced.`);
+	}
+	if (scope.allowPaths.length > 0) {
+		console.log(`[STORAGE] Scoped to ${scope.allowPaths.length} opened path(s):`);
+		for (const p of scope.allowPaths) {
+			console.log(`          ${p.Write ? "rw" : "ro"}  ${p.Path}`);
+		}
+	} else {
+		console.log(`[STORAGE] Root filesystem restricted (scratch-only).`);
+	}
 	console.log(`[ISOLATION] Sub-millisecond OS-Native isolation active.`);
 
 	console.log(`\n🚀 Launching isolated process...\n`);
 
 	// Pass the exact bytes we fingerprinted straight into the payload (no re-read).
 	// MaxMemMB / MaxCPUPct are intentionally omitted — no backend enforces hard
-	// memory/CPU limits yet; the real bounds are the wall-clock timeout and the
-	// sandbox's output cap.
+	// memory/CPU limits yet; the real bounds are the wall-clock timeout, the
+	// inherited RLIMIT_CPU/RLIMIT_FSIZE, and the sandbox's output cap.
 	const reqPayload = JSON.stringify({
 		Code: code,
 		Language: language,
 		TimeoutMs: 5000,
 		Env: {}, // Can parse envelope.yaml to pass env vars
+		AllowPaths: scope.allowPaths,
+		EgressProxy: scope.egressProxy ?? "",
 	});
 
 	const sandboxBinPath = path.resolve(__dirname, "../bin/wh-sandbox");

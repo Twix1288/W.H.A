@@ -1,0 +1,52 @@
+# W.H.Agent rule pack — access to sensitive host paths.
+#
+# Flags code/commands that touch well-known secret or credential locations. Lower
+# confidence than the command pack (a path reference alone isn't proof of intent),
+# so most rules are default/strict only. Shared by scan / check / guard.
+version: 1
+category: sensitive-path
+rules:
+  - id: PATH-SSH-PRIVATE
+    pattern: '(?:~|\$HOME|/(?:home|Users)/[^/\s]+)?/\.ssh/(?:id_[a-z]+|.*_rsa|.*_ed25519|authorized_keys)'
+    flags: i
+    title: Access to an SSH private key / authorized_keys
+    severity: high
+    confidence: 0.7
+    tags: [credentials, filesystem]
+  - id: PATH-CLOUD-CREDS
+    pattern: '(?:~|\$HOME|/(?:home|Users)/[^/\s]+)?/\.(?:aws/credentials|config/gcloud|kube/config|docker/config\.json|azure)'
+    flags: i
+    title: Access to cloud/CLI credential files
+    severity: high
+    confidence: 0.7
+    tags: [credentials, filesystem]
+  - id: PATH-ETC-SHADOW
+    pattern: '/etc/(?:shadow|gshadow|sudoers)\b'
+    title: Access to /etc/shadow or sudoers
+    severity: high
+    confidence: 0.85
+    tags: [credentials, filesystem]
+  - id: PATH-DOTENV
+    pattern: '(?<![\w.-])\.env(?:\.[a-z]+)?\b'
+    flags: i
+    title: Access to a .env file
+    severity: medium
+    confidence: 0.5
+    tags: [credentials, filesystem]
+    profiles: [default, strict]
+  - id: PATH-KEYCHAIN
+    pattern: '\b(?:security\s+(?:dump|find)-(?:generic|internet)-password|/Library/Keychains|login\.keychain)'
+    flags: i
+    title: macOS Keychain access
+    severity: high
+    confidence: 0.75
+    tags: [credentials]
+    profiles: [default, strict]
+  - id: PATH-BROWSER-STORE
+    pattern: '(?:Library/Application Support/(?:Google/Chrome|Firefox)|\.mozilla/firefox)[^\n]*(?:Login Data|cookies\.sqlite|key4\.db|logins\.json)'
+    flags: i
+    title: Access to browser credential/cookie store
+    severity: high
+    confidence: 0.8
+    tags: [credentials]
+    profiles: [default, strict]
