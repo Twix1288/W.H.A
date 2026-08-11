@@ -3,6 +3,7 @@ import * as path from "node:path";
 import chalk from "chalk";
 import { glob } from "glob";
 import { astFingerprint, parseFile } from "../core-scanner/parser";
+import { scanText } from "../core-scanner/patterns/index";
 import { applyRemediations } from "../core-scanner/remediator";
 import { type Finding, RULES, runRules } from "../core-scanner/rules";
 import { analyzeTaint, isTaintSupported } from "../core-scanner/taint/index";
@@ -55,18 +56,40 @@ export async function checkAgent(
 		file: string;
 		taintSupported: boolean;
 		astHash: string;
+		failed?: boolean;
 	}[] = [];
+	let analysisErrorCount = 0;
 
 	for (const file of targetFiles) {
 		const absolutePath = path.resolve(file);
 		try {
 			const stat = await fs.stat(absolutePath);
-			if (!stat.isFile()) continue;
+			if (!stat.isFile()) {
+				// A path that exists but is not a regular file (a directory, a socket,
+				// a device) can't be analyzed. `fs.stat` SUCCEEDS here, so this never
+				// reaches the catch — fail closed explicitly instead of silently
+				// `continue`-ing (which, if it were the only target, produced an empty
+				// clean pass with exit 0).
+				throw new Error("not a regular file (cannot analyze)");
+			}
 
 			const relativePath = path.relative(process.cwd(), absolutePath);
 
 			const parseResult = await parseFile(absolutePath);
 			const findings = runRules(parseResult, RULES);
+			// Shared, tunable rule packs (commands / injection / secrets /
+			// sensitive-paths) — the same detections `guard` and `scan` use. Merged into
+			// the AST-rule findings, deduped by category:line so an overlapping pattern
+			// isn't double-reported. Pack findings are not auto-fixable, so `--fix` skips them.
+			{
+				const seenAt = new Set(findings.map((f) => `${f.category}:${f.line}`));
+				for (const f of scanText(parseResult.source, { profile: "default" })) {
+					const key = `${f.category}:${f.line}`;
+					if (seenAt.has(key)) continue;
+					seenAt.add(key);
+					findings.push(f);
+				}
+			}
 
 			// Golden-snapshot fingerprint the caller can pin via `run --ast-hash`.
 			const astHash = astFingerprint(
@@ -112,8 +135,42 @@ export async function checkAgent(
 				}
 			}
 		} catch (err: any) {
+			// FAIL CLOSED. A file the scanner could not analyze (parse crash, stack
+			// overflow on pathological nesting, unreadable file, ...) must NEVER be
+			// silently reported as clean — that is the difference between "I checked
+			// this and it's safe" and "I couldn't check this". Previously the error was
+			// swallowed (logged only in text mode), so JSON/SARIF emitted `[]` with
+			// exit 0. Now we (a) surface it as a finding in every format, (b) mark the
+			// file's status analysis_failed, and (c) force a non-zero exit.
+			const relativePath = path.relative(process.cwd(), absolutePath);
+			const message = err?.message ?? String(err);
+			analysisErrorCount++;
+			const existingIdx = fileStatuses.findIndex((f) => f.file === relativePath);
+			if (existingIdx >= 0) fileStatuses.splice(existingIdx, 1);
+			fileStatuses.push({
+				file: relativePath,
+				taintSupported: false,
+				astHash: "n/a",
+				failed: true,
+			});
+			allFindings.push({
+				file: relativePath,
+				finding: {
+					ruleId: "analysis-error",
+					name: "File could not be analyzed",
+					severity: "high",
+					category: "analysis-error",
+					message: `Analysis failed (${message}). This file is UNSCANNED — treat as not-clean, not safe.`,
+					line: 0,
+					fixable: false,
+				},
+			});
 			if (format === "text") {
-				console.error(chalk.red(`❌ Error analyzing ${file}: ${err.message}`));
+				console.error(
+					chalk.red(
+						`❌ Error analyzing ${file}: ${message} — reported as an analysis-error (fail-closed), not a clean pass.`,
+					),
+				);
 			}
 		}
 	}
@@ -121,7 +178,14 @@ export async function checkAgent(
 	const hasCritical = allFindings.some(
 		(f) => f.finding.severity === "critical",
 	);
-	const exitCode = hasCritical ? 2 : allFindings.length > 0 ? 1 : 0;
+	// An analysis error is a hard fail-closed signal: a security gate must exit
+	// non-zero when it could not scan something, exactly as it would for a critical.
+	const exitCode =
+		hasCritical || analysisErrorCount > 0
+			? 2
+			: allFindings.length > 0
+				? 1
+				: 0;
 
 	if (format === "json") {
 		const jsonOutput = allFindings.map((f) => ({
@@ -147,9 +211,11 @@ export async function checkAgent(
 		const jsonOutput = {
 			files_status: fileStatuses.map((f) => ({
 				file: f.file,
-				status: f.taintSupported
-					? "scanned_full"
-					: "unsupported_taint_tracking",
+				status: f.failed
+					? "analysis_failed"
+					: f.taintSupported
+						? "scanned_full"
+						: "unsupported_taint_tracking",
 				ast_hash: f.astHash,
 			})),
 			findings: allFindings.map((f) => ({
@@ -192,9 +258,11 @@ export async function checkAgent(
 					artifacts: fileStatuses.map((f) => ({
 						location: { uri: f.file },
 						properties: {
-							status: f.taintSupported
-								? "scanned_full"
-								: "unsupported_taint_tracking",
+							status: f.failed
+								? "analysis_failed"
+								: f.taintSupported
+									? "scanned_full"
+									: "unsupported_taint_tracking",
 							astHash: f.astHash,
 						},
 					})),

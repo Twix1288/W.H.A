@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import * as tar from "tar";
+import { checkPackageName } from "../core-scanner/threat-intel/cve-database";
 // Import the data statically so the bundler includes it in dist/. A runtime
 // require("./popular-packages.json") silently fails in the published CLI (the
 // JSON is not copied next to the bundle), which disabled typosquat detection.
@@ -329,6 +330,55 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 	const typoResult = checkTyposquat(pkgName);
 	if (typoResult.risky) hasBlocker = true;
 
+	// 1a. Known-malicious / compromised package DB — checked EARLY (before the npm
+	// metadata fetch) so a name that has since been pulled from the registry (which
+	// would 404 the fetch and exit) is still blocked, and so an explicit
+	// `--pkg-version` of a compromised release is caught with no network at all.
+	// The threat-intel DB is what `inspect-mcp` already consults; `install` never
+	// did, so a package on our own known-compromised list installed clean.
+	let dbReported = false;
+	const reportDbHit = (hit: ReturnType<typeof checkPackageName>, version?: string) => {
+		if (!hit || dbReported) return;
+		dbReported = true;
+		hasBlocker = true;
+		const label =
+			hit.type === "compromised"
+				? "COMPROMISED"
+				: hit.type === "typosquat"
+					? "KNOWN TYPOSQUAT"
+					: "MALICIOUS";
+		console.error(
+			chalk.red(
+				`\n🚨 Known-${label} package: ${pkgName}${version ? `@${version}` : ""}`,
+			),
+		);
+		console.error(chalk.red(`   ${hit.description}`));
+		if (hit.legitimatePackage)
+			console.error(
+				chalk.gray(`   Legitimate package is likely: ${hit.legitimatePackage}`),
+			);
+	};
+	const earlyHit = checkPackageName(pkgName, options.pkgVersion);
+	// Hard-block early (before any fetch) for an unconditionally-bad NAME
+	// (malicious / typosquat), or for a compromised package only when a specific
+	// bad version was explicitly requested. A compromised package with NO explicit
+	// version is deferred to the resolved-version check below, so we don't
+	// false-positive a legitimate package whose *latest* is fine (only some old
+	// version was tainted).
+	if (earlyHit && (earlyHit.type !== "compromised" || !!options.pkgVersion)) {
+		reportDbHit(earlyHit, options.pkgVersion);
+		if (!options.force) {
+			// Refuse outright — don't even fetch metadata (the name may 404 and exit
+			// with a misleading "not found" instead of a block). Exit 2 = hard blocker.
+			console.error(
+				chalk.red(
+					`   Refusing to fetch or install a known-bad package. Re-run with --force only if you have independently verified it.`,
+				),
+			);
+			process.exit(2);
+		}
+	}
+
 	let manifest: Awaited<ReturnType<typeof fetchPackageMetadata>>;
 	try {
 		manifest = await fetchPackageMetadata(
@@ -347,6 +397,14 @@ export async function installAgent(pkgName: string, options: InstallOptions) {
 		}
 		process.exit(1);
 	}
+
+	// 1b. Re-check with the RESOLVED version now that we have the manifest — this
+	// catches the case where `latest` itself resolves to a known-compromised release
+	// (the early check only saw an unresolved "latest"/undefined). Deduped so the
+	// same hit is never printed twice.
+	const resolvedVersion =
+		(manifest as { version?: string })?.version ?? options.pkgVersion;
+	reportDbHit(checkPackageName(pkgName, resolvedVersion), resolvedVersion);
 
 	// 2. Lifecycle Scripts Check
 	const lifecycleResult = checkLifecycleScripts(pkgName, manifest);

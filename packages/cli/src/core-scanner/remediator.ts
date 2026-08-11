@@ -34,10 +34,14 @@ export async function applyRemediations(filePath: string, findings: Finding[]): 
       // tree-sitter captures the `(true)` node which corresponds to 'True' in Python
       replacement = 'False';
     } else if (finding.fixStrategy === 'literal_stub') {
+      // Python/Bash have no inline (mid-line) comment — `#` runs to END OF LINE and
+      // would comment out the rest of the statement (e.g. a dict's closing `}`),
+      // corrupting the file. So for .py/.sh we emit a bare "" (always valid where a
+      // string literal appears); only JS/TS gets the self-closing /* */ note.
       replacement = '"" /* wh-agent: removed hardcoded credential — set via environment */';
       
       if (filePath.endsWith('.py') || filePath.endsWith('.sh') || filePath.endsWith('.bash')) {
-        replacement = '""  # wh-agent: removed hardcoded credential — set via environment';
+        replacement = '""';
       }
     } else {
       continue;

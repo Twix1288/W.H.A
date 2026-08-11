@@ -138,17 +138,24 @@ export async function scanConfig(
 
 	let targets: { agent: string; path: string }[] = [];
 
+	// Human-facing progress lines must go to STDERR in machine-readable formats,
+	// otherwise they corrupt the JSON/SARIF/markdown document on stdout (a CI
+	// pipeline doing `scan --global --format json | jq` would fail to parse).
+	const isMachineFormat = format === "json" || format === "sarif";
+	const progress = (msg: string) => {
+		if (isMachineFormat) process.stderr.write(`${msg}\n`);
+		else console.log(msg);
+	};
+
 	if (isGlobal) {
-		console.log(
-			chalk.blue(`\n🔍 Auto-discovering global agent configurations...`),
-		);
+		progress(chalk.blue(`\n🔍 Auto-discovering global agent configurations...`));
 		const discovered = discoverGlobalAgents();
 		if (discovered.length === 0) {
-			console.log(chalk.yellow(`No supported agents found on the system.`));
+			progress(chalk.yellow(`No supported agents found on the system.`));
 			process.exit(0);
 		}
 		targets = discovered.map((d) => ({ agent: d.name, path: d.path }));
-		console.log(chalk.green(`Found ${targets.length} agent environments.\n`));
+		progress(chalk.green(`Found ${targets.length} agent environments.\n`));
 	} else {
 		const p = targetPath ? path.resolve(targetPath) : process.cwd();
 		if (!fs.existsSync(p)) {
@@ -200,6 +207,39 @@ export async function scanConfig(
 		findingHashes: Array.from(currentHashes),
 	});
 
+	// Honest empty-result guard — applied to EVERY format, BEFORE the machine-format
+	// dispatch. A 0-file scan is NOT an all-clear (it usually means scan was pointed
+	// at a leaf folder rather than an agent config root). Previously this guard sat
+	// AFTER the json/sarif/markdown block, so machine consumers got a misleading
+	// "Grade A / exit 0" green. Now it fails closed with a non-zero exit in all
+	// formats; machine formats still emit a structured body (to stdout) plus a
+	// human warning on stderr so a pipeline both gets data and learns nothing ran.
+	if (totalFilesScanned === 0) {
+		const where = isGlobal
+			? "the discovered agent environments"
+			: targetPath
+				? path.resolve(targetPath)
+				: process.cwd();
+		const warn = [
+			`\n⚠️  No agent configuration files were found in ${where}.`,
+			`   Nothing was scanned — this is NOT an all-clear. Point scan at a project root or a .claude directory`,
+			`   (e.g. 'wh-agent scan ~/.claude'), or use --global. To deep-scan a single script, use 'wh-agent check <file>'.`,
+		];
+		if (format === "terminal") {
+			console.log(chalk.yellow(warn[0]));
+			console.log(chalk.gray(warn.slice(1).join("\n")));
+		} else {
+			for (const l of warn) process.stderr.write(`${l}\n`);
+			let outputStr = "";
+			if (format === "json") outputStr = formatJson(reports);
+			else if (format === "markdown") outputStr = formatMarkdown(reports);
+			else if (format === "sarif") outputStr = formatSarif(reports);
+			if (options.output) fs.writeFileSync(options.output, outputStr);
+			else if (outputStr) console.log(outputStr);
+		}
+		process.exit(1);
+	}
+
 	// Handle Custom Output Formats
 	if (format !== "terminal") {
 		let outputStr = "";
@@ -218,26 +258,6 @@ export async function scanConfig(
 			console.log(outputStr);
 		}
 		process.exit(totalCritical > 0 ? 2 : 0);
-	}
-
-	// Honest empty-result guard: if nothing was actually scanned, say so plainly
-	// instead of rendering a "Grade A / no issues" report — a 0-file scan is NOT
-	// an all-clear. Most commonly this means scan was pointed at a leaf folder
-	// (e.g. a single skill dir) rather than an agent config root.
-	if (totalFilesScanned === 0) {
-		const where = isGlobal ? "the discovered agent environments" : (targetPath ? path.resolve(targetPath) : process.cwd());
-		console.log(
-			chalk.yellow(
-				`\n⚠️  No agent configuration files were found in ${where}.`,
-			),
-		);
-		console.log(
-			chalk.gray(
-				`   Nothing was scanned — this is NOT an all-clear. Point scan at a project root or a .claude directory\n` +
-				`   (e.g. 'wh-agent scan ~/.claude'), or use --global. To deep-scan a single script for malicious code, use 'wh-agent check <file>'.`,
-			),
-		);
-		process.exit(0);
 	}
 
 	// Terminal Reporting

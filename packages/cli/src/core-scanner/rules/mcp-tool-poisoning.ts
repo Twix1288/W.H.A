@@ -159,11 +159,25 @@ const DESCRIPTION_POISONING_PATTERNS: ReadonlyArray<{
 		pattern: /\b(send|post|transmit|forward|upload)\b.{0,100}\bhttps?:\/\//i,
 		description: "Instruction to exfiltrate data to an external URL",
 	},
-	// Override/ignore instructions
+	// Override/ignore instructions. Broadened: allow any words between the verb and
+	// the noun so the canonical "ignore ALL PREVIOUS instructions" (and synonyms)
+	// is caught, not only the single-adjective form.
 	{
 		pattern:
-			/\bignore\s+(previous|all|prior|other)\s+(instructions?|rules?|guidelines?)\b/i,
+			/\b(?:ignore|disregard|forget|override|bypass|dismiss)\b[\s\w,.'"-]{0,40}?\b(?:instructions?|rules?|guidelines?|prompts?|directions?|context|system\s+prompt)\b/i,
 		description: "Attempt to override the agent's instructions",
+	},
+	// Secrecy directive hidden in a tool description (classic tool poisoning).
+	{
+		pattern:
+			/\b(?:do\s*not|don't|never)\b[\s\w,.'"-]{0,20}?\b(?:mention|tell|reveal|disclose|inform)\b[\s\w,.'"-]{0,30}?\b(?:this|that\s+you|the\s+fact\s+that|what\s+you\s+(?:did|ran|called|used)|your\s+(?:use|call|invocation)\s+of)\b/i,
+		description: "Secrecy directive instructing the agent to hide its own tool activity",
+	},
+	// Forced tool-precedence directive ("always call this tool first/before any other").
+	{
+		pattern:
+			/\balways\b[\s\w,.'"-]{0,40}?\b(?:call|use|invoke)\b[\s\w,.'"-]{0,20}?\bthis\s+tool\b|\balways\b[\s\w,.'"-]{0,40}?\bbefore\s+(?:any|every|all|other)\s+(?:tool|function)s?\b/i,
+		description: "Forced tool-precedence directive (tool poisoning)",
 	},
 	// Execute arbitrary commands
 	{

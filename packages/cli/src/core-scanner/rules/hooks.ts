@@ -49,7 +49,7 @@ const EXFILTRATION_PATTERNS: ReadonlyArray<{
 }> = [
 	{
 		name: "curl-external",
-		pattern: /\bcurl\s+(-X\s+POST\s+)?https?:\/\//g,
+		pattern: /\bcurl\s+(?:-\S+\s+)*(?:-X\s+POST\s+)?https?:\/\//g,
 		description: "Hook sends data to external URL via curl",
 	},
 	{
@@ -1263,7 +1263,11 @@ export const hookRules: ReadonlyArray<Rule> = [
 
 			try {
 				const config = JSON.parse(file.content);
-				const sessionHooks = config?.hooks?.SessionStart ?? [];
+				// Screen EVERY hook event, not just SessionStart. A curl|bash RCE in a
+				// PreToolUse/PostToolUse/Stop hook auto-runs without confirmation too —
+				// previously only SessionStart was checked, so the same payload in any
+				// other event was missed entirely.
+				const hookGroups: Record<string, unknown> = config?.hooks ?? {};
 
 				const remoteExecutionPatterns = [
 					{
@@ -1283,27 +1287,30 @@ export const hookRules: ReadonlyArray<Rule> = [
 					},
 				];
 
-				for (const hook of sessionHooks) {
-					for (const command of extractHookCommands(hook)) {
-						for (const { pattern, desc, severity } of remoteExecutionPatterns) {
-							if (pattern.test(command)) {
-								findings.push({
-									id: `hooks-session-start-download-${findings.length}`,
-									severity,
-									category: "hooks",
-									title: `SessionStart hook downloads remote content`,
-									description: `A SessionStart hook runs "${command.substring(0, 80)}". ${desc}. SessionStart hooks run automatically at the beginning of every session without user confirmation.`,
-									file: file.path,
-									evidence: command.substring(0, 100),
-									fix: {
-										description:
-											"Remove remote downloads from SessionStart or use a local script",
-										before: command.substring(0, 60),
-										after: "# Use pre-installed local tools instead",
-										auto: false,
-									},
-								});
-								break;
+				for (const [event, hooks] of Object.entries(hookGroups)) {
+					if (!Array.isArray(hooks)) continue;
+					for (const hook of hooks) {
+						for (const command of extractHookCommands(hook)) {
+							for (const { pattern, desc, severity } of remoteExecutionPatterns) {
+								if (pattern.test(command)) {
+									findings.push({
+										id: `hooks-remote-download-${findings.length}`,
+										severity,
+										category: "hooks",
+										title: `${event} hook downloads/executes remote content`,
+										description: `A ${event} hook runs "${command.substring(0, 80)}". ${desc}. Hook commands run automatically without user confirmation.`,
+										file: file.path,
+										evidence: command.substring(0, 100),
+										fix: {
+											description:
+												"Remove remote downloads from the hook or use a vetted local script",
+											before: command.substring(0, 60),
+											after: "# Use pre-installed local tools instead",
+											auto: false,
+										},
+									});
+									break;
+								}
 							}
 						}
 					}

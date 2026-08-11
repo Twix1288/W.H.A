@@ -646,7 +646,11 @@ export const agentRules: ReadonlyArray<Rule> = [
 
 			const autoRunPatterns = [
 				{
-					pattern: /always\s+(?:run|install|download|execute)/gi,
+					// Require a COMMAND-LIKE object after the verb so ordinary dev prose
+					// ("always run the tests first", "always install dependencies") is not
+					// flagged — only "always run <the following|this script|curl|a URL|…>".
+					pattern:
+						/\balways\s+(?:run|install|download|execute|source)\s+(?:the\s+following\b|this\s+(?:script|command|installer|setup|file)\b|https?:\/\/|[`'"]?(?:curl|wget|bash|sh|zsh|npx|pipx?|npm)\b|\$\()/gi,
 					desc: "Auto-run instructions",
 				},
 				{

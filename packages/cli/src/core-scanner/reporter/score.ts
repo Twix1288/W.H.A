@@ -104,11 +104,26 @@ function computeScore(findings: ReadonlyArray<Finding>): SecurityScore {
 		agents: roundedCategoryScore(maxCategoryScore, categoryDeductions.agents),
 	};
 
-	// Overall score = average of category scores
+	// Overall score = average of category scores...
 	const categoryScores = Object.values(breakdown);
-	const numericScore = Math.round(
+	const avgScore = Math.round(
 		categoryScores.reduce((sum, s) => sum + s, 0) / categoryScores.length,
 	);
+
+	// ...but the grade must be DOMINATED by the worst finding, not diluted by the
+	// average. Otherwise a single critical in one of five categories scores ~95/A
+	// (100+100+100+100+75)/5 — a security tool must never grade a config with a
+	// live critical as an "A". Cap the overall by the worst REAL finding (the
+	// confidence weighting already discounts template/docs/plugin examples, so a
+	// mere example critical doesn't force the cap). Any real critical ⇒ at most D;
+	// any real high ⇒ at most C.
+	const isReal = (f: Finding) => confidenceWeight(f) >= 0.75;
+	const cap = findings.some((f) => f.severity === "critical" && isReal(f))
+		? 40
+		: findings.some((f) => f.severity === "high" && isReal(f))
+			? 74
+			: 100;
+	const numericScore = Math.min(avgScore, cap);
 	const grade = scoreToGrade(numericScore);
 
 	return { grade, numericScore, breakdown };

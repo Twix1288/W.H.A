@@ -91,6 +91,46 @@ const GLOBAL_AGENTS: AgentPathDefinition[] = [
 			linux: ["~/.gemini/antigravity-ide"],
 		},
 	},
+	{
+		id: "codex",
+		name: "Codex CLI",
+		paths: {
+			win32: ["%USERPROFILE%\\.codex"],
+			darwin: ["~/.codex"],
+			linux: ["~/.codex"],
+		},
+	},
+	{
+		id: "continue",
+		name: "Continue",
+		paths: {
+			win32: ["%USERPROFILE%\\.continue"],
+			darwin: ["~/.continue"],
+			linux: ["~/.continue"],
+		},
+	},
+	{
+		id: "zed",
+		name: "Zed",
+		paths: {
+			win32: ["%APPDATA%\\Zed"],
+			darwin: ["~/.config/zed", "~/Library/Application Support/Zed"],
+			linux: ["~/.config/zed"],
+		},
+	},
+	{
+		id: "cline",
+		name: "Cline (Claude Dev)",
+		paths: {
+			// The Cline VS Code extension stores its MCP config + rules under the
+			// editor's globalStorage. Cover the common VS Code install locations.
+			win32: ["%APPDATA%\\Code\\User\\globalStorage\\saoudrizwan.claude-dev"],
+			darwin: [
+				"~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev",
+			],
+			linux: ["~/.config/Code/User/globalStorage/saoudrizwan.claude-dev"],
+		},
+	},
 ];
 
 function resolvePath(p: string): string {

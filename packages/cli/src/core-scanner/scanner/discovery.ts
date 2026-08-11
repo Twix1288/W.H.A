@@ -26,6 +26,12 @@ const CLAUDE_ROOT_MARKERS = new Set([
 	"settings.json",
 	"settings.local.json",
 	"mcp.json",
+	// `.mcp.json` (dot-prefixed) is the canonical project MCP file; without it as
+	// a root marker, a subdirectory (e.g. a monorepo package) whose ONLY config is
+	// `.mcp.json` was never recognized as a config root and so was never scanned —
+	// while its non-dotted twin `mcp.json` was. That asymmetry left the exact
+	// supply-chain surface this file targets undiscovered in nested layouts.
+	".mcp.json",
 	".claude.json",
 ]);
 
@@ -192,6 +198,13 @@ function scanClaudeRoot(
 		["mcp.json", "mcp-json"],
 		[".claude/mcp.json", "mcp-json"],
 		[".claude.json", "mcp-json"],
+		// `.mcp.json` is the canonical Claude Code *project* MCP file — checked into
+		// repos and shared with teams, i.e. the highest supply-chain-risk MCP
+		// surface. It was previously missed (only the non-dot `mcp.json` was
+		// discovered), so a poisoned project MCP server slipped past both `scan` and
+		// `watch`.
+		[".mcp.json", "mcp-json"],
+		[".claude/.mcp.json", "mcp-json"],
 	];
 
 	for (const [relativePath, type] of directFiles) {
@@ -312,7 +325,8 @@ function inferType(
 	if (name === "claude.md") return "claude-md";
 	if (name === "settings.json" || name === "settings.local.json")
 		return "settings-json";
-	if (name === "mcp.json" || name === ".claude.json") return "mcp-json";
+	if (name === "mcp.json" || name === ".mcp.json" || name === ".claude.json")
+		return "mcp-json";
 
 	if (HOOK_SHELL_EXTENSIONS.has(ext) && defaultType === "hook-script")
 		return "hook-script";
