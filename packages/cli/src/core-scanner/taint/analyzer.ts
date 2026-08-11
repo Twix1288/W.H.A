@@ -163,6 +163,11 @@ function getIdentifierName(node: ts.Node): string | null {
 	if (ts.isIdentifier(node)) {
 		return node.text;
 	}
+	// `this` so that `this.x` yields a stable key ("this.x"); without this a class
+	// attribute assignment (this.x = secret) produced a null name and was dropped.
+	if (node.kind === ts.SyntaxKind.ThisKeyword) {
+		return "this";
+	}
 	if (ts.isPropertyAccessExpression(node)) {
 		const obj = getIdentifierName(node.expression);
 		const prop = getIdentifierName(node.name);
@@ -195,6 +200,18 @@ export function analyzeTaint(
 		);
 
 		const tainted: Map<string, TaintedVar> = new Map();
+
+		// Simple identifier aliases: `const r = axios` → r resolves to axios, so a
+		// sink/source reached through the alias (`r.post(...)`, `e.API_KEY` where
+		// `const e = process.env`) is still recognized. Only plain identifier =
+		// identifier assignments are recorded.
+		const aliases = new Map<string, string>();
+		function resolveAlias(name: string): string {
+			const dot = name.indexOf(".");
+			const head = dot === -1 ? name : name.slice(0, dot);
+			const target = aliases.get(head);
+			return target ? target + (dot === -1 ? "" : name.slice(dot)) : name;
+		}
 
 		function emit(
 			ruleId: string,
@@ -240,8 +257,9 @@ export function analyzeTaint(
 
 			// 2. Check for sink calls
 			if (ts.isCallExpression(node)) {
-				const sinkName = getCallName(node);
-				
+				const rawSink = getCallName(node);
+				const sinkName = rawSink ? resolveAlias(rawSink) : null;
+
 				// Skip if the function called is a known AI agent tool
 				if (sinkName && AI_AGENT_TOOL_WHITELIST.has(sinkName)) {
 					ts.forEachChild(node, visit);
@@ -267,14 +285,21 @@ export function analyzeTaint(
 			const targetName = getIdentifierName(target);
 			if (!targetName) return;
 
+			// Record a plain `x = y` identifier alias (y a bare identifier) so a sink
+			// reached via x is resolved back to y.
+			if (ts.isIdentifier(target) && ts.isIdentifier(value)) {
+				aliases.set(target.text, value.text);
+			}
+
 			const lineno =
 				sourceFile.getLineAndCharacterOfPosition(target.getStart()).line + 1;
 			let sourceFound = false;
 
 			function findSource(n: ts.Node) {
-				const name =
+				const rawName =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
+				const name = rawName ? resolveAlias(rawName) : null;
 				if (name && ALL_SOURCES.has(name as string)) {
 					tainted.set(targetName as string, {
 						name: targetName as string,
@@ -312,9 +337,10 @@ export function analyzeTaint(
 			lineno: number,
 		) {
 			function find(n: ts.Node) {
-				const name =
+				const rawName =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
+				const name = rawName ? resolveAlias(rawName) : null;
 				if (name && (ALL_SOURCES.has(name as string) || name.startsWith("process.env"))) {
 					const srcName = name.startsWith("process.env") ? "process.env" : name;
 					const rule = pickRule(srcName, sinkName, true);
@@ -338,25 +364,38 @@ export function analyzeTaint(
 			sinkName: string,
 			lineno: number,
 		) {
+			function emitTainted(t: TaintedVar) {
+				const rule = pickRule(t.sourceCall, sinkName, false);
+				const srcCat = classify(t.sourceCall, SOURCE_CATEGORIES, "data source");
+				const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
+				emit(
+					rule,
+					lineno,
+					`Tainted flow: '${t.name}' from ${t.sourceCall} (line ${t.lineno}, ${srcCat}) -> ${sinkName} (${sinkCat})`,
+					t.sourceCall,
+					sinkName,
+				);
+			}
+
 			function find(n: ts.Node) {
+				// Member access (o.x, this.x): look the WHOLE access path up in the
+				// tainted map. Previously only bare identifiers were checked, so a
+				// tainted object field written as `o.x = secret` was a dead store —
+				// never matched at the sink. Recurse into the object expression but not
+				// the property-name identifier (which is not a variable reference).
+				if (ts.isPropertyAccessExpression(n)) {
+					const full = getIdentifierName(n);
+					if (full) {
+						const t = tainted.get(full);
+						if (t) emitTainted(t);
+					}
+					find(n.expression);
+					return;
+				}
 				if (ts.isIdentifier(n)) {
 					const t = tainted.get(n.text);
-					if (t) {
-						const rule = pickRule(t.sourceCall, sinkName, false);
-						const srcCat = classify(
-							t.sourceCall,
-							SOURCE_CATEGORIES,
-							"data source",
-						);
-						const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
-						emit(
-							rule,
-							lineno,
-							`Tainted flow: '${t.name}' from ${t.sourceCall} (line ${t.lineno}, ${srcCat}) -> ${sinkName} (${sinkCat})`,
-							t.sourceCall,
-							sinkName,
-						);
-					}
+					if (t) emitTainted(t);
+					return;
 				}
 				ts.forEachChild(n, find);
 			}

