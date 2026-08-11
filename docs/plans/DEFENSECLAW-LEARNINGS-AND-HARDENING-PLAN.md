@@ -68,6 +68,16 @@ All findings below were reproduced directly against `packages/cli/bin/wh-sandbox
 - **Repro (confirmed):** a binary pre-planted in user-writable `/opt/homebrew/bin` executes inside the sandbox (two-stage; requires prior unsandboxed write, so lower severity). In-invocation write-then-exec stays correctly blocked.
 - **Fix:** prefer allowing exec of the *resolved interpreter path* over broad `/opt`+`/usr/local` subtrees where feasible; at minimum add a regression test + doc note. Don't break Homebrew-Python users.
 
+> **Status: A5 SHIPPED & verified.** `run --envelope` is now live: `envelope.yaml`
+> `storage.mounts` (ro/rw) become canonicalized Seatbelt subtree grants (read/write
+> only, never exec), `network.egress_proxy` narrows the default deny to a single
+> local proxy, and the first opened path becomes the working directory so
+> project-relative paths resolve. Verified end-to-end: scope to a project → its files
+> readable/writable, sibling project denied, egress reaches only the proxy, and no
+> envelope → the prior hermetic default. 4 Go regression tests added; full `make
+> test` green. New: `src/commands/envelope.ts` (parser), `vm.go` (`PathRule`/
+> `AllowPaths`/`EgressProxy`), `vm_darwin.go` (scoped SBPL + workdir), `run.ts`.
+
 ### A5. Make `run` actually usable — resurrect the envelope (ties into Track B policy)
 - Today `--envelope` is dead (`_envelopePath`), the profile only allows the ephemeral scratch dir, and no args reach the script → `run` can only execute a hermetic throwaway. **Spiked and verified this session:** Seatbelt cleanly supports (a) scoping reads/writes to a specific project subtree while denying siblings (no directory restructuring), and (b) allowing egress **only** to a local proxy port. Parse `envelope.yaml` → `AllowPaths []PathRule` + `EgressProxy` in `ExecRequest` → templated Seatbelt clauses (canonicalized with `EvalSymlinks`, deny-wins). This is what turns `run` from "throwaway script box" into "run my real tool, scoped."
 
@@ -75,10 +85,41 @@ All findings below were reproduced directly against `packages/cli/bin/wh-sandbox
 
 ## Track B — Runtime guardrail layer (the DefenseClaw idea, native + backend-free)
 
+> **Status: B1 SHIPPED & verified; B2 first slice landed.** `wh-agent guard` reads a
+> Claude Code PreToolUse payload on stdin, extracts the code a Bash/Write/Edit/MultiEdit/
+> NotebookEdit call will run, screens it with the SAME rule+taint engine as `check` (via the
+> new in-memory `parseSource`), and emits an allow/ask/deny decision in the hook's JSON
+> contract — with a durable local audit trail (`~/.wh-agent/guard-audit.jsonl`) and
+> `strict`/`default`/`permissive` profiles. Fails closed on analysis error, fails open on an
+> unparseable payload (won't brick the agent). `wh-agent guard install` merges the hook into
+> settings.json (never clobbers; writes `.bak`; idempotent). As a first slice of B2, a small,
+> high-precision runtime command-pattern set (reverse shells via /dev/tcp, nc -e, interpreter
+> socket one-liners, download-and-exec, credential-file exfil — adapted from DefenseClaw's
+> `commands.yaml`) closes attacks the AST rules miss. Verified end-to-end: reverse shells /
+> curl|bash / secret-exfil Write → deny/ask; benign commands → allow (no false positives).
+> 18 new tests; full `make test` green. New: `src/commands/guard.ts`, `guard.nodetest.ts`,
+> `parser.ts` (`parseSource`), `index.ts` (`guard` + `guard install`). Remaining B2: externalize
+> the full rule set into tunable `default/permissive/strict` YAML packs shared with scan/check.
+
 ### B1. `wh-agent guard` — an in-path PreToolUse/PostToolUse hook (the core win)
 - A new command that installs itself into an agent's native hook system (Claude Code first: `.claude/settings.json` `PreToolUse`/`PostToolUse`). On each tool call it reads the hook JSON on stdin (`tool_name`, `tool_input`), runs wh-agent's **existing** rule + taint engine on the actual command/code the agent is about to execute, evaluates it against the active **policy profile**, and returns an allow / ask / deny decision (Claude Code contract: `permissionDecision` JSON or exit-2 block).
 - **Why it's the win:** it closes the exact hole the field feedback named — *"command patterns work except when the agent writes and executes code."* A `Bash`/`Write` tool call carrying a reverse shell or a secret-exfil snippet is taint-analyzed **before** it runs. Deterministic, local, no backend.
 - **Reuse:** `runRules`, `analyzeTaint([{path,content}])`, `policy/evaluate`. New code is the hook I/O adapter + a fast single-payload path + the installer.
+
+> **Status: B2 SHIPPED & verified.** Detection is now externalized into tunable YAML
+> packs under `packages/cli/packs/` — `commands`, `injection`, `secrets`, `sensitive-paths`
+> — each rule `{id, pattern, flags?, title, severity, confidence, tags, profiles?}` with
+> `permissive`/`default`/`strict` profiles. A shared engine (`core-scanner/patterns/`:
+> loader + `scanText`) loads the shipped packs (robust path resolution + fail-safe builtin
+> fallback) PLUS user overrides/suppressions from `~/.wh-agent/rules/` and `./.wh-agent/rules/`.
+> **All three commands consume it**: `guard` (replacing its inline patterns), `check` (merged
+> into per-file findings, deduped), and `scan` (over bundled script files — closing the
+> "skill scripts never analyzed" gap). This also closed the adversarial-verification breakages:
+> script-body reverse shells (dup2/pty.spawn), mkfifo/nc + dotless-`/dev/tcp`, base64
+> decode-exec, and the broadened "ignore ALL previous instructions" injection phrase.
+> 8 pack tests + the wired command tests; full `make test` green (43 tsx + bun + Go `-race`).
+> Remaining/optional: migrate the AST/structural config rules (permissions/mcp-structure) —
+> those stay as code (not regex-expressible); the *pattern* layer is what's externalized.
 
 ### B2. Tunable YAML rule packs (adopt their format)
 - Externalize detection into `rules/packs/{default,permissive,strict}/{commands,secrets,c2,sensitive-paths,trust-exploit,cognitive}.yaml`, each rule `{id, pattern, title, severity, confidence, tags}` — DefenseClaw's exact shape. **Both** `scan`/`check` (static) **and** `guard` (runtime) consume the same packs, so detection is unified and user-tunable. Ship the three profiles; default to `default`.
