@@ -40,12 +40,23 @@
 >   (`curl -d "$AWS_SECRET_ACCESS_KEY"`). All verified with no false positives (dict.get,
 >   `$USER_NAME`, non-secret `.json()` all correctly not flagged); 10 new taint regression tests.
 >
-> **Remaining (deeper):** **interprocedural** taint (helper-return summaries — the biggest
-> remaining false-negative class, check #2), deep-nesting **traversal cap** (now fails closed
-> but still can't analyze such files), JS array-push taint, Python subscript source-alias
-> (`from os import environ as e; e["K"]`), taint-in-scan, SARIF rule-metadata quality (scan
-> #7), CVE-DB coverage/honesty (mcp #5), `--live` timeout/parse robustness (mcp #6),
-> Aider `~/.aider.conf.yml` discovery, and the #8 filesystem-server rating consistency.
+> ## ✅ RESOLVED — round 3 (interprocedural taint)
+> - **Interprocedural taint** (check #2 — the biggest remaining false-negative class) via
+>   per-function **summaries + a bounded fixpoint**, for **JS/TS, Python, and Rust**
+>   (Bash deferred): return-taint (`x = gs()` / `sink(gs())`), parameter pass-through
+>   (`sink(ident(secret))`), and parameter-to-sink (`send(secret)`), including n-hop chains.
+>   Guardrail: **same-file functions only** — an imported/unknown function is never assumed
+>   to taint or sink. Also fixed a latent FP where a user function named `send`/`post`
+>   collided with the bare HTTP-verb sinks (now method-only). ~15 new positive+negative
+>   regression tests; recursion terminates; existing suites green. See
+>   [INTERPROCEDURAL-TAINT-PLAN.md](./INTERPROCEDURAL-TAINT-PLAN.md).
+>
+> **Remaining (deeper):** deep-nesting **traversal cap** (now fails closed but still can't
+> analyze such files), JS array-push taint, Python subscript source-alias
+> (`from os import environ as e; e["K"]`), higher-order/callback and cross-file taint,
+> taint-in-scan, SARIF rule-metadata quality (scan #7), CVE-DB coverage/honesty (mcp #5),
+> `--live` timeout/parse robustness (mcp #6), Aider `~/.aider.conf.yml` discovery, and the
+> #8 filesystem-server rating consistency.
 
 
 

