@@ -1,4 +1,10 @@
 import type { ConfigFile, Finding, Rule } from "../types.js";
+import {
+	describeInvisibleCharacters,
+	hasInvisibleCharacters,
+	normalizeForMatching,
+	sanitizeForDisplayInline,
+} from "../../util/untrusted-text.js";
 
 /**
  * MCP Tool Description Poisoning Detection.
@@ -212,9 +218,37 @@ export function analyzeMcpToolText(
 	schemaText = "",
 ): McpToolPoisonHit[] {
 	const hits: McpToolPoisonHit[] = [];
-	const name = toolName ?? "";
-	const desc = description ?? "";
-	const haystack = `${desc}\n${schemaText}`;
+	const rawName = toolName ?? "";
+	const rawDesc = description ?? "";
+	const rawHaystack = `${rawDesc}\n${schemaText}`;
+
+	// Match against the NORMALIZED text, not the raw bytes.
+	//
+	// Every pattern below is keyword-based ("IMPORTANT", "read", "id_rsa"). A
+	// single U+200B inside a keyword defeats the regex while the instruction still
+	// reaches the model verbatim — an LLM ignores zero-width characters entirely.
+	// The Unicode TAG block (U+E0000–U+E007F) is worse: it encodes a complete ASCII
+	// instruction that is invisible in every editor and terminal. Both were
+	// reported as "✅ No issues found", exit 0, on a description telling the agent
+	// to read ~/.ssh/id_rsa — laundering a hostile server as audited.
+	const name = normalizeForMatching(rawName);
+	const desc = normalizeForMatching(rawDesc);
+	const haystack = normalizeForMatching(rawHaystack);
+
+	// Concealment is a finding in its own right. Legitimate tool metadata
+	// essentially never contains these characters, and if the decoded text happens
+	// to match no pattern we still want the user warned that someone hid something.
+	if (hasInvisibleCharacters(rawHaystack) || hasInvisibleCharacters(rawName)) {
+		hits.push({
+			severity: "high",
+			title: `MCP tool "${name || rawName}" metadata contains hidden characters`,
+			description:
+				`The name or description contains ${describeInvisibleCharacters(`${rawName}${rawHaystack}`)}, ` +
+				"which are invisible to a human reviewer but are read normally by a language model. " +
+				"This is the standard way tool-poisoning instructions are smuggled past both review and keyword matching.",
+			evidence: sanitizeForDisplayInline(rawHaystack, 200),
+		});
+	}
 
 	for (const re of INJECTION_NAME_PATTERNS) {
 		if (re.test(name)) {
@@ -223,7 +257,7 @@ export function analyzeMcpToolText(
 				title: `MCP tool name contains an injection pattern: "${name}"`,
 				description:
 					"The tool name contains instruction-like text, a URL, or a prompt-injection pattern that can manipulate the agent when the tool list is shown to it.",
-				evidence: name.slice(0, 200),
+				evidence: sanitizeForDisplayInline(name, 200),
 			});
 			break;
 		}
@@ -236,7 +270,7 @@ export function analyzeMcpToolText(
 				severity: "critical",
 				title: `MCP tool "${name}" description contains a poisoning instruction`,
 				description: why,
-				evidence: m[0].slice(0, 200),
+				evidence: sanitizeForDisplayInline(m[0], 200),
 			});
 		}
 	}
@@ -248,7 +282,7 @@ export function analyzeMcpToolText(
 				severity: "high",
 				title: `MCP tool "${name}" references a suspicious exfiltration endpoint`,
 				description: why,
-				evidence: m[0].slice(0, 200),
+				evidence: sanitizeForDisplayInline(m[0], 200),
 			});
 		}
 	}
@@ -428,9 +462,37 @@ const rawToolPoisoningRules: ReadonlyArray<Rule> = [
 
 				for (const [name, server] of Object.entries(servers)) {
 					const serverConfig = (server ?? {}) as Record<string, unknown>;
-					const description = (serverConfig.description ?? "") as string;
+					const rawDescription = (serverConfig.description ?? "") as string;
 
-					if (!description) continue;
+					if (!rawDescription) continue;
+
+					// Match the normalized text: zero-width characters and the invisible
+					// Unicode TAG block defeat every keyword pattern here while the
+					// instruction still reaches the model intact.
+					const description = normalizeForMatching(rawDescription);
+
+					// Hidden characters in a server description are themselves a finding —
+					// the decoded text may match nothing while still concealing intent.
+					if (hasInvisibleCharacters(rawDescription)) {
+						findings.push({
+							id: `mcp-desc-hidden-chars-${name}`,
+							severity: "high",
+							category: "mcp",
+							title: `MCP server "${name}" description contains hidden characters`,
+							description:
+								`The description contains ${describeInvisibleCharacters(rawDescription)}, which are invisible to a human reviewer ` +
+								"but are read normally by a language model. This is how tool-poisoning instructions are smuggled past both review and keyword matching.",
+							file: file.path,
+							evidence: sanitizeForDisplayInline(rawDescription, 200),
+							fix: {
+								description:
+									"Remove the invisible characters, then re-read the decoded description to see what it actually instructs the agent to do",
+								before: sanitizeForDisplayInline(rawDescription, 60),
+								after: "A plain-ASCII, factual description of the server's purpose",
+								auto: false,
+							},
+						});
+					}
 
 					for (const poisonPattern of DESCRIPTION_POISONING_PATTERNS) {
 						if (poisonPattern.pattern.test(description)) {
@@ -441,11 +503,11 @@ const rawToolPoisoningRules: ReadonlyArray<Rule> = [
 								title: `MCP server "${name}" description contains tool poisoning pattern`,
 								description: `The description for MCP server "${name}" contains a suspicious pattern: ${poisonPattern.description}. Tool description poisoning is a known attack vector where hidden instructions in descriptions manipulate the AI agent's behavior without the user's knowledge.`,
 								file: file.path,
-								evidence: description.substring(0, 200),
+								evidence: sanitizeForDisplayInline(description, 200),
 								fix: {
 									description:
 										"Review and sanitize the server description, removing any instruction-like text",
-									before: description.substring(0, 60),
+									before: sanitizeForDisplayInline(description, 60),
 									after: "A clear, factual description of the server's purpose",
 									auto: false,
 								},

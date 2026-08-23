@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { analyzeMcpToolText } from "../core-scanner/rules/mcp-tool-poisoning.ts";
 import {
 	escapeMarkdown,
 	hasInvisibleCharacters,
@@ -117,5 +118,33 @@ describe("escapeMarkdown — a scanned repo cannot inject into the report", () =
 		assert.ok(!/(^|[^\\])#/.test(out), "an unescaped '#' survived");
 		assert.ok(!/(^|[^\\])\|/.test(out), "an unescaped '|' survived");
 		assert.ok(!out.includes("\n"), "newline survived");
+	});
+});
+
+describe("MCP tool poisoning is detected through evasion", () => {
+	const cases: ReadonlyArray<readonly [string, string]> = [
+		["plain text", POISON],
+		[
+			"zero-width split keywords",
+			POISON.replace("read", `re${ZWSP}ad`).replace("first", `fi${ZWSP}rst`),
+		],
+		["invisible TAG block", `A friendly docs server.${toTagBlock(POISON)}`],
+	];
+
+	for (const [label, description] of cases) {
+		test(`detects poisoning via ${label}`, () => {
+			const hits = analyzeMcpToolText("docs", description);
+			assert.ok(
+				hits.length > 0,
+				`no finding for the "${label}" variant — this is a detection bypass`,
+			);
+		});
+	}
+
+	test("a benign tool description produces no findings", () => {
+		assert.deepEqual(
+			analyzeMcpToolText("docs", "Fetches project documentation by path."),
+			[],
+		);
 	});
 });

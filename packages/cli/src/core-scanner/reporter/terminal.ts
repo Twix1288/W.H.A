@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { sanitizeForDisplayInline } from "../../util/untrusted-text.js";
 import type {
 	CorpusValidationResult,
 	DeepScanResult,
@@ -687,26 +688,40 @@ function severityIcon(severity: Severity): string {
 function renderFinding(finding: Finding): string {
 	const lines: string[] = [];
 	const icon = severityIcon(finding.severity);
-	const location = finding.line
-		? chalk.dim(`${finding.file}:${finding.line}`)
-		: chalk.dim(finding.file);
 
-	lines.push(`    ${icon} ${finding.title}`);
+	// EVERY field below is attacker-controlled: title, description, evidence and
+	// file all derive from the content being scanned (a repo's config, an MCP
+	// server's tool metadata). Printed raw, a scanned target could embed ANSI
+	// cursor-movement and erase sequences in its own config and rewrite the report
+	// describing it — moving the cursor up and overwriting its own CRITICAL
+	// findings with "✅ nothing to see here". The subject of a security report must
+	// never be able to edit that report.
+	const title = sanitizeForDisplayInline(finding.title, 300);
+	const description = sanitizeForDisplayInline(finding.description, 500);
+	const file = sanitizeForDisplayInline(finding.file, 200);
+
+	const location = finding.line
+		? chalk.dim(`${file}:${finding.line}`)
+		: chalk.dim(file);
+
+	lines.push(`    ${icon} ${title}`);
 	lines.push(`      ${location}`);
 	if (finding.runtimeConfidence) {
 		lines.push(
 			`      ${chalk.dim(`Runtime confidence: ${formatRuntimeConfidence(finding.runtimeConfidence)}`)}`,
 		);
 	}
-	lines.push(`      ${chalk.dim(finding.description)}`);
+	lines.push(`      ${chalk.dim(description)}`);
 
 	if (finding.evidence) {
-		lines.push(`      Evidence: ${chalk.yellow(finding.evidence)}`);
+		lines.push(
+			`      Evidence: ${chalk.yellow(sanitizeForDisplayInline(finding.evidence, 300))}`,
+		);
 	}
 
 	if (finding.fix) {
 		lines.push(
-			`      Fix: ${chalk.green(finding.fix.description)}` +
+			`      Fix: ${chalk.green(sanitizeForDisplayInline(finding.fix.description, 300))}` +
 				(finding.fix.auto ? chalk.green(" [auto-fixable]") : ""),
 		);
 	}

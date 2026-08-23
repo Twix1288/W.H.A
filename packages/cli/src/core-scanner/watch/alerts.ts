@@ -1,20 +1,34 @@
 import type { AlertMode, DriftResult } from "./types.js";
+import { sanitizeForDisplayInline } from "../../util/untrusted-text.js";
 
 /**
  * Dispatch a drift alert via the configured mode(s).
+ */
+/**
+ * Deliver a drift alert.
+ *
+ * Returns whether delivery SUCCEEDED. This matters: alerts used to be
+ * fire-and-forget — a failed webhook was logged to stderr and the caller advanced
+ * its baseline anyway, so the drift was never re-detected and the alert was lost
+ * permanently. For a monitoring tool that is the worst possible failure: the one
+ * event you needed to hear about is the one that vanished. The caller now holds
+ * the baseline back on failure so the same drift is re-reported next cycle.
  */
 export async function dispatchAlert(
 	drift: DriftResult,
 	mode: AlertMode,
 	webhookUrl?: string,
-): Promise<void> {
+): Promise<{ delivered: boolean; error: string | null }> {
 	if (mode === "terminal" || mode === "both") {
 		renderTerminalAlert(drift);
 	}
 
 	if ((mode === "webhook" || mode === "both") && webhookUrl) {
-		await sendWebhookAlert(drift, webhookUrl);
+		return await sendWebhookAlert(drift, webhookUrl);
 	}
+
+	// Terminal-only delivery is synchronous and cannot fail.
+	return { delivered: true, error: null };
 }
 
 /**
@@ -40,8 +54,8 @@ export function renderTerminalAlert(drift: DriftResult): void {
 		console.error(`\n  NEW findings (${drift.newFindings.length}):`);
 		for (const f of drift.newFindings) {
 			const sev = f.severity.toUpperCase().padEnd(8);
-			console.error(`    [${sev}] ${f.title}`);
-			console.error(`             ${f.file}`);
+			console.error(`    [${sev}] ${sanitizeForDisplayInline(f.title, 200)}`);
+			console.error(`             ${sanitizeForDisplayInline(f.file, 200)}`);
 		}
 	}
 
@@ -94,7 +108,7 @@ export function formatWebhookPayload(drift: DriftResult): string {
 export async function sendWebhookAlert(
 	drift: DriftResult,
 	webhookUrl: string,
-): Promise<void> {
+): Promise<{ delivered: boolean; error: string | null }> {
 	const payload = formatWebhookPayload(drift);
 
 	try {
@@ -106,12 +120,18 @@ export async function sendWebhookAlert(
 		});
 
 		if (!response.ok) {
+			const error = `${response.status} ${response.statusText}`;
 			console.error(
-				`  Webhook alert failed: ${response.status} ${response.statusText}`,
+				`  Webhook alert FAILED: ${error} — this drift will be re-reported on the next scan.`,
 			);
+			return { delivered: false, error };
 		}
+		return { delivered: true, error: null };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`  Webhook alert failed: ${message}`);
+		console.error(
+			`  Webhook alert FAILED: ${message} — this drift will be re-reported on the next scan.`,
+		);
+		return { delivered: false, error: message };
 	}
 }
