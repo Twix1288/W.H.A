@@ -25,10 +25,11 @@
   "files": [
     "dist",
     "bin/wh-sandbox",
-    "packs"
+    "packs",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs --minify",
+    "build": "tsup",
     "build:sandbox": "mkdir -p bin && cd ../sandbox-service && go build -o ../cli/bin/wh-sandbox ./cmd/wh-sandbox",
     "prepublishOnly": "npm run build:sandbox && npm run build",
     "dev": "ts-node src/index.ts",
@@ -37,10 +38,11 @@
     "update-popular-packages": "node scripts/update-popular-packages.js",
     "test": "bun test && pnpm run test:ast",
     "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts src/commands/guard.nodetest.ts src/core-scanner/patterns/patterns.nodetest.ts",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "prepack": "npm run build:sandbox && npm run build",
+    "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.1",
     "chalk": "^5.6.2",
     "commander": "^12.0.0",
     "glob": "^13.0.6",
@@ -52,7 +54,6 @@
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "typescript": "^6.0.3",
-    "web-tree-sitter": "^0.26.10",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -62,7 +63,12 @@
     "@types/node": "^25.9.1",
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",
-    "tsx": "^4.23.1"
+    "tsx": "^4.23.1",
+    "@anthropic-ai/sdk": "^0.104.1",
+    "web-tree-sitter": "^0.26.10"
   },
-  "license": "FCL-1.0-ALv2"
+  "license": "FCL-1.0-ALv2",
+  "overrides": {
+    "tree-sitter": "$tree-sitter"
+  }
 }
