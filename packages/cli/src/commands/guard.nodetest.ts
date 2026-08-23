@@ -22,10 +22,50 @@ test("extractCode: Write → content with the file's extension", () => {
 });
 
 test("extractCode: inert tools and empty input → null (never throws)", () => {
-	assert.equal(extractCode("Read", { file_path: "/etc/hosts" }), null);
-	assert.equal(extractCode("Glob", { pattern: "**/*" }), null);
 	assert.equal(extractCode("Bash", {}), null);
 	assert.equal(extractCode("Bash", { command: "   " }), null);
+	assert.equal(extractCode("WebSearch", { query: "anything" }), null);
+	assert.equal(extractCode("TodoWrite", { todos: [] }), null);
+	// A read-like tool with no path to screen is still inert.
+	assert.equal(extractCode("Read", {}), null);
+	assert.equal(extractCode("Read", { file_path: "  " }), null);
+});
+
+// Read-like tools used to return null unconditionally, so `Read ~/.ssh/id_rsa`
+// was ALLOWED without screening — the exact scenario the README opens with. They
+// carry no executable content, but they do carry a target path, and that path is
+// screenable.
+test("extractCode: read-like tools yield their path for screening", () => {
+	const r = extractCode("Read", { file_path: "/Users/x/.ssh/id_rsa" });
+	assert.ok(r, "Read should now be screened");
+	assert.equal(r?.kind, "path");
+	assert.equal(r?.content, "/Users/x/.ssh/id_rsa");
+
+	const g = extractCode("Glob", { pattern: "**/*", path: "/Users/x/.aws" });
+	assert.ok(g, "Glob should now be screened");
+	assert.equal(g?.kind, "path");
+});
+
+test("guard denies a direct read of credential material", () => {
+	const r = extractCode("Read", { file_path: "/Users/x/.ssh/id_rsa" });
+	assert.ok(r);
+	assert.equal(analyzeCode(r as never, "default").decision, "deny");
+});
+
+test("guard allows reading ordinary project files", () => {
+	for (const p of [
+		"/Users/x/project/src/index.ts",
+		"/Users/x/project/README.md",
+		"/Users/x/project/package.json",
+	]) {
+		const r = extractCode("Read", { file_path: p });
+		assert.ok(r);
+		assert.equal(
+			analyzeCode(r as never, "default").decision,
+			"allow",
+			`${p} should be allowed`,
+		);
+	}
 });
 
 const deny = (content: string, ext = ".sh") =>

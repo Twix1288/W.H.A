@@ -4,6 +4,12 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { parseSource } from "../core-scanner/parser";
 import {
+	detectCredentialExfil,
+	detectStagedDownloadExec,
+	isCredentialPath,
+	normalizeShellCommand,
+} from "../core-scanner/shell/normalize";
+import {
 	RUNTIME_CATEGORIES,
 	scanText,
 } from "../core-scanner/patterns/index";
@@ -48,6 +54,14 @@ interface ExtractedCode {
 	readonly content: string;
 	readonly ext: string;
 	readonly what: string;
+	/**
+	 * "code" — content is source/commands to analyze.
+	 * "path" — content is a filesystem path the tool is about to READ. Screened
+	 *   against the sensitive-path rules; a direct read of credential material is
+	 *   promoted to critical, because unlike a path appearing inside code, the tool
+	 *   call itself is the intent to read that exact file.
+	 */
+	readonly kind?: "code" | "path";
 }
 
 export function extractCode(
@@ -102,6 +116,31 @@ export function extractCode(
 					}
 				: null;
 		}
+		// Read-like tools have no executable content, so they used to return null and
+		// were ALLOWED unconditionally — including `Read ~/.ssh/id_rsa`, which is the
+		// exact scenario the product's own README opens with. They carry no code, but
+		// they do carry a target path, and that path is screenable.
+		case "Read":
+		case "NotebookRead": {
+			const p = toolInput.file_path ?? toolInput.notebook_path;
+			return typeof p === "string" && p.trim()
+				? { content: p, ext: ".path", what: `Read ${p}`, kind: "path" }
+				: null;
+		}
+		case "Glob":
+		case "Grep": {
+			// A glob/grep can exfiltrate by targeting a credential directory.
+			const parts = [toolInput.path, toolInput.pattern, toolInput.glob]
+				.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+			return parts.length
+				? {
+						content: parts.join(" "),
+						ext: ".path",
+						what: `${toolName} ${parts[0]}`,
+						kind: "path",
+					}
+				: null;
+		}
 		case "NotebookEdit": {
 			const c = toolInput.new_source;
 			return typeof c === "string" && c.trim()
@@ -136,12 +175,77 @@ export function analyzeCode(
 	profile: GuardProfile,
 ): GuardVerdict {
 	let findings: Finding[] = [];
+	const isShell = code.ext === ".sh" || code.ext === ".bash";
+	const isPath = code.kind === "path";
 	try {
+		if (isPath) {
+			// A direct read of credential material. The sensitive-path pack rates these
+			// `high` at 0.7 confidence because "a path reference alone isn't proof of
+			// intent" — but a Read tool call IS the intent, so it ranks critical and the
+			// default profile blocks it. Lower-signal paths (.env and friends) still go
+			// through the pack at their own severity below.
+			if (isCredentialPath(code.content)) {
+				findings.push({
+					ruleId: "path-credential-read",
+					name: "Direct read of credential material",
+					severity: "critical",
+					category: "sensitive-path",
+					message: `Reads credential material: ${code.content}`,
+					line: 1,
+					fixable: false,
+				});
+			}
+		}
 		// Shared, tunable rule packs first (reverse shells incl. script-body forms,
 		// download-and-exec, credential-file exfil, injection, secrets, sensitive
 		// paths) — the runtime attacks the AST rules don't all cover. The active
 		// profile selects which pack rules apply.
 		findings.push(...scanText(code.content, { profile, categories: RUNTIME_CATEGORIES }));
+
+		if (isShell) {
+			// Match the rule packs a SECOND time against the shell-normalized form.
+			// Bash resolves quoting before executing, so `cu""rl`, `cur\l` and `'c'url`
+			// all run curl while defeating a raw-text match. Scanning both forms keeps
+			// every pattern that depends on raw syntax working while closing the
+			// quote-splitting bypass. Findings are de-duplicated below.
+			const normalized = normalizeShellCommand(code.content);
+			if (normalized && normalized !== code.content) {
+				findings.push(
+					...scanText(normalized, { profile, categories: RUNTIME_CATEGORIES }),
+				);
+			}
+
+			// Credential material reaching an egress command. The regex rule requires
+			// the network tool to appear BEFORE the path, so the canonical
+			// `cat ~/.ssh/id_rsa | curl …` ordering never matched it.
+			const exfil = detectCredentialExfil(code.content);
+			if (exfil) {
+				findings.push({
+					ruleId: "shell-credential-exfil",
+					name: "Credential file piped to a network command",
+					severity: "critical",
+					category: "command",
+					message: `Credential material '${exfil.path}' reaches '${exfil.egress}' in the same pipeline — this sends secrets off the machine.`,
+					line: 1,
+					fixable: false,
+				});
+			}
+
+			// Download-then-execute split across commands is a flow, not a syntax
+			// shape, so no pattern catches it: `curl … -o /tmp/x; bash /tmp/x`.
+			const staged = detectStagedDownloadExec(code.content);
+			if (staged) {
+				findings.push({
+					ruleId: "shell-staged-download-exec",
+					name: "Downloaded file executed",
+					severity: "critical",
+					category: "command",
+					message: `Downloads '${staged.path}' and then executes it (\`${staged.execCommand}\`) — remote code execution split across commands to evade a pipe-to-shell match.`,
+					line: 1,
+					fixable: false,
+				});
+			}
+		}
 		const parseResult = parseSource(code.content, code.ext);
 		findings.push(...runRules(parseResult, RULES));
 		if (isTaintSupported(`x${code.ext}`)) {
@@ -166,6 +270,18 @@ export function analyzeCode(
 			reason: `analysis failed (${msg}) — blocking rather than running unanalyzed code`,
 			findings: [],
 		};
+	}
+
+	// Scanning both the raw and normalized forms can report the same rule twice.
+	// Collapse by (ruleId, message) so the reason string stays readable.
+	{
+		const seen = new Set<string>();
+		findings = findings.filter((f) => {
+			const key = `${f.ruleId}\u0000${f.message}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
 	}
 
 	if (findings.length === 0) {
@@ -214,16 +330,47 @@ function appendAudit(entry: Record<string, unknown>): void {
 }
 
 // ─── Hook payload I/O ─────────────────────────────────────────────────────────
+/** Hard cap on hook payload size (bytes) — prevents unbounded memory growth. */
+const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+/** Wall-clock cap on reading stdin. */
+const STDIN_TIMEOUT_MS = 5000;
+
+/**
+ * Read the hook payload from stdin.
+ *
+ * This runs in the agent's critical path, so it must be impossible to hang here:
+ * a `guard` that never returns blocks every subsequent tool call indefinitely. The
+ * TTY check alone was not enough — an open pipe that is never closed (a wrapper
+ * that forgets to end stdin, a crashed writer) produced neither 'end' nor 'error'.
+ * We therefore also bound by time and by size.
+ */
 function readStdin(): Promise<string> {
 	return new Promise((resolve) => {
 		let data = "";
+		let settled = false;
+		const finish = (value: string): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(value);
+		};
+		const timer = setTimeout(() => finish(data), STDIN_TIMEOUT_MS);
+		// Don't hold the event loop open just for this timer.
+		if (typeof timer.unref === "function") timer.unref();
+
 		process.stdin.setEncoding("utf-8");
 		process.stdin.on("data", (c) => {
 			data += c;
+			if (data.length > MAX_PAYLOAD_BYTES) {
+				// Oversized payloads are truncated rather than buffered without bound;
+				// JSON.parse will then fail and the caller decides (allow, unscreened).
+				finish(data.slice(0, MAX_PAYLOAD_BYTES));
+			}
 		});
-		process.stdin.on("end", () => resolve(data));
+		process.stdin.on("end", () => finish(data));
+		process.stdin.on("error", () => finish(data));
 		// If nothing is piped in, don't hang forever.
-		if (process.stdin.isTTY) resolve("");
+		if (process.stdin.isTTY) finish("");
 	});
 }
 
