@@ -37,7 +37,7 @@
     "check": "biome check .",
     "update-popular-packages": "node scripts/update-popular-packages.js",
     "test": "bun test && pnpm run test:ast",
-    "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts src/commands/guard.nodetest.ts src/core-scanner/patterns/patterns.nodetest.ts src/util/untrusted-text.nodetest.ts src/core-scanner/shell/normalize.nodetest.ts",
+    "test:ast": "tsx --test src/core-scanner/parser.nodetest.ts src/core-scanner/taint/polyglot.nodetest.ts src/commands/guard.nodetest.ts src/core-scanner/patterns/patterns.nodetest.ts src/util/untrusted-text.nodetest.ts src/core-scanner/shell/normalize.nodetest.ts src/commands/install.nodetest.ts",
     "type-check": "tsc --noEmit",
     "prepack": "npm run build:sandbox && npm run build",
     "verify:release": "node scripts/verify-release.mjs"

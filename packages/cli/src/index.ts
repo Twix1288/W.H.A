@@ -33,15 +33,19 @@ program
 
 program
 	.command("install")
-	.description("Securely fetch and install an agent via npm (with AST/typosquat checking)")
+	.description(
+		"Vet an npm package (typosquat, known-bad names, hardcoded secrets, native binaries, lifecycle scripts) and then install it with lifecycle scripts disabled",
+	)
 	.argument("<package>", "package name to install")
-	.option("--pkg-version <version>", "version to install", "latest")
-	.option("-r, --registry-url <url>", "custom registry URL")
-	.option("-f, --force", "force install despite quarantine warnings", false)
-	.option("--dry-run", "run checks without actually installing", false)
+	.option("--pkg-version <version>", "exact version to install", "latest")
 	.option(
-		"--allow-low-score",
-		"allow install of packages with low conformance score",
+		"-r, --registry-url <url>",
+		"custom npm registry; used for BOTH the vet and the install so they can never disagree",
+	)
+	.option("-f, --force", "install even if hard blockers were found", false)
+	.option(
+		"--dry-run",
+		"vet only, never install (takes precedence over --force)",
 		false,
 	)
 	.action((pkg, options) => {
