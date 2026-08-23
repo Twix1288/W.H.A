@@ -68,4 +68,84 @@ describe("astFingerprint (Golden Snapshot AST hash)", () => {
 			astFingerprint(`x = 1\n`, ".unknown"),
 		);
 	});
+
+	// ─── Operator sensitivity ────────────────────────────────────────────
+	// Regression tests for a critical Golden Snapshot bypass: tree-sitter models
+	// operators as ANONYMOUS tokens, so a canonicalizer that walks only named
+	// children drops every operator. `and` -> `or` and `==` -> `!=` are the two
+	// canonical ways to invert an auth check, and both produced an IDENTICAL
+	// fingerprint, defeating `run --ast-hash` entirely.
+
+	test("is sensitive to a flipped boolean operator (and -> or)", () => {
+		const a = astFingerprint(
+			`def check(u, p):\n    return u == "admin" and p == "secret"\n`,
+			".py",
+		);
+		const b = astFingerprint(
+			`def check(u, p):\n    return u == "admin" or p == "secret"\n`,
+			".py",
+		);
+		assert.notEqual(a, b, "and/or must not share a fingerprint");
+	});
+
+	test("is sensitive to a flipped comparison operator (== -> !=)", () => {
+		assert.notEqual(
+			astFingerprint(`if user == "admin":\n    grant()\n`, ".py"),
+			astFingerprint(`if user != "admin":\n    grant()\n`, ".py"),
+		);
+	});
+
+	test("is sensitive to a negated condition (not)", () => {
+		assert.notEqual(
+			astFingerprint(`if authorized(u):\n    grant()\n`, ".py"),
+			astFingerprint(`if not authorized(u):\n    grant()\n`, ".py"),
+		);
+	});
+
+	test("is sensitive to arithmetic and comparison operator swaps", () => {
+		assert.notEqual(
+			astFingerprint(`limit = base + delta\n`, ".py"),
+			astFingerprint(`limit = base - delta\n`, ".py"),
+		);
+		assert.notEqual(
+			astFingerprint(`if n < max_retries:\n    retry()\n`, ".py"),
+			astFingerprint(`if n > max_retries:\n    retry()\n`, ".py"),
+		);
+	});
+
+	test("operator sensitivity holds in every supported language", () => {
+		const cases: ReadonlyArray<readonly [string, string, string]> = [
+			[".js", `if (a === b) { grant(); }`, `if (a !== b) { grant(); }`],
+			[".ts", `const ok: boolean = a && b;`, `const ok: boolean = a || b;`],
+			[".sh", `if [ "$a" = "$b" ]; then grant; fi`, `if [ "$a" != "$b" ]; then grant; fi`],
+			[".rs", `fn f(a: i32, b: i32) -> bool { a == b }`, `fn f(a: i32, b: i32) -> bool { a != b }`],
+		];
+		for (const [ext, x, y] of cases) {
+			assert.notEqual(
+				astFingerprint(x, ext),
+				astFingerprint(y, ext),
+				`${ext}: operator swap must change the fingerprint`,
+			);
+		}
+	});
+
+	test("the same bytes under different grammars never share a fingerprint", () => {
+		// `run` dispatches by extension; a fingerprint taken with one grammar must
+		// never validate a file executed under another interpreter.
+		assert.notEqual(
+			astFingerprint(`x = 1\n`, ".py"),
+			astFingerprint(`x = 1\n`, ".sh"),
+		);
+	});
+
+	test("still ignores comments now that anonymous tokens are hashed", () => {
+		assert.equal(
+			astFingerprint(`a = b and c\n`, ".py"),
+			astFingerprint(`# lead\na = b and c  # trail\n`, ".py"),
+		);
+		assert.equal(
+			astFingerprint(`const x = a && b;`, ".js"),
+			astFingerprint(`/* lead */\nconst x = a && b; // trail`, ".js"),
+		);
+	});
 });
