@@ -43,6 +43,18 @@ export interface WatchEvent {
 
 export interface WatcherState {
 	readonly isRunning: boolean;
+	/**
+	 * Paths the watcher could NOT watch (missing, or not a directory). Previously
+	 * these were skipped silently, so `watch <file>` reported a clean baseline and
+	 * "Watching for changes..." while monitoring nothing at all.
+	 */
+	readonly setupErrors: ReadonlyArray<string>;
+	/**
+	 * Why the baseline scan failed, if it did. `null` with a `null` baseline means
+	 * "nothing to scan"; a message means "could not scan" — which is NOT an
+	 * all-clear and must fail a `--block` gate.
+	 */
+	readonly baselineError: string | null;
 	readonly baseline: ScanBaseline | null;
 	readonly lastDrift: DriftResult | null;
 	readonly scanCount: number;

@@ -103,7 +103,27 @@ export async function watchConfig(
 	});
 
 	const state = getState();
-	if (state.baseline) {
+
+	// Any path we could not watch is reported, not skipped. Pointing `watch` at a
+	// file used to establish zero watchers and then claim to be watching.
+	for (const err of state.setupErrors) {
+		console.error(`  Cannot watch: ${err}`);
+	}
+	if (!state.isRunning) {
+		console.error(
+			"\n  Nothing is being watched — no drift can be detected. This is a failure, not an idle state.",
+		);
+		stop();
+		process.exit(1);
+	}
+
+	if (state.baselineError) {
+		// A scan that FAILED is not an all-clear, and must never be reported as one.
+		console.error(`  Baseline:      SCAN FAILED — ${state.baselineError}`);
+		console.error(
+			"                 This is NOT an all-clear: the target was not audited.",
+		);
+	} else if (state.baseline) {
 		console.log(
 			`  Baseline:      score ${state.baseline.score.numericScore}/100 (${state.baseline.score.grade}), ${state.baseline.findings.length} finding(s)`,
 		);
@@ -114,10 +134,20 @@ export async function watchConfig(
 	// --block: for CI use — exit non-zero if the initial scan already has
 	// critical findings. (Ongoing drift is reported via alerts, not exit codes,
 	// because a watch process is long-running.)
-	if (options.block && state.baseline) {
-		const hasCritical = state.baseline.findings.some(
-			(f) => f.severity === "critical",
-		);
+	if (options.block) {
+		// A failed baseline fails the gate. Previously this branch required a
+		// non-null baseline, so an unreadable config file made `--block` a no-op:
+		// the gate passed and the process kept running, which is the exact opposite
+		// of what a CI gate is for.
+		if (state.baselineError) {
+			console.error(
+				"\n  BLOCKED: the initial scan did not complete, so this configuration is unverified.",
+			);
+			stop();
+			process.exit(2);
+		}
+		const hasCritical =
+			state.baseline?.findings.some((f) => f.severity === "critical") ?? false;
 		if (hasCritical) {
 			console.error(
 				"\n  BLOCKED: critical findings present in the initial scan.",
@@ -125,6 +155,12 @@ export async function watchConfig(
 			stop();
 			process.exit(2);
 		}
+		// `--block` is documented as a CI gate. A gate that never returns cannot be
+		// used in CI, so in block mode we report the verdict and exit rather than
+		// entering the watch loop.
+		console.log("\n  PASSED: no critical findings in the initial scan.\n");
+		stop();
+		process.exit(0);
 	}
 
 	console.log("\n  Watching for changes... (Ctrl+C to stop)\n");

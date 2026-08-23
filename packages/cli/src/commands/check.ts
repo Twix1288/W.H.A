@@ -1,3 +1,4 @@
+import { writeStdoutSync } from "../util/stdout.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import chalk from "chalk";
@@ -7,6 +8,24 @@ import { scanText } from "../core-scanner/patterns/index";
 import { applyRemediations } from "../core-scanner/remediator";
 import { type Finding, RULES, runRules } from "../core-scanner/rules";
 import { analyzeTaint, isTaintSupported } from "../core-scanner/taint/index";
+
+
+/**
+ * Path as shown to the user and embedded in JSON/SARIF reports.
+ *
+ * `path.relative(cwd, target)` is only useful when the target is INSIDE the
+ * working directory. For anything else it produced strings like
+ * `../../../../../../../private/tmp/x/payload.py`, which is unreadable in the
+ * terminal and, worse, is emitted as the SARIF `artifactLocation.uri` — a
+ * relative URI escaping the repo root is not resolvable by GitHub code scanning,
+ * so findings silently fail to attach to any file. Fall back to the absolute path
+ * whenever the relative form would climb out of the working directory.
+ */
+function displayPath(absolutePath: string): string {
+	const rel = path.relative(process.cwd(), absolutePath);
+	if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return absolutePath;
+	return rel;
+}
 
 export async function checkAgent(
 	files: string[],
@@ -73,7 +92,7 @@ export async function checkAgent(
 				throw new Error("not a regular file (cannot analyze)");
 			}
 
-			const relativePath = path.relative(process.cwd(), absolutePath);
+			const relativePath = displayPath(absolutePath);
 
 			const parseResult = await parseFile(absolutePath);
 			const findings = runRules(parseResult, RULES);
@@ -142,7 +161,7 @@ export async function checkAgent(
 			// swallowed (logged only in text mode), so JSON/SARIF emitted `[]` with
 			// exit 0. Now we (a) surface it as a finding in every format, (b) mark the
 			// file's status analysis_failed, and (c) force a non-zero exit.
-			const relativePath = path.relative(process.cwd(), absolutePath);
+			const relativePath = displayPath(absolutePath);
 			const message = err?.message ?? String(err);
 			analysisErrorCount++;
 			const existingIdx = fileStatuses.findIndex((f) => f.file === relativePath);
@@ -202,7 +221,7 @@ export async function checkAgent(
 		if (options.output) {
 			await fs.writeFile(options.output, JSON.stringify(jsonOutput, null, 2));
 		} else {
-			console.log(JSON.stringify(jsonOutput, null, 2));
+			writeStdoutSync(JSON.stringify(jsonOutput, null, 2));
 		}
 		process.exit(exitCode);
 	}
@@ -233,7 +252,7 @@ export async function checkAgent(
 		if (options.output) {
 			await fs.writeFile(options.output, JSON.stringify(jsonOutput, null, 2));
 		} else {
-			console.log(JSON.stringify(jsonOutput, null, 2));
+			writeStdoutSync(JSON.stringify(jsonOutput, null, 2));
 		}
 		process.exit(exitCode);
 	}
@@ -286,7 +305,7 @@ export async function checkAgent(
 		if (options.output) {
 			await fs.writeFile(options.output, JSON.stringify(sarifOutput, null, 2));
 		} else {
-			console.log(JSON.stringify(sarifOutput, null, 2));
+			writeStdoutSync(JSON.stringify(sarifOutput, null, 2));
 		}
 		process.exit(exitCode);
 	}

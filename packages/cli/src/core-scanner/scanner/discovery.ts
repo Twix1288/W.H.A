@@ -1,24 +1,24 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
 import { isExampleLikePath } from "../source-context.js";
 import type { ConfigFile, ConfigFileType, ScanTarget } from "../types.js";
 
+// Directories skipped while walking an AGENT CONFIG subtree (skills/, agents/,
+// hooks/, commands/, rules/). Deliberately minimal.
+//
+// This set previously also contained `dist`, `build`, `out`, `target`, `vendor`,
+// `coverage`, `brain` and `scratch`. Because this walk only ever descends into
+// agent-config subtrees, those names carried no performance benefit and gave an
+// attacker a trivial hiding place: a malicious skill in `skills/evil/dist/` was
+// never opened. Build output has no business inside a config tree, so the only
+// thing the exclusion bought was evasion. Removed.
 const IGNORED_DIRS = new Set([
-	".dmux",
 	".git",
 	"node_modules",
 	".next",
 	".nuxt",
 	".turbo",
 	".cache",
-	"coverage",
-	"dist",
-	"build",
-	"out",
-	"target",
-	"vendor",
-	"brain",
-	"scratch",
 ]);
 
 const CLAUDE_ROOT_MARKERS = new Set([
@@ -76,6 +76,7 @@ const PROJECT_ROOT_HOOK_VARS = new Set([
  * agents/, skills/, hooks/, rules/, contexts/
  */
 export function discoverConfigFiles(rootPath: string): ScanTarget {
+	discoverySkips = [];
 	const files: ConfigFile[] = [];
 	const seenFiles = new Set<string>();
 	const claudeRoots = new Set<string>([rootPath]);
@@ -265,8 +266,34 @@ const BINARY_EXTENSIONS = new Set([
 	".woff", ".woff2", ".ttf", ".otf", ".eot",
 	".mp3", ".mp4", ".mov", ".avi", ".wav", ".ogg", ".webm",
 ]);
-const MAX_DISCOVERED_FILE_BYTES = 1024 * 1024; // 1MB
+// Per-file cap for discovery. Was 1MB, which was a trivial scanner evasion: pad a
+// malicious bundled script past the cap with a comment block and it was skipped
+// SILENTLY, so the scan still reported a clean pass. Raised, and — more
+// importantly — skips are now recorded and reported instead of being invisible.
+const MAX_DISCOVERED_FILE_BYTES = 16 * 1024 * 1024; // 16MB
 const MAX_DISCOVERY_DEPTH = 10;
+
+/**
+ * Files discovery could not analyze, with the reason. A security scanner must
+ * never let "we didn't look" be indistinguishable from "we looked and it's fine",
+ * so these are surfaced in the report rather than dropped.
+ */
+export interface DiscoverySkip {
+	readonly path: string;
+	readonly reason: string;
+}
+
+let discoverySkips: DiscoverySkip[] = [];
+
+/** Skips recorded by the most recent `discoverConfigFiles` call. */
+export function getDiscoverySkips(): ReadonlyArray<DiscoverySkip> {
+	return discoverySkips;
+}
+
+function recordSkip(path: string, reason: string): void {
+	// Bound the list so a pathological tree can't grow it without limit.
+	if (discoverySkips.length < 1000) discoverySkips.push({ path, reason });
+}
 
 function collectFilesRecursively(
 	scanRoot: string,
@@ -280,7 +307,8 @@ function collectFilesRecursively(
 	let entries: import("node:fs").Dirent[];
 	try {
 		entries = readdirSync(dirPath, { withFileTypes: true });
-	} catch {
+	} catch (e) {
+		recordSkip(dirPath, `directory unreadable: ${e instanceof Error ? e.message : String(e)}`);
 		return;
 	}
 	for (const entry of entries) {
@@ -297,11 +325,61 @@ function collectFilesRecursively(
 			);
 			continue;
 		}
+		// A symlink Dirent is neither isFile() nor isDirectory(), so bundled scripts
+		// reachable only through a symlink used to be dropped without a word. Follow
+		// them, but resolve to a real path first so a symlink cycle or an escape out
+		// of the scan root is caught rather than followed.
+		if (entry.isSymbolicLink()) {
+			let target: string;
+			try {
+				target = realpathSync(entryPath);
+			} catch {
+				recordSkip(entryPath, "broken symlink");
+				continue;
+			}
+			let targetStat: import("node:fs").Stats;
+			try {
+				targetStat = statSync(target);
+			} catch {
+				recordSkip(entryPath, "unreadable symlink target");
+				continue;
+			}
+			if (targetStat.isDirectory()) {
+				// Directory symlinks are not followed: they are the classic way to build
+				// an unbounded or cyclic walk.
+				recordSkip(entryPath, "symlink to a directory — not followed");
+				continue;
+			}
+			if (!targetStat.isFile()) {
+				recordSkip(entryPath, "symlink to a non-regular file");
+				continue;
+			}
+			if (targetStat.size > MAX_DISCOVERED_FILE_BYTES) {
+				recordSkip(entryPath, `exceeds ${MAX_DISCOVERED_FILE_BYTES} byte scan cap`);
+				continue;
+			}
+			addDiscoveredFile(
+				scanRoot,
+				entryPath,
+				inferType(entry.name, defaultType),
+				files,
+				seenFiles,
+			);
+			continue;
+		}
 		if (!entry.isFile()) continue;
 		if (BINARY_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
 		try {
-			if (statSync(entryPath).size > MAX_DISCOVERED_FILE_BYTES) continue;
-		} catch {
+			const size = statSync(entryPath).size;
+			if (size > MAX_DISCOVERED_FILE_BYTES) {
+				recordSkip(
+					entryPath,
+					`${Math.round(size / 1024 / 1024)}MB exceeds the ${MAX_DISCOVERED_FILE_BYTES / 1024 / 1024}MB scan cap`,
+				);
+				continue;
+			}
+		} catch (e) {
+			recordSkip(entryPath, `unreadable: ${e instanceof Error ? e.message : String(e)}`);
 			continue;
 		}
 		addDiscoveredFile(

@@ -41,12 +41,18 @@ export function startWatcher(config: WatchConfig): {
 	let isScanning = false;
 	let rescanQueued = false;
 	const watchers: WatchHandle[] = [];
+	/** Paths that could not be watched. Surfaced rather than silently skipped. */
+	const setupErrors: string[] = [];
+	/** Why the baseline scan failed, if it did. Distinct from "nothing to scan". */
+	let baselineError: string | null = null;
 
 	// Perform initial scan to establish baseline
-	const initialBaseline = performInitialScan(config);
-	if (initialBaseline) {
-		baseline = initialBaseline;
+	const initial = performInitialScan(config);
+	if (initial.status === "ok") {
+		baseline = initial.baseline;
 		scanCount = 1;
+	} else if (initial.status === "error") {
+		baselineError = initial.message;
 	}
 
 	// Serialize rescans: a change arriving mid-scan (or during a slow webhook
@@ -76,13 +82,29 @@ export function startWatcher(config: WatchConfig): {
 		});
 	}
 
-	// Set up watchers for each path
+	// Set up watchers for each path.
+	//
+	// These used to be silent `continue`s. Pointing `watch` at a FILE — the
+	// obvious thing to do, e.g. `watch .claude/settings.json` — therefore
+	// established zero watchers, printed a 100/100 baseline and "Watching for
+	// changes...", and returned immediately having monitored nothing. The same
+	// happened for a path that did not exist. Both are now reported, and a run
+	// that established no watchers at all is a hard failure rather than a
+	// convincing no-op.
 	for (const watchPath of config.paths) {
 		const resolvedPath = resolve(watchPath);
-		if (!existsSync(resolvedPath)) continue;
+		if (!existsSync(resolvedPath)) {
+			setupErrors.push(`${resolvedPath}: path does not exist`);
+			continue;
+		}
 
-		const isDir = statSync(resolvedPath).isDirectory();
-		if (!isDir) continue;
+		if (!statSync(resolvedPath).isDirectory()) {
+			setupErrors.push(
+				`${resolvedPath}: not a directory — pass the config DIRECTORY to watch ` +
+					`(e.g. its parent), not an individual file`,
+			);
+			continue;
+		}
 
 		try {
 			const pathWatchers = createPathWatchers(resolvedPath, () => {
@@ -113,6 +135,8 @@ export function startWatcher(config: WatchConfig): {
 	function getState(): WatcherState {
 		return {
 			isRunning: watchers.length > 0,
+			setupErrors: [...setupErrors],
+			baselineError,
 			baseline,
 			lastDrift,
 			scanCount,
@@ -216,22 +240,42 @@ function isRecursiveWatchUnsupported(error: unknown): boolean {
 /**
  * Perform the initial scan to establish a baseline.
  */
-function performInitialScan(config: WatchConfig): ScanBaseline | null {
-	try {
-		const targetPath = config.paths[0];
-		if (!targetPath || !existsSync(targetPath)) return null;
+/**
+ * Result of the baseline scan.
+ *
+ * A plain `ScanBaseline | null` conflated two very different states: "there is
+ * nothing here to scan" and "the scan FAILED". One unreadable file in the watched
+ * directory threw, the error was logged, null was returned, and the command then
+ * printed "no config files found to scan yet" — an all-clear for a directory it
+ * could not read. Worse, `--block` was gated on a non-null baseline, so a failed
+ * scan skipped the CI gate entirely and the process kept running.
+ */
+type InitialScanResult =
+	| { readonly status: "ok"; readonly baseline: ScanBaseline }
+	| { readonly status: "empty" }
+	| { readonly status: "error"; readonly message: string };
 
+function performInitialScan(config: WatchConfig): InitialScanResult {
+	const targetPath = config.paths[0];
+	if (!targetPath) return { status: "error", message: "no watch path configured" };
+	if (!existsSync(targetPath)) {
+		return { status: "error", message: `${targetPath} does not exist` };
+	}
+
+	try {
 		const result = scan(targetPath);
 		const minIndex = SEVERITY_ORDER[config.minSeverity];
 		const filteredFindings = result.findings.filter(
 			(f) => SEVERITY_ORDER[f.severity] <= minIndex,
 		);
 		const report = calculateScore({ ...result, findings: filteredFindings });
-		return createBaseline(filteredFindings, report.score);
+		return {
+			status: "ok",
+			baseline: createBaseline(filteredFindings, report.score),
+		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`  Initial scan failed: ${message}`);
-		return null;
+		return { status: "error", message };
 	}
 }
 
@@ -250,7 +294,16 @@ async function handleChange(
 ): Promise<void> {
 	try {
 		const targetPath = config.paths[0];
-		if (!targetPath || !existsSync(targetPath)) return;
+		if (!targetPath || !existsSync(targetPath)) {
+			// The watched configuration disappearing is itself drift — and the most
+			// suspicious kind. Returning silently meant deleting (or symlink-swapping)
+			// the config directory blinded the watcher with no alert and no error,
+			// while it kept reporting itself as running.
+			console.error(
+				`  WATCH TARGET GONE: ${targetPath ?? "(none)"} no longer exists — drift detection is blind.`,
+			);
+			return;
+		}
 
 		const result = scan(targetPath);
 		const minIndex = SEVERITY_ORDER[config.minSeverity];
@@ -268,8 +321,20 @@ async function handleChange(
 			);
 
 			if (drift.newFindings.length > 0 || drift.resolvedFindings.length > 0) {
-				await dispatchAlert(drift, config.alertMode, config.webhookUrl);
-				onResult({ newBaseline, drift });
+				const delivery = await dispatchAlert(
+					drift,
+					config.alertMode,
+					config.webhookUrl,
+				);
+				if (delivery.delivered) {
+					onResult({ newBaseline, drift });
+				} else {
+					// Hold the baseline back so this drift is re-detected and re-alerted
+					// next cycle. Advancing it here would discard the event permanently —
+					// at-least-once delivery matters far more than avoiding a duplicate
+					// alert for a security monitor.
+					onResult({ newBaseline: null, drift });
+				}
 			} else {
 				onResult({ newBaseline, drift: null });
 			}
@@ -278,6 +343,11 @@ async function handleChange(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`  Re-scan failed: ${message}`);
+		// A failed rescan is not "no drift". Say so explicitly, and do NOT advance
+		// the baseline — otherwise a config that becomes unreadable silently freezes
+		// drift detection while the watcher still looks healthy.
+		console.error(
+			`  RE-SCAN FAILED: ${message} — drift was NOT evaluated for this change.`,
+		);
 	}
 }
