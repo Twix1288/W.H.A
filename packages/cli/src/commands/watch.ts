@@ -117,6 +117,16 @@ export async function watchConfig(
 		process.exit(1);
 	}
 
+	// Changes made while the watcher was DOWN. Reported before the baseline line so
+	// it is not mistaken for the current state being clean.
+	if (state.startupDrift) {
+		const d = state.startupDrift;
+		console.error(
+			`  DRIFT SINCE LAST RUN: ${d.newFindings.length} new, ${d.resolvedFindings.length} resolved ` +
+				`(score ${d.previousScore} -> ${d.currentScore}).`,
+		);
+	}
+
 	if (state.baselineError) {
 		// A scan that FAILED is not an all-clear, and must never be reported as one.
 		console.error(`  Baseline:      SCAN FAILED — ${state.baselineError}`);
@@ -142,6 +152,21 @@ export async function watchConfig(
 		if (state.baselineError) {
 			console.error(
 				"\n  BLOCKED: the initial scan did not complete, so this configuration is unverified.",
+			);
+			stop();
+			process.exit(2);
+		}
+		if (state.rootChangedSinceBaseline) {
+			console.error(
+				"\n  BLOCKED: the watched path now resolves somewhere different than when the " +
+					"baseline was recorded — this is not the configuration that was approved.",
+			);
+			stop();
+			process.exit(2);
+		}
+		if (state.startupDrift && state.startupDrift.newFindings.length > 0) {
+			console.error(
+				"\n  BLOCKED: the configuration changed since the stored baseline.",
 			);
 			stop();
 			process.exit(2);

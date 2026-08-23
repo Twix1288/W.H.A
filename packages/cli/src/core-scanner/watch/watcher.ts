@@ -5,6 +5,18 @@ import { scan } from "../scanner/index.js";
 import type { Severity } from "../types.js";
 import { dispatchAlert } from "./alerts.js";
 import { createBaseline, diffBaseline } from "./diff.js";
+import {
+	type ContentDrift,
+	diffFileDigests,
+	digestContent,
+	hasContentDrift,
+	identityOf,
+	loadBaseline,
+	type PathIdentity,
+	sameIdentity,
+	saveBaseline,
+	toScanBaseline,
+} from "./state.js";
 import type {
 	DriftResult,
 	ScanBaseline,
@@ -45,12 +57,99 @@ export function startWatcher(config: WatchConfig): {
 	const setupErrors: string[] = [];
 	/** Why the baseline scan failed, if it did. Distinct from "nothing to scan". */
 	let baselineError: string | null = null;
+	/** sha256 per tracked config file — catches changes that produce no new finding. */
+	let fileDigests: Record<string, string> = {};
+	/** Identity of the watch root, so a symlink swap is detectable. */
+	let rootIdentity: PathIdentity | null = null;
+	/** Drift detected on startup against the stored baseline (i.e. while we were down). */
+	let startupDrift: DriftResult | null = null;
+	/** The watched path resolves somewhere different than when the baseline was stored. */
+	let rootChangedSinceBaseline = false;
+	/** Timestamp of the first event in the current debounce burst. */
+	let burstStartedAt: number | null = null;
 
-	// Perform initial scan to establish baseline
+	const targetPath = config.paths[0];
+
+	/**
+	 * Upper bound on how long a continuous write burst can postpone a rescan.
+	 * Generous relative to the debounce so ordinary editor activity still
+	 * coalesces, but finite so starvation is impossible.
+	 */
+	const maxWaitMs = Math.max(config.debounceMs * 5, 5000);
+
+	function persistBaseline(): void {
+		if (!targetPath || !baseline) return;
+		const result = saveBaseline(targetPath, baseline, fileDigests, rootIdentity);
+		if (!result.ok) {
+			// A baseline we cannot persist means the next restart re-baselines against
+			// the current state. Say so rather than failing silently.
+			console.error(
+				`  Could not persist the watch baseline (${result.error}) — drift will not survive a restart.`,
+			);
+		}
+	}
+
+	function reportContentDrift(drift: ContentDrift): void {
+		// Reported separately from findings, and deliberately more quietly: a
+		// content change with no new finding is a weaker signal, and presenting it
+		// as a finding would train people to ignore real ones.
+		for (const f of drift.changed) {
+			console.error(`    changed:  ${f} (contents differ, findings unchanged)`);
+		}
+		for (const f of drift.added) console.error(`    added:    ${f}`);
+		for (const f of drift.removed) console.error(`    removed:  ${f}`);
+	}
+
+	// Perform initial scan to establish baseline.
+	//
+	// The baseline used to be in-memory only, so restarting silently adopted
+	// whatever the configuration looked like at that moment as "normal" — an
+	// attacker only had to wait for (or cause) a restart. A stored baseline for
+	// this target is loaded first and the fresh scan is diffed against it, so
+	// changes made while the watcher was DOWN are reported on startup.
 	const initial = performInitialScan(config);
+	const persisted = targetPath ? loadBaseline(targetPath) : null;
+
 	if (initial.status === "ok") {
+		fileDigests = initial.fileDigests;
+		rootIdentity = identityOf(targetPath ?? "");
+
+		if (persisted) {
+			const restored = toScanBaseline(persisted);
+			const offlineDrift = diffBaseline(
+				restored,
+				initial.baseline.findings,
+				initial.baseline.score,
+			);
+			const offlineContent = diffFileDigests(persisted.fileDigests ?? {}, fileDigests);
+			const rootSwapped =
+				persisted.rootIdentity != null &&
+				!sameIdentity(persisted.rootIdentity, rootIdentity);
+
+			if (rootSwapped) {
+				rootChangedSinceBaseline = true;
+				console.error(
+					"  WATCH ROOT CHANGED since the last run: the watched path now resolves to a " +
+						"different directory or inode. Treat the current configuration as unverified.",
+				);
+			}
+			if (
+				offlineDrift.newFindings.length > 0 ||
+				offlineDrift.resolvedFindings.length > 0 ||
+				hasContentDrift(offlineContent)
+			) {
+				console.error(
+					"  DRIFT WHILE NOT WATCHING: the configuration changed since the stored baseline.",
+				);
+				reportContentDrift(offlineContent);
+				startupDrift = offlineDrift;
+				lastDrift = offlineDrift;
+			}
+		}
+
 		baseline = initial.baseline;
 		scanCount = 1;
+		persistBaseline();
 	} else if (initial.status === "error") {
 		baselineError = initial.message;
 	}
@@ -65,14 +164,19 @@ export function startWatcher(config: WatchConfig): {
 			return;
 		}
 		isScanning = true;
-		void handleChange(config, baseline, (result) => {
+		void handleChange(config, baseline, fileDigests, rootIdentity, (result) => {
 			if (result.newBaseline) {
 				baseline = result.newBaseline;
 			}
 			if (result.drift) {
 				lastDrift = result.drift;
 			}
+			if (result.fileDigests) fileDigests = { ...result.fileDigests };
+			if (result.rootIdentity !== undefined) rootIdentity = result.rootIdentity;
 			scanCount += 1;
+			// Persist only when the baseline actually advanced. A held-back baseline
+			// (undelivered alert) must stay un-persisted so the drift is re-reported.
+			if (result.newBaseline) persistBaseline();
 		}).finally(() => {
 			isScanning = false;
 			if (rescanQueued) {
@@ -108,11 +212,27 @@ export function startWatcher(config: WatchConfig): {
 
 		try {
 			const pathWatchers = createPathWatchers(resolvedPath, () => {
-				// Debounce: wait for config.debounceMs of silence before rescanning
-				if (debounceTimer) {
-					clearTimeout(debounceTimer);
-				}
-				debounceTimer = setTimeout(runRescan, config.debounceMs);
+				// Debounce with a MAXIMUM WAIT.
+				//
+				// A plain trailing debounce restarts its timer on every event, so any
+				// process writing to the watched directory faster than --debounce
+				// postpones the rescan forever — trivially weaponisable to suppress
+				// drift detection, and reachable by accident with a noisy build
+				// watcher. Track when the current burst began and force a rescan once
+				// maxWait elapses, regardless of continuing activity.
+				const now = Date.now();
+				if (burstStartedAt === null) burstStartedAt = now;
+
+				if (debounceTimer) clearTimeout(debounceTimer);
+
+				const elapsed = now - burstStartedAt;
+				const remaining = Math.max(0, maxWaitMs - elapsed);
+				const delay = Math.min(config.debounceMs, remaining);
+
+				debounceTimer = setTimeout(() => {
+					burstStartedAt = null;
+					runRescan();
+				}, delay);
 			});
 			watchers.push(...pathWatchers);
 		} catch (error) {
@@ -137,6 +257,8 @@ export function startWatcher(config: WatchConfig): {
 			isRunning: watchers.length > 0,
 			setupErrors: [...setupErrors],
 			baselineError,
+			startupDrift,
+			rootChangedSinceBaseline,
 			baseline,
 			lastDrift,
 			scanCount,
@@ -251,9 +373,29 @@ function isRecursiveWatchUnsupported(error: unknown): boolean {
  * scan skipped the CI gate entirely and the process kept running.
  */
 type InitialScanResult =
-	| { readonly status: "ok"; readonly baseline: ScanBaseline }
+	| {
+			readonly status: "ok";
+			readonly baseline: ScanBaseline;
+			/** sha256 of every tracked config file, for content-level drift. */
+			readonly fileDigests: Record<string, string>;
+	  }
 	| { readonly status: "empty" }
 	| { readonly status: "error"; readonly message: string };
+
+/**
+ * sha256 of each config file the scan actually read.
+ *
+ * Diffing findings alone misses a whole class of change: swapping an MCP
+ * server's package for a malicious one with the same permissions shape produces
+ * an identical finding set, and therefore no drift at all.
+ */
+function digestsOf(result: ReturnType<typeof scan>): Record<string, string> {
+	const digests: Record<string, string> = {};
+	for (const file of result.target.files) {
+		digests[file.path] = digestContent(file.content);
+	}
+	return digests;
+}
 
 function performInitialScan(config: WatchConfig): InitialScanResult {
 	const targetPath = config.paths[0];
@@ -272,6 +414,7 @@ function performInitialScan(config: WatchConfig): InitialScanResult {
 		return {
 			status: "ok",
 			baseline: createBaseline(filteredFindings, report.score),
+			fileDigests: digestsOf(result),
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -282,6 +425,8 @@ function performInitialScan(config: WatchConfig): InitialScanResult {
 interface ChangeResult {
 	readonly newBaseline: ScanBaseline | null;
 	readonly drift: DriftResult | null;
+	readonly fileDigests?: Readonly<Record<string, string>>;
+	readonly rootIdentity?: PathIdentity | null;
 }
 
 /**
@@ -290,6 +435,8 @@ interface ChangeResult {
 async function handleChange(
 	config: WatchConfig,
 	currentBaseline: ScanBaseline | null,
+	previousDigests: Readonly<Record<string, string>>,
+	previousIdentity: PathIdentity | null,
 	onResult: (result: ChangeResult) => void,
 ): Promise<void> {
 	try {
@@ -305,6 +452,21 @@ async function handleChange(
 			return;
 		}
 
+		// A path is not an identity. fs.watch holds a descriptor to whatever the
+		// path resolved to at start, so replacing the directory with a symlink
+		// elsewhere leaves the watcher bound to a detached inode: no events, no
+		// error, and it still reports itself as running.
+		const currentIdentity = identityOf(targetPath);
+		const rootSwapped =
+			previousIdentity != null && !sameIdentity(previousIdentity, currentIdentity);
+		if (rootSwapped) {
+			console.error(
+				`  WATCH ROOT SWAPPED: ${targetPath} now resolves to a different directory or inode ` +
+					`(was ${previousIdentity?.realpath}, now ${currentIdentity?.realpath ?? "unresolvable"}). ` +
+					"Existing watchers are bound to the OLD target and are blind.",
+			);
+		}
+
 		const result = scan(targetPath);
 		const minIndex = SEVERITY_ORDER[config.minSeverity];
 		const filteredFindings = result.findings.filter(
@@ -312,6 +474,8 @@ async function handleChange(
 		);
 		const report = calculateScore({ ...result, findings: filteredFindings });
 		const newBaseline = createBaseline(filteredFindings, report.score);
+		const currentDigests = digestsOf(result);
+		const contentDrift = diffFileDigests(previousDigests, currentDigests);
 
 		if (currentBaseline) {
 			const drift = diffBaseline(
@@ -320,6 +484,21 @@ async function handleChange(
 				report.score,
 			);
 
+			// Content-only drift: the files changed but the finding set did not. Worth
+			// surfacing (an MCP server's package can be swapped for a malicious one
+			// with an identical permissions shape) but reported more quietly than a
+			// finding, and it does not gate the baseline on alert delivery.
+			if (
+				hasContentDrift(contentDrift) &&
+				drift.newFindings.length === 0 &&
+				drift.resolvedFindings.length === 0
+			) {
+				console.error("  Configuration changed (no change in findings):");
+				for (const f of contentDrift.changed) console.error(`    changed:  ${f}`);
+				for (const f of contentDrift.added) console.error(`    added:    ${f}`);
+				for (const f of contentDrift.removed) console.error(`    removed:  ${f}`);
+			}
+
 			if (drift.newFindings.length > 0 || drift.resolvedFindings.length > 0) {
 				const delivery = await dispatchAlert(
 					drift,
@@ -327,19 +506,19 @@ async function handleChange(
 					config.webhookUrl,
 				);
 				if (delivery.delivered) {
-					onResult({ newBaseline, drift });
+					onResult({ newBaseline, drift, fileDigests: currentDigests, rootIdentity: currentIdentity });
 				} else {
 					// Hold the baseline back so this drift is re-detected and re-alerted
 					// next cycle. Advancing it here would discard the event permanently —
 					// at-least-once delivery matters far more than avoiding a duplicate
 					// alert for a security monitor.
-					onResult({ newBaseline: null, drift });
+					onResult({ newBaseline: null, drift, fileDigests: currentDigests, rootIdentity: currentIdentity });
 				}
 			} else {
-				onResult({ newBaseline, drift: null });
+				onResult({ newBaseline, drift: null, fileDigests: currentDigests, rootIdentity: currentIdentity });
 			}
 		} else {
-			onResult({ newBaseline, drift: null });
+			onResult({ newBaseline, drift: null, fileDigests: currentDigests, rootIdentity: currentIdentity });
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

@@ -57,5 +57,18 @@ export interface WatcherState {
 	readonly baselineError: string | null;
 	readonly baseline: ScanBaseline | null;
 	readonly lastDrift: DriftResult | null;
+	/**
+	 * Drift found on startup by diffing the fresh scan against the STORED
+	 * baseline — i.e. changes made while the watcher was not running. Previously
+	 * impossible to detect: the baseline was in-memory only, so a restart adopted
+	 * whatever it found as "normal".
+	 */
+	readonly startupDrift: DriftResult | null;
+	/**
+	 * The watched path resolves to a different directory/inode than when the
+	 * baseline was stored — i.e. it was swapped while we were not running. The
+	 * configuration being gated is not the one previously approved.
+	 */
+	readonly rootChangedSinceBaseline: boolean;
 	readonly scanCount: number;
 }
