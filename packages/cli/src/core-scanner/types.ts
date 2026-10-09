@@ -437,21 +437,6 @@ export interface DeepScanResult {
 
 // ─── CLI Options ───────────────────────────────────────────
 
-export interface ScanOptions {
-	readonly path: string;
-	readonly format: "terminal" | "json" | "markdown" | "html";
-	readonly fix: boolean;
-	readonly opus: boolean;
-	readonly injection: boolean;
-	readonly sandbox: boolean;
-	readonly deep: boolean;
-	readonly taint: boolean;
-	readonly corpus: boolean;
-	readonly log?: string;
-	readonly logFormat: "ndjson" | "json";
-	readonly verbose: boolean;
-}
-
 // ─── Zod Schemas for Config Validation ─────────────────────
 
 export const SettingsSchema = z.object({
@@ -486,6 +471,3 @@ export const McpConfigSchema = z.object({
 		}),
 	),
 });
-
-export type SettingsConfig = z.infer<typeof SettingsSchema>;
-export type McpConfig = z.infer<typeof McpConfigSchema>;
