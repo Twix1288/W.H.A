@@ -47,11 +47,6 @@ export function grammarForExt(ext: string): unknown | null {
 	return grammar;
 }
 
-/** Extensions with a real grammar, without loading any of them. */
-export function supportedGrammarExts(): ReadonlyArray<string> {
-	return Object.keys(GRAMMAR_LOADERS);
-}
-
 // Stable, human-readable grammar identity used to domain-separate fingerprints.
 // Extensions that share a grammar (.js/.jsx/.mjs/.cjs) intentionally share an id;
 // what must never collide is two DIFFERENT grammars over the same bytes.
