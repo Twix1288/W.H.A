@@ -14,4 +14,3 @@ export type {
 	SerializedBaseline,
 	SerializedFinding,
 } from "./types.js";
-export { DEFAULT_GATE_CONFIG } from "./types.js";

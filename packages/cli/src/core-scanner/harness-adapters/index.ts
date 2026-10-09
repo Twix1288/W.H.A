@@ -2,7 +2,6 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	HarnessAdapterDetection,
-	HarnessAdapterId,
 	HarnessAdapterMetadata,
 	HarnessAdapterSummary,
 } from "../types.js";
@@ -364,12 +363,6 @@ export function detectHarnessAdapters(rootPath: string): HarnessAdapterSummary {
 		matched,
 		registered: getHarnessAdapterRegistry(),
 	};
-}
-
-export function adapterById(
-	id: HarnessAdapterId,
-): HarnessAdapterMetadata | undefined {
-	return getHarnessAdapterRegistry().find((adapter) => adapter.id === id);
 }
 
 function detectAdapter(
