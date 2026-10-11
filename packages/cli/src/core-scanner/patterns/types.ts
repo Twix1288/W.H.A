@@ -14,12 +14,6 @@ export type PatternCategory =
 
 export type Profile = "permissive" | "default" | "strict";
 
-export const PROFILES: ReadonlyArray<Profile> = [
-	"permissive",
-	"default",
-	"strict",
-];
-
 const SeverityEnum = z.enum(["critical", "high", "medium", "low", "info"]);
 const CategoryEnum = z.enum([
 	"command",

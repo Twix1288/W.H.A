@@ -199,7 +199,3 @@ export function _resetRuleCache(): void {
 	cache = null;
 	warned = false;
 }
-
-export function _warnedForTest(): boolean {
-	return warned;
-}
