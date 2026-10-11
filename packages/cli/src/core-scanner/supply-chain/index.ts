@@ -10,7 +10,6 @@ export type {
 	SupplyChainProvenanceSummary,
 	SupplyChainReport,
 } from "./types.js";
-export { KNOWN_GOOD_PACKAGES } from "./types.js";
 export {
 	checkTyposquatting,
 	levenshteinDistance,

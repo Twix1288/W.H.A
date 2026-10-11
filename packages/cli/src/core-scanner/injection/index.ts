@@ -5,8 +5,6 @@ import type {
 } from "../types.js";
 import { runInjectionTests } from "./tester.js";
 
-export type { InjectionPayload, PayloadCategory } from "./payloads.js";
-// ─── Payload Corpus ───────────────────────────────────────
 export {
 	getPayloadById,
 	getPayloadCategories,
@@ -19,8 +17,6 @@ export type {
 	InjectionTestResult,
 	InjectionTestSuite,
 } from "./tester.js";
-// ─── Injection Tester ─────────────────────────────────────
-export { runInjectionTests } from "./tester.js";
 
 // ─── CLI Integration ─────────────────────────────────────
 // Bridge function that matches the signature expected by src/index.ts:
