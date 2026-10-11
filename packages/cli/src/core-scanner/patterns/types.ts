@@ -58,7 +58,6 @@ export const OverrideSchema = z.object({
 		.array(PatternRuleSchema.extend({ category: CategoryEnum }))
 		.optional(),
 });
-export type OverrideDef = z.infer<typeof OverrideSchema>;
 
 export interface CompiledRule {
 	readonly id: string;
